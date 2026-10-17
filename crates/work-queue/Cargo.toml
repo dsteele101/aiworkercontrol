@@ -1,0 +1,18 @@
+[package]
+name = "work-queue"
+description = "File-based work queue: items move between open, inprogress and closed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
