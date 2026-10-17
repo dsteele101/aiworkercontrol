@@ -9,7 +9,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use serde::Deserialize;
 use work_queue::{RESULT_SUFFIX, State as ItemState, WorkItem};
-use worker_pool::{BranchOutcome, Project};
+use worker_pool::{BranchOutcome, Project, PullRequests};
 
 use crate::{AppState, login, pages};
 
@@ -220,6 +220,14 @@ struct ProjectForm {
     base_ref: String,
     #[serde(default)]
     setup: String,
+    #[serde(default)]
+    pr_remote: String,
+    #[serde(default)]
+    pr_repo: String,
+    #[serde(default)]
+    pr_base: String,
+    #[serde(default)]
+    pr_draft: Option<String>,
 }
 
 async fn add_project(State(app): State<AppState>, Form(f): Form<ProjectForm>) -> Redirect {
@@ -241,6 +249,27 @@ async fn add_project(State(app): State<AppState>, Form(f): Form<ProjectForm>) ->
                 project.base_ref = f.base_ref.trim().to_string();
             }
             project.setup = Some(f.setup.trim().to_string()).filter(|s| !s.is_empty());
+            let (remote, repo) = (f.pr_remote.trim(), f.pr_repo.trim());
+            project.pr = match (remote.is_empty(), repo.is_empty()) {
+                (true, true) => None,
+                (false, false) if repo.split('/').filter(|p| !p.is_empty()).count() == 2 => {
+                    Some(PullRequests {
+                        push_remote: remote.to_string(),
+                        repo: repo.to_string(),
+                        base: Some(f.pr_base.trim())
+                            .filter(|b| !b.is_empty())
+                            .unwrap_or("main")
+                            .to_string(),
+                        draft: f.pr_draft.is_some(),
+                    })
+                }
+                _ => {
+                    return Err(
+                        "Pull requests need both a push remote and a repository (owner/name)."
+                            .into(),
+                    );
+                }
+            };
             if !root.join(&project.spec_dir).is_dir() {
                 return Err(format!(
                     "Spec directory {} not found.",

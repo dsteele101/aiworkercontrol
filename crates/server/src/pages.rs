@@ -223,6 +223,9 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                         td.ok { "closed" }
                         td {
                             a href={ "/result?item=" (url_encode(&item.to_string())) } { "Result" }
+                            @if let Some(url) = app.pool().pull_request(item) {
+                                " " a href=(url) target="_blank" rel="noopener" { "Pull request" }
+                            }
                             @if has_worktree(item) {
                                 " "
                                 form.inline method="post" action="/cleanup" {
@@ -322,7 +325,7 @@ pub(crate) fn settings(
             }
             @if !settings.projects.is_empty() {
                 table {
-                    tr { th { "Name" } th { "Spec directory" } th { "Repository" } th { "Branch from" } th { "Worktree setup" } th {} }
+                    tr { th { "Name" } th { "Spec directory" } th { "Repository" } th { "Branch from" } th { "Worktree setup" } th { "Pull requests" } th {} }
                     @for project in &settings.projects {
                         tr {
                             td { (project.name) }
@@ -332,6 +335,13 @@ pub(crate) fn settings(
                             td {
                                 @if let Some(setup) = &project.setup { code { (setup) } }
                                 @else { span.muted { "none" } }
+                            }
+                            td {
+                                @if let Some(pr) = &project.pr {
+                                    "push to " code { (pr.push_remote) } ", open against "
+                                    code { (pr.repo) " " (pr.base) }
+                                    @if pr.draft { " (draft)" }
+                                } @else { span.muted { "off" } }
                             }
                             td {
                                 form.inline method="post" action="/settings/projects/delete" {
@@ -350,6 +360,12 @@ pub(crate) fn settings(
                     div { label { "Repository" } input type="text" name="repo" placeholder="/home/me/dev/phase or ../phase" required; }
                     div { label { "Branch from" } input type="text" name="base_ref" placeholder="main"; }
                 }
+                div.fields {
+                    div { label { "Push to remote (optional)" } input type="text" name="pr_remote" placeholder="fork"; }
+                    div { label { "Open pull request against" } input type="text" name="pr_repo" placeholder="phase-rs/phase"; }
+                    div { label { "Pull request base branch" } input type="text" name="pr_base" placeholder="main"; }
+                    div { label.check style="margin-top:26px" { input type="checkbox" name="pr_draft"; "Open as draft" } }
+                }
                 label { "Worktree setup command (optional)" }
                 input type="text" name="setup" placeholder="e.g. cp \"$AIWC_REPO\"/data/*.json data/";
                 p.muted {
@@ -358,6 +374,8 @@ pub(crate) fn settings(
                     "starts, to supply gitignored or generated files the build needs; "
                     code { "$AIWC_REPO" } " is your checkout and " code { "$AIWC_WORKTREE" } " the new worktree. "
                     "Each worker keeps its own " code { "CARGO_TARGET_DIR" } " build cache there too. "
+                    "With a push remote set, finished work is pushed there and a pull request opened with "
+                    code { "gh" } " (your GitHub login), titled and described by the agent following the repo's PR template. "
                     "To change a project, add it again under the same name."
                 }
                 p { button { "Add project" } }

@@ -201,6 +201,27 @@ async fn projects_are_validated() {
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].base_ref, "develop");
     assert_eq!(projects[0].setup.as_deref(), Some("make data"));
+    assert_eq!(projects[0].pr, None);
+
+    app.post(
+        "/settings/projects",
+        "name=demo&spec_dir=spec/demo&repo=repo&pr_remote=fork&pr_repo=up%2Frepo",
+    )
+    .await;
+    let pr = app.saved().projects[0].pr.clone().unwrap();
+    assert_eq!(
+        (pr.push_remote.as_str(), pr.repo.as_str(), pr.base.as_str()),
+        ("fork", "up/repo", "main")
+    );
+    assert!(!pr.draft);
+
+    // A remote without a repository is rejected, keeping the last settings.
+    app.post(
+        "/settings/projects",
+        "name=demo&spec_dir=spec/demo&repo=repo&pr_remote=fork",
+    )
+    .await;
+    assert!(app.saved().projects[0].pr.is_some());
 
     app.post(
         "/settings/projects",

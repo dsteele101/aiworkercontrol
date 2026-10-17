@@ -45,6 +45,19 @@ pub(crate) fn build(project: &Project, item: &WorkItem, body: &str) -> Result<St
            conventions. Do not push, and do not switch branches.\n\
          - Finish with a short summary of what you changed and how you verified it.\n"
     ));
+    if let Some(pr) = &project.pr {
+        prompt.push_str(&format!(
+            "\nWhen your work is complete and committed, write the pull request for it \
+             to {draft}: the title on the first line, then a blank line, then the \
+             description. Follow the repository's pull request template and \
+             contribution guidelines for both (e.g. .github/PULL_REQUEST_TEMPLATE.md, \
+             CONTRIBUTING.md). The pull request will be opened against {repo} \
+             `{base}` for you once you finish, so do not push or open it yourself.\n",
+            draft = project.pr_draft_path(item).display(),
+            repo = pr.repo,
+            base = pr.base,
+        ));
+    }
     Ok(prompt)
 }
 
@@ -88,6 +101,29 @@ mod tests {
         assert!(a < b);
         assert!(!prompt.contains(".hidden"));
         assert!(prompt.contains("branch `ai/timesifter`, cut from `main`"));
+    }
+
+    #[test]
+    fn asks_for_a_pr_draft_only_when_publishing() {
+        let spec = tempfile::tempdir().unwrap();
+        let mut project = Project::new("phase", spec.path(), "/dev/phase");
+        let item = WorkItem::new("phase", "timesifter.txt");
+        assert!(
+            !build(&project, &item, "x")
+                .unwrap()
+                .contains("pull request")
+        );
+
+        project.pr = Some(crate::PullRequests {
+            push_remote: "fork".into(),
+            repo: "phase-rs/phase".into(),
+            base: "main".into(),
+            draft: false,
+        });
+        let prompt = build(&project, &item, "x").unwrap();
+        assert!(prompt.contains("to /dev/phase-worktrees/.pr/timesifter.md: the title"));
+        assert!(prompt.contains("against phase-rs/phase `main`"));
+        assert!(prompt.contains("do not push or open it yourself"));
     }
 
     #[test]

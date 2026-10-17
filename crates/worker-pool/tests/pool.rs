@@ -11,8 +11,24 @@ use std::time::Duration;
 use agent_backend::{Auth, Provider, ProviderConfig};
 use work_queue::{Queue, State, WorkItem};
 use worker_pool::{
-    Activity, BranchOutcome, Cleanup, PoolConfig, PoolError, PoolSnapshot, Project, Supervisor,
+    Activity, BranchOutcome, Cleanup, PoolConfig, PoolError, PoolSnapshot, Project, PullRequests,
+    Supervisor,
 };
+
+/// Stands in for `gh`: records its arguments, and answers `pr list`,
+/// `pr create` and `pr view` the way the marker files beside it say.
+const FAKE_GH: &str = r#"#!/bin/sh
+here=$(dirname "$0")
+echo "$@" >> "$here/gh.calls"
+case "$1 $2" in
+  "pr list") echo '[]' ;;
+  "pr create")
+    if [ -f "$here/gh.fail" ]; then echo 'boom from gh' >&2; exit 1; fi
+    echo 'https://github.com/up/repo/pull/7' ;;
+  "pr view")
+    if [ -f "$here/gh.merged" ]; then echo '{"state":"MERGED"}'; else echo '{"state":"OPEN"}'; fi ;;
+esac
+"#;
 
 /// Stands in for `claude -p <prompt> …`: commits a file in its working
 /// directory and reports success, unless the prompt asks it to fail.
@@ -43,6 +59,8 @@ case "$prompt" in
     echo '{"type":"result","is_error":false,"result":"looked around"}'
     exit 0 ;;
 esac
+draft=$(printf '%s\n' "$prompt" | sed -n 's/.* to \(\/[^:]*\/\.pr\/[^:]*\.md\):.*/\1/p' | head -n 1)
+if [ -n "$draft" ]; then printf 'feat: fix the thing\n\nBody text.\n' > "$draft"; fi
 echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git commit"}}]}}'
 echo fixed > fixed.txt
 git add fixed.txt
@@ -100,9 +118,11 @@ fn fixture(items: &[(&str, &str)], workers: usize) -> Fixture {
 
     let bin = root.join("bin");
     fs::create_dir_all(&bin).unwrap();
-    let fake = bin.join("claude");
-    fs::write(&fake, FAKE_CLAUDE).unwrap();
-    fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    for (name, script) in [("claude", FAKE_CLAUDE), ("gh", FAKE_GH)] {
+        let fake = bin.join(name);
+        fs::write(&fake, script).unwrap();
+        fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+    }
 
     let config = PoolConfig {
         workers,
@@ -449,4 +469,107 @@ async fn background_processes_of_an_agent_are_stopped_with_it() {
         "background child {} still running: {state}",
         pid.trim()
     );
+}
+
+/// Publishes the fixture's project to a `fork` remote whose URL names the
+/// GitHub owner `me` but whose pushes land in a local bare repo.
+fn with_pull_requests(fx: &mut Fixture) -> std::path::PathBuf {
+    let bare = fx.root.join("fork.git");
+    let status = Command::new("git")
+        .args(["init", "-q", "--bare"])
+        .arg(&bare)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let repo = fx.root.join("repo");
+    sh(
+        &repo,
+        &["remote", "add", "fork", "https://github.com/me/repo.git"],
+    );
+    sh(
+        &repo,
+        &[
+            "remote",
+            "set-url",
+            "--push",
+            "fork",
+            &bare.display().to_string(),
+        ],
+    );
+    fx.config.projects[0].pr = Some(PullRequests {
+        push_remote: "fork".into(),
+        repo: "up/repo".into(),
+        base: "main".into(),
+        draft: false,
+    });
+    bare
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn opens_a_pull_request_from_the_agents_draft() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    let bare = with_pull_requests(&mut fx);
+    let (pool, item) = closed_item(&fx).await;
+
+    let result = fs::read_to_string(fx.root.join("work/closed/demo/good.result.md")).unwrap();
+    assert!(
+        result.contains("- Pull request: https://github.com/up/repo/pull/7"),
+        "{result}"
+    );
+    assert_eq!(
+        pool.pull_request(&item).as_deref(),
+        Some("https://github.com/up/repo/pull/7")
+    );
+    let calls = fs::read_to_string(fx.root.join("bin/gh.calls")).unwrap();
+    assert!(
+        calls.contains(
+            "pr create --repo up/repo --base main --head me:ai/good \
+             --title feat: fix the thing --body Body text."
+        ),
+        "{calls}"
+    );
+    assert!(!calls.contains("--draft"), "{calls}");
+    let pushed = Command::new("git")
+        .arg("--git-dir")
+        .arg(&bare)
+        .args(["show-ref", "--verify", "--quiet", "refs/heads/ai/good"])
+        .status()
+        .unwrap();
+    assert!(pushed.success(), "branch was not pushed");
+    // The draft lives outside the worktree, so it was never committed.
+    let tracked = Command::new("git")
+        .arg("-C")
+        .arg(fx.root.join("repo-worktrees/good"))
+        .args(["ls-files"])
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&tracked.stdout).contains(".pr"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_pull_request_still_closes_the_item() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    fs::write(fx.root.join("bin/gh.fail"), "").unwrap();
+    let (pool, item) = closed_item(&fx).await;
+
+    let result = fs::read_to_string(fx.root.join("work/closed/demo/good.result.md")).unwrap();
+    assert!(result.contains("- Pull request not opened: "), "{result}");
+    assert!(result.contains("boom from gh"), "{result}");
+    assert_eq!(pool.pull_request(&item), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_merged_pull_request_frees_the_worktree() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item) = closed_item(&fx).await;
+
+    // Open, and not in main: kept.
+    assert!(pool.clean_up_merged().await.unwrap().is_empty());
+    // Squash-merged upstream: git cannot tell, the pull request can.
+    fs::write(fx.root.join("bin/gh.merged"), "").unwrap();
+    assert_eq!(pool.clean_up_merged().await.unwrap(), vec![item]);
+    assert!(!fx.root.join("repo-worktrees/good").exists());
+    assert!(!branch_exists(&fx.root.join("repo"), "ai/good"));
 }

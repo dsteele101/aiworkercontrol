@@ -22,6 +22,28 @@ pub struct Project {
     /// It sees `$AIWC_REPO` (the repo) and `$AIWC_WORKTREE`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup: Option<String>,
+    /// Where finished work is pushed and its pull request opened; nothing is
+    /// pushed when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr: Option<PullRequests>,
+}
+
+/// How finished work is published: pushed to a remote, then proposed in a
+/// GitHub pull request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PullRequests {
+    /// The git remote branches are pushed to, e.g. `fork`. Its URL names the
+    /// GitHub owner the pull request comes from.
+    pub push_remote: String,
+    /// The GitHub repository the pull request is opened against, as
+    /// `owner/name`, e.g. `phase-rs/phase`.
+    pub repo: String,
+    /// The branch the pull request targets.
+    #[serde(default = "default_base_ref")]
+    pub base: String,
+    /// Open pull requests as drafts.
+    #[serde(default)]
+    pub draft: bool,
 }
 
 fn default_base_ref() -> String {
@@ -41,6 +63,7 @@ impl Project {
             repo: repo.into(),
             base_ref: default_base_ref(),
             setup: None,
+            pr: None,
         }
     }
 
@@ -75,6 +98,18 @@ impl Project {
     /// ```
     pub fn build_cache(&self, id: usize) -> PathBuf {
         self.worktree_root().join(format!(".target-{}", id + 1))
+    }
+
+    /// Where agents write pull request drafts: outside every worktree, so a
+    /// draft is never committed.
+    pub fn pr_draft_dir(&self) -> PathBuf {
+        self.worktree_root().join(".pr")
+    }
+
+    /// The pull request draft for an item: its title on the first line, then
+    /// a blank line and the description.
+    pub fn pr_draft_path(&self, item: &WorkItem) -> PathBuf {
+        self.pr_draft_dir().join(format!("{}.md", item.stem()))
     }
 
     /// The worktree an item is carried out in.

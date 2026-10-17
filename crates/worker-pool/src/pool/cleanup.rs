@@ -1,10 +1,11 @@
 //! Removing the worktrees of closed items, to free their space once their
 //! work is merged.
 
-use work_queue::{State as ItemState, WorkItem};
+use work_queue::{RESULT_SUFFIX, State as ItemState, WorkItem};
 
 use super::Supervisor;
-use crate::{PoolError, Project, git};
+use super::worker::PR_LINE;
+use crate::{PoolError, Project, git, github};
 
 /// What cleaning up an item did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,7 +19,8 @@ pub struct Cleanup {
 /// What cleaning up did to an item's `ai/<item>` branch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BranchOutcome {
-    /// Its changes were all in the base, so it was deleted.
+    /// Its changes were all in the base, or its pull request was merged,
+    /// so it was deleted.
     Deleted,
     /// The base lacks some of its changes (or has them only as a squash), so
     /// it was kept.
@@ -28,8 +30,9 @@ pub enum BranchOutcome {
 }
 
 impl Supervisor {
-    /// Removes a closed item's worktree, and deletes its branch if every
-    /// commit on it is already in the project's base.
+    /// Removes a closed item's worktree, and deletes its branch if it is
+    /// merged: every commit on it is already in the project's base, or its
+    /// pull request was merged (which also covers squash merges).
     pub async fn clean_up(&self, item: &WorkItem) -> Result<Cleanup, PoolError> {
         if !self.queue().list(ItemState::Closed)?.contains(item) {
             return Err(PoolError::NotClosed(item.clone()));
@@ -40,7 +43,7 @@ impl Supervisor {
         let branch = Project::branch(item);
         let outcome = if !git::branch_exists(&project.repo, &branch).await? {
             BranchOutcome::Missing
-        } else if git::is_merged(&project.repo, &project.base_ref, &branch).await? {
+        } else if self.is_merged(&project, item, &branch).await? {
             git::delete_branch(&project.repo, &branch).await?;
             BranchOutcome::Deleted
         } else {
@@ -67,13 +70,43 @@ impl Supervisor {
             }
             let branch = Project::branch(&item);
             let merged = !git::branch_exists(&project.repo, &branch).await?
-                || git::is_merged(&project.repo, &project.base_ref, &branch).await?;
+                || self.is_merged(&project, &item, &branch).await?;
             if merged {
                 self.clean_up(&item).await?;
                 cleaned.push(item);
             }
         }
         Ok(cleaned)
+    }
+
+    /// The pull request a closed item's result records, if one was opened.
+    pub fn pull_request(&self, item: &WorkItem) -> Option<String> {
+        let result = self
+            .queue()
+            .path(ItemState::Closed, item)
+            .with_file_name(format!("{}{RESULT_SUFFIX}", item.stem()));
+        let text = std::fs::read_to_string(result).ok()?;
+        text.lines()
+            .find_map(|line| line.strip_prefix(PR_LINE))
+            .map(|url| url.trim().to_string())
+    }
+
+    async fn is_merged(
+        &self,
+        project: &Project,
+        item: &WorkItem,
+        branch: &str,
+    ) -> Result<bool, PoolError> {
+        if git::is_merged(&project.repo, &project.base_ref, branch).await? {
+            return Ok(true);
+        }
+        match self.pull_request(item) {
+            Some(url) => {
+                let gh = github::program(self.config().cli_dir.as_deref());
+                github::is_merged(&gh, &url).await
+            }
+            None => Ok(false),
+        }
     }
 
     fn project(&self, item: &WorkItem) -> Result<Project, PoolError> {
