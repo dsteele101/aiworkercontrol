@@ -17,6 +17,11 @@ pub struct Project {
     /// The ref each item's branch is cut from.
     #[serde(default = "default_base_ref")]
     pub base_ref: String,
+    /// A shell command run in each new worktree before the agent starts, to
+    /// supply what a fresh checkout lacks (generated or gitignored files).
+    /// It sees `$AIWC_REPO` (the repo) and `$AIWC_WORKTREE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup: Option<String>,
 }
 
 fn default_base_ref() -> String {
@@ -35,6 +40,7 @@ impl Project {
             spec_dir: spec_dir.into(),
             repo: repo.into(),
             base_ref: default_base_ref(),
+            setup: None,
         }
     }
 
@@ -55,6 +61,20 @@ impl Project {
             .map_or_else(|| "repo".into(), |n| n.to_string_lossy());
         let parent = self.repo.parent().unwrap_or(&self.repo);
         parent.join(format!("{name}-worktrees"))
+    }
+
+    /// The build cache of worker `id` (from 0), reused across the items it
+    /// carries out so each build after its first is incremental.
+    ///
+    /// ```
+    /// use std::path::Path;
+    /// use worker_pool::Project;
+    ///
+    /// let project = Project::new("phase", "/specs/phase", "/dev/phase");
+    /// assert_eq!(project.build_cache(0), Path::new("/dev/phase-worktrees/.target-1"));
+    /// ```
+    pub fn build_cache(&self, id: usize) -> PathBuf {
+        self.worktree_root().join(format!(".target-{}", id + 1))
     }
 
     /// The worktree an item is carried out in.

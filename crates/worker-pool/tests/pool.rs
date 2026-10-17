@@ -22,6 +22,16 @@ case "$prompt" in
     echo 'something went wrong' >&2
     echo '{"type":"result","is_error":true,"result":"could not do it"}'
     exit 1 ;;
+  *NEEDS-DATA*)
+    if [ ! -f data.json ]; then
+      echo '{"type":"result","is_error":true,"result":"no data.json"}'
+      exit 1
+    fi
+    echo "$CARGO_TARGET_DIR" > cache.txt
+    git add cache.txt
+    git -c user.name=t -c user.email=t@example.com commit -qm "chore: record cache" >&2
+    echo '{"type":"result","is_error":false,"result":"used the data"}'
+    exit 0 ;;
   *NO-COMMIT*)
     echo '{"type":"result","is_error":false,"result":"looked around"}'
     exit 0 ;;
@@ -232,4 +242,50 @@ async fn new_recovers_orphaned_items() {
         queue.list(State::Open).unwrap(),
         vec![WorkItem::new("demo", "o.txt")]
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn setup_runs_in_the_worktree_and_builds_share_a_cache() {
+    let mut fx = fixture(&[("data.txt", "NEEDS-DATA")], 1);
+    // An untracked, generated file: absent from a fresh worktree.
+    fs::write(fx.root.join("repo/data.json"), "{}").unwrap();
+    fx.config.projects[0].setup = Some(r#"cp "$AIWC_REPO/data.json" "$AIWC_WORKTREE/""#.into());
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+    let s = wait_for(&pool, |s| {
+        !s.failed.is_empty() || queue.list(State::Closed).unwrap().len() == 1
+    })
+    .await;
+    pool.stop();
+    assert!(s.failed.is_empty(), "{:?}", s.failed);
+
+    let worktrees = fx.root.join("repo-worktrees");
+    let cache = fs::read_to_string(worktrees.join("data/cache.txt")).unwrap();
+    assert_eq!(
+        cache.trim(),
+        worktrees.join(".target-1").display().to_string()
+    );
+    assert!(worktrees.join(".target-1").is_dir());
+    let log = fs::read_to_string(worktrees.join("data.log")).unwrap();
+    assert!(log.starts_with("--- setup: cp"), "{log}");
+    assert!(log.contains(r#""result":"used the data""#), "{log}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failing_setup_fails_the_item_before_the_agent_runs() {
+    let mut fx = fixture(&[("a.txt", "Fix it")], 1);
+    fx.config.projects[0].setup = Some("echo boom >&2; exit 3".into());
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+    let s = wait_for(&pool, |s| !s.failed.is_empty()).await;
+    pool.stop();
+
+    let reason = &s.failed[0].1;
+    assert!(reason.starts_with("setup command failed"), "{reason}");
+    assert!(reason.ends_with("boom"), "{reason}");
+    let log = fs::read_to_string(fx.root.join("repo-worktrees/a.log")).unwrap();
+    assert!(!log.contains("system"), "agent ran: {log}");
+    assert_eq!(queue.list(State::Open).unwrap().len(), 1);
 }

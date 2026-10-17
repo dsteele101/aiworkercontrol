@@ -190,8 +190,8 @@ impl Settings {
             .projects
             .iter()
             .map(|p| Project {
-                spec_dir: root.join(&p.spec_dir),
-                repo: root.join(&p.repo),
+                spec_dir: resolve(root, &p.spec_dir),
+                repo: resolve(root, &p.repo),
                 ..p.clone()
             })
             .collect();
@@ -202,6 +202,13 @@ impl Settings {
             cli_dir: self.cli_dir.clone(),
         }
     }
+}
+
+/// `path` against `root`, with `..` and symlinks resolved when it exists,
+/// so `../phase` reads as `/home/me/dev/phase` in results and logs.
+fn resolve(root: &Path, path: &Path) -> PathBuf {
+    let joined = root.join(path);
+    fs::canonicalize(&joined).unwrap_or(joined)
 }
 
 #[cfg(test)]
@@ -268,5 +275,22 @@ mod tests {
         let mut p = ProviderSettings::new(Provider::OpenAi);
         p.api_key = "sk-secret".into();
         assert!(!format!("{p:?}").contains("sk-secret"));
+    }
+
+    #[test]
+    fn pool_config_normalizes_existing_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("control");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(dir.path().join("phase")).unwrap();
+        let mut settings = Settings::default();
+        settings
+            .projects
+            .push(Project::new("phase", "spec/phase", "../phase"));
+        let config = settings.pool_config(&root);
+        assert_eq!(
+            config.projects[0].repo,
+            fs::canonicalize(dir.path().join("phase")).unwrap()
+        );
     }
 }

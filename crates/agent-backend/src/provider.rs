@@ -168,6 +168,10 @@ pub struct Job<'a> {
     pub workdir: &'a Path,
     /// Further directories the agent may read and write, such as the spec dir.
     pub extra_dirs: &'a [PathBuf],
+    /// Directories the agent's commands must be able to write but that are
+    /// not part of its context, such as a build cache. Only sandboxing CLIs
+    /// (`codex`) are told about them.
+    pub writable_dirs: &'a [PathBuf],
 }
 
 /// A process to run: program, arguments, environment and working directory.
@@ -332,7 +336,7 @@ impl ProviderConfig {
             // Agents fetch card text and build dependencies over the network.
             .arg("-c")
             .arg("sandbox_workspace_write.network_access=true");
-        for dir in job.extra_dirs {
+        for dir in job.extra_dirs.iter().chain(job.writable_dirs) {
             run.arg("--add-dir").arg(dir.display().to_string());
         }
         if let Some(model) = non_empty(&self.model) {
@@ -407,6 +411,7 @@ mod tests {
             prompt: "do it",
             workdir: Path::new("/wt"),
             extra_dirs: &[],
+            writable_dirs: &[],
         }
     }
 

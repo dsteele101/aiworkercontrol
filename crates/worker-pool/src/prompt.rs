@@ -37,7 +37,8 @@ pub(crate) fn build(project: &Project, item: &WorkItem, body: &str) -> Result<St
          rules (CLAUDE.md, AGENTS.md, GEMINI.md or similar) wherever they apply.\n\n\
          You are in a dedicated git worktree on branch `{branch}`, cut from `{base}`.\n\
          - Implement the work item completely, with tests, in the repository's style.\n\
-         - Run the repository's own checks for what you changed.\n\
+         - Run the repository's own checks for what you changed. `CARGO_TARGET_DIR` \
+           points at a build cache kept between your runs; leave it as it is.\n\
          - When the spec files ask you to record notes in a spec file, edit that \
            file in place in the spec directory.\n\
          - Commit your work on `{branch}` using the repository's commit message \

@@ -194,12 +194,13 @@ async fn projects_are_validated() {
     fs::create_dir_all(app.dir.path().join("repo/.git")).unwrap();
     app.post(
         "/settings/projects",
-        "name=demo&spec_dir=spec/demo&repo=repo&base_ref=develop",
+        "name=demo&spec_dir=spec/demo&repo=repo&base_ref=develop&setup=make+data",
     )
     .await;
     let projects = app.saved().projects;
     assert_eq!(projects.len(), 1);
     assert_eq!(projects[0].base_ref, "develop");
+    assert_eq!(projects[0].setup.as_deref(), Some("make data"));
 
     app.post(
         "/settings/projects",
