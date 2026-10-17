@@ -19,7 +19,7 @@ axum = { workspace = true }
 maud = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 toml = { workspace = true }
 work-queue = { path = "../work-queue" }
 worker-pool = { path = "../worker-pool" }

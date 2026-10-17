@@ -37,8 +37,33 @@ async fn main() -> anyhow::Result<()> {
         root.display()
     );
     tokio::spawn(clean_up_merged(state.clone()));
-    axum::serve(listener, server::router(state)).await?;
+    axum::serve(listener, server::router(state))
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    // Returning drops the runtime and with it every worker's run, which
+    // stops each agent's whole process group. Items left in progress go back
+    // to open on the next start.
     Ok(())
+}
+
+/// Resolves on Ctrl-C or SIGTERM, so the server exits normally and its
+/// agents are stopped rather than left running unsupervised.
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut term) => {
+                term.recv().await;
+            }
+            // Without a SIGTERM handler, Ctrl-C still works.
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    tokio::select! {
+        _ = ctrl_c => {}
+        () = term => {}
+    }
+    println!("shutting down: stopping agents");
 }
 
 /// Every few minutes, frees the worktrees of closed items whose branches
