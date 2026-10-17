@@ -18,6 +18,7 @@ use agent_backend::ProviderConfig;
 use tokio::sync::{Notify, watch};
 use work_queue::{Queue, State as ItemState, WorkItem};
 
+use crate::usage::{self, UsageMap};
 use crate::{Activity, ItemMeta, PoolError, PoolSnapshot, Project, WorkerStatus};
 
 /// How often idle workers look for new items when nothing wakes them.
@@ -53,12 +54,14 @@ struct Shared {
     version: watch::Sender<u64>,
     state: Mutex<State>,
     wake: Notify,
+    usage_file: PathBuf,
 }
 
 #[derive(Debug, Default)]
 struct State {
     workers: BTreeMap<usize, Activity>,
     last_error: Option<String>,
+    usage: UsageMap,
 }
 
 impl Supervisor {
@@ -66,14 +69,20 @@ impl Supervisor {
     /// earlier run, which no worker can own any more, go back to `open`.
     pub fn new(queue: Queue, config: PoolConfig) -> Result<Self, PoolError> {
         review::recover_orphans(&queue)?;
+        let usage_file = usage::path(&queue);
+        let state = State {
+            usage: usage::load(&usage_file),
+            ..State::default()
+        };
         Ok(Self {
             shared: Arc::new(Shared {
                 queue,
                 config: watch::Sender::new(config),
                 running: watch::Sender::new(false),
                 version: watch::Sender::new(0),
-                state: Mutex::new(State::default()),
+                state: Mutex::new(state),
                 wake: Notify::new(),
+                usage_file,
             }),
         })
     }
@@ -133,6 +142,7 @@ impl Supervisor {
                 })
                 .collect(),
             last_error: state.last_error.clone(),
+            usage: usage::listed(&state.usage),
         }
     }
 

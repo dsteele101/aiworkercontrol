@@ -11,6 +11,7 @@ dashboard shows worker progress and holds the settings.
 |------|----------|
 | `crates/` | The Cargo workspace, one directory per crate |
 | `work/{open,inprogress,inreview,closed,hold}/<project>/` | Work items, one file each, moved between states with their `.result.md` / `.meta.json` sidecars |
+| `work/usage.json` | Each provider's latest reported plan usage (git-ignored) |
 | `spec/<project>/` | Per-project spec files handed to the agents |
 | `worktrees/` | Per-item git worktrees of target repos (git-ignored) |
 | `aiworkercontrol.toml` | Runtime settings, including API keys (git-ignored) |

@@ -1,12 +1,12 @@
 //! HTML pages.
 
 use std::collections::BTreeMap;
-use std::time::SystemTime;
+use std::time::{SystemTime, UNIX_EPOCH};
 
-use agent_backend::{AgentEvent, AuthStatus, Cli, Provider};
+use agent_backend::{AgentEvent, AuthStatus, Cli, Provider, UsageWindow};
 use maud::{DOCTYPE, Markup, html};
 use work_queue::{State as ItemState, WorkItem};
-use worker_pool::Activity;
+use worker_pool::{Activity, ProviderUsage};
 
 use crate::routes::{MAX_TURNS, MAX_WORKERS};
 use crate::{AppState, Settings};
@@ -157,6 +157,9 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
         @if let Some(error) = &snapshot.last_error {
             p.bad { "Could not read the work queue: " (error) }
         }
+
+        h2 { "Plan usage" }
+        (usage_panel(&snapshot.usage))
 
         h2 { "Workers" }
         @if snapshot.workers.is_empty() {
@@ -489,6 +492,7 @@ fn event_line(event: &AgentEvent) -> Markup {
             AgentEvent::Text(text) => (clip(text)),
             AgentEvent::ToolUse { name, detail } => { code { (name) } " " (clip(detail)) },
             AgentEvent::Notice(text) => span.muted { (clip(text)) },
+            AgentEvent::Usage(_) => span.muted { "Plan usage updated" },
             AgentEvent::Finished { ok: true, .. } => span.ok { "Agent finished" },
             AgentEvent::Finished { ok: false, summary } => {
                 span.bad { "Agent failed" @if let Some(s) = summary { ": " (clip(s)) } }
@@ -502,6 +506,58 @@ fn clip(text: &str) -> String {
     match text.char_indices().nth(EVENT_CHARS) {
         Some((cut, _)) => format!("{}…", &text[..cut]),
         None => text.to_string(),
+    }
+}
+
+fn usage_panel(usage: &[ProviderUsage]) -> Markup {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    html! {
+        div.panel {
+            @if usage.is_empty() {
+                p.muted { "No usage reported yet. Claude reports its plan usage during each run; Codex and Gemini don't report theirs." }
+            } @else {
+                table {
+                    tr { th { "Provider" } th { "Current window" } th { "Week" } }
+                    @for u in usage {
+                        tr {
+                            td { (u.provider.label()) }
+                            td { (usage_window(u.usage.session, now)) }
+                            td { (usage_window(u.usage.weekly, now)) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn usage_window(window: Option<UsageWindow>, now: u64) -> Markup {
+    html! {
+        @match window {
+            None => span.muted { "not reported" },
+            Some(w) => {
+                strong { (w.percent_at(now)) "%" }
+                @if let Some(reset) = w.resets_at.filter(|r| *r > now) {
+                    " " span.muted { "· resets in " (duration(reset - now)) }
+                } @else if w.resets_at.is_some() {
+                    " " span.muted { "· reset since last report" }
+                }
+            }
+        }
+    }
+}
+
+/// A rough length of time: `3d 4h`, `2h 14m` or `9m`.
+fn duration(secs: u64) -> String {
+    let (days, hours, mins) = (secs / 86_400, secs / 3_600 % 24, secs / 60 % 60);
+    if days > 0 {
+        format!("{days}d {hours}h")
+    } else if hours > 0 {
+        format!("{hours}h {mins}m")
+    } else {
+        format!("{mins}m")
     }
 }
 

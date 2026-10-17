@@ -8,11 +8,11 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use agent_backend::{Auth, Provider, ProviderConfig};
+use agent_backend::{Auth, PlanUsage, Provider, ProviderConfig, UsageWindow};
 use work_queue::{Queue, State, WorkItem};
 use worker_pool::{
-    Activity, BranchOutcome, Cleanup, PoolConfig, PoolError, PoolSnapshot, Project, PullRequests,
-    ReviewChange, Supervisor,
+    Activity, BranchOutcome, Cleanup, PoolConfig, PoolError, PoolSnapshot, Project, ProviderUsage,
+    PullRequests, ReviewChange, Supervisor,
 };
 
 /// Stands in for `gh`: records its arguments, and answers `pr list`,
@@ -77,6 +77,9 @@ case "$prompt" in
   *NO-COMMIT*)
     echo '{"type":"result","is_error":false,"result":"looked around"}'
     exit 0 ;;
+  *REPORTS-USAGE*)
+    echo '{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.5,"resetsAt":4000000000}}}}'
+    echo '{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.64,"resetsAt":4000000000},"seven_day":{"utilization":0.09,"resetsAt":4100000000}}}}' ;;
 esac
 draft=$(printf '%s\n' "$prompt" | sed -n 's/.* to \(\/[^:]*\/\.pr\/[^:]*\.md\):.*/\1/p' | head -n 1)
 if [ -n "$draft" ]; then printf 'feat: fix the thing\n\nBody text.\n' > "$draft"; fi
@@ -248,6 +251,38 @@ async fn closes_successful_items_and_holds_failed_ones() {
         Some("used 1 of 1 turns; the last one failed: agent failed: could not do it")
     );
     assert!(queue.list(State::Open).unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reported_plan_usage_is_kept_across_restarts() {
+    let fx = fixture(&[("usage.txt", "REPORTS-USAGE")], 1);
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+    wait_for(&pool, |s| {
+        queue.list(State::Closed).unwrap().len() == 1 && idle(s)
+    })
+    .await;
+    pool.stop();
+
+    let expected = vec![ProviderUsage {
+        provider: Provider::Anthropic,
+        usage: PlanUsage {
+            session: Some(UsageWindow {
+                percent: 64,
+                resets_at: Some(4_000_000_000),
+            }),
+            weekly: Some(UsageWindow {
+                percent: 9,
+                resets_at: Some(4_100_000_000),
+            }),
+        },
+    }];
+    assert_eq!(pool.snapshot().usage, expected);
+    assert!(fx.root.join("work/usage.json").is_file());
+
+    let restarted = Supervisor::new(queue, fx.config.clone()).unwrap();
+    assert_eq!(restarted.snapshot().usage, expected);
 }
 
 #[tokio::test(flavor = "multi_thread")]
