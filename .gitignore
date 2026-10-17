@@ -1,0 +1,23 @@
+/target
+**/*.rs.bk
+
+# Personal Claude Code overrides. .claude/settings.json is committed and shared;
+# this is the per-developer counterpart and must not be.
+.claude/settings.local.json
+
+# Secrets. Never commit these; .dockerignore excludes them from image layers too.
+.env
+.env.*
+*.pem
+*.key
+
+# The agentcfg binary `just agentcfg` fetches. Downloaded per pin, never
+# committed — the pin in .agentprofile.yml is the thing under version control.
+/.agentcfg/
+
+# Coverage artefacts from `cargo llvm-cov`.
+*.profraw
+*.profdata
+/lcov.info
+
+# Cargo.lock is deliberately NOT ignored — see the note in README.md.

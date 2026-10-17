@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "jq -r '.tool_input.file_path // .tool_response.filePath // empty' | { read -r f; case \"$f\" in *.rs) rustfmt \"$f\";; esac; } 2>/dev/null || true",
+            "statusMessage": "rustfmt",
+            "timeout": 30,
+            "type": "command"
+          }
+        ],
+        "matcher": "Edit|Write"
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "cargo check --workspace --all-targets --quiet 2>/dev/null || printf '%s' '{\"systemMessage\":\"cargo check --workspace is failing - the workspace does not compile. See AGENTS.md: never leave the build broken.\"}'",
+            "statusMessage": "cargo check",
+            "timeout": 120,
+            "type": "command"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "Bash(cargo build:*)",
+      "Bash(cargo check:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(cargo fmt:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo nextest:*)",
+      "Bash(cargo doc:*)",
+      "Bash(cargo tree:*)",
+      "Bash(cargo metadata:*)",
+      "Bash(cargo deny:*)",
+      "Bash(cargo audit:*)",
+      "Bash(cargo llvm-cov:*)",
+      "Bash(cargo lint:*)",
+      "Bash(cargo fmt-check:*)",
+      "Bash(cargo check-all:*)",
+      "Bash(cargo --version)",
+      "Bash(rustc --version)",
+      "Bash(rustfmt:*)",
+      "Bash(just:*)"
+    ],
+    "deny": [
+      "Bash(cargo publish:*)",
+      "Bash(cargo yank:*)",
+      "Bash(cargo owner:*)",
+      "Bash(cargo login:*)",
+      "Read(./.env)",
+      "Read(./.env.*)"
+    ]
+  }
+}

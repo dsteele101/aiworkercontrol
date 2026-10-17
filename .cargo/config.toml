@@ -1,0 +1,22 @@
+# Cargo aliases mirroring the justfile, for contributors who would rather not
+# install `just`. Keep the two in sync.
+# Cargo aliases can only wrap a single cargo subcommand, so there is no `cargo ci`
+# equivalent of `just ci` — run the four in sequence, or install `just`.
+[alias]
+lint = "clippy --workspace --all-targets --all-features -- -D warnings"
+fmt-check = "fmt --all -- --check"
+check-all = "check --workspace --all-targets"
+
+# A faster linker is the single biggest local iteration-speed lever on a large
+# dependency tree. Left commented because neither mold nor lld is installed by
+# default — uncomment the block matching what you have.
+#
+# mold (install: apt install mold / brew install mold)
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+#
+# lld (ships with the LLVM toolchain)
+# [target.x86_64-unknown-linux-gnu]
+# linker = "clang"
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
