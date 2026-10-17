@@ -101,6 +101,9 @@ pub(crate) async fn run(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Its own process group, so the agent's children (background builds,
+        // test runs) can be stopped along with it; see `ProcessGroup`.
+        .process_group(0)
         .kill_on_drop(true);
     for key in &run.env_remove {
         command.env_remove(key);
@@ -112,6 +115,7 @@ pub(crate) async fn run(
         program: program.display().to_string(),
         source,
     })?;
+    let group = child.id().map(ProcessGroup);
 
     let mut log_file = tokio::fs::OpenOptions::new()
         .create(true)
@@ -129,9 +133,21 @@ pub(crate) async fn run(
         buf
     });
 
+    // Wait for the agent while reading its output. Background processes it
+    // started may hold its stdout and stderr open, so the pipes only close
+    // once its group is killed, right after the agent itself exits.
+    let stdout = child.stdout.take();
+    let exited = async {
+        let status = child.wait().await;
+        drop(group);
+        status
+    };
     let mut finished = None;
     let mut last_text = None;
-    if let Some(stdout) = child.stdout.take() {
+    let read = async {
+        let Some(stdout) = stdout else {
+            return Ok(());
+        };
         let mut lines = BufReader::new(stdout).lines();
         while let Some(line) = lines
             .next_line()
@@ -153,9 +169,11 @@ pub(crate) async fn run(
                 on_event(event);
             }
         }
-    }
-
-    let status = child.wait().await.map_err(PoolError::io("wait", log))?;
+        Ok::<(), PoolError>(())
+    };
+    let (status, read) = tokio::join!(exited, read);
+    read?;
+    let status = status.map_err(PoolError::io("wait", log))?;
     let stderr = stderr_task.await.unwrap_or_default();
     log_file
         .write_all(b"\n--- stderr ---\n")
@@ -178,4 +196,23 @@ fn tail(text: &str) -> String {
         .find(|i| text.is_char_boundary(*i))
         .unwrap_or(text.len());
     text[start..].trim().to_string()
+}
+
+/// A running agent's process group, killed whole when dropped: when the run
+/// ends, so nothing it left running in the background outlives it, and when
+/// the run is abandoned (the app shutting down), so the agent does not run
+/// on unsupervised. `kill_on_drop` alone would reach only the agent itself.
+#[derive(Debug)]
+struct ProcessGroup(u32);
+
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        // The group id is the agent's pid (`process_group(0)`). Errors are
+        // ignored: an empty group means there is nothing left to stop.
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", "--", &format!("-{}", self.0)])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
 }

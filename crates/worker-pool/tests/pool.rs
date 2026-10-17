@@ -34,6 +34,11 @@ case "$prompt" in
     git -c user.name=t -c user.email=t@example.com commit -qm "chore: record cache" >&2
     echo '{"type":"result","is_error":false,"result":"used the data"}'
     exit 0 ;;
+  *LEAVES-CHILD*)
+    sleep 600 &
+    echo $! > "$AIWC_CHILD_PID_FILE"
+    echo '{"type":"result","is_error":false,"result":"left a child"}'
+    exit 0 ;;
   *NO-COMMIT*)
     echo '{"type":"result","is_error":false,"result":"looked around"}'
     exit 0 ;;
@@ -407,4 +412,41 @@ async fn only_closed_items_can_be_cleaned_up() {
         .await
         .unwrap_err();
     assert!(matches!(err, PoolError::NotClosed(_)), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn background_processes_of_an_agent_are_stopped_with_it() {
+    let fx = fixture(&[("child.txt", "LEAVES-CHILD")], 1);
+    let pid_file = fx.root.join("child.pid");
+    // Wrap the fake agent to tell it where to record its child's pid.
+    let bin = fx.root.join("bin");
+    let real = bin.join("claude-real");
+    fs::rename(bin.join("claude"), &real).unwrap();
+    fs::write(
+        bin.join("claude"),
+        format!(
+            "#!/bin/sh\nAIWC_CHILD_PID_FILE={} exec {} \"$@\"\n",
+            pid_file.display(),
+            real.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue, fx.config.clone()).unwrap();
+    pool.start();
+    // The agent commits nothing, so the item fails; the run has ended.
+    wait_for(&pool, |s| !s.failed.is_empty()).await;
+    pool.stop();
+
+    let pid = fs::read_to_string(&pid_file).unwrap();
+    let alive = Path::new("/proc").join(pid.trim()).join("stat");
+    // A killed child may linger briefly as a zombie until reaped.
+    let state = fs::read_to_string(&alive).unwrap_or_default();
+    assert!(
+        state.is_empty() || state.split_whitespace().nth(2) == Some("Z"),
+        "background child {} still running: {state}",
+        pid.trim()
+    );
 }
