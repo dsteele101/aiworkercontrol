@@ -340,6 +340,18 @@ pub(crate) fn settings(
                                 label { "Model" }
                                 input type="text" name="model" value=(p.model) placeholder="CLI default";
                             }
+                            @let levels = p.provider.cli().effort_levels();
+                            @if !levels.is_empty() {
+                                div {
+                                    label { "Effort" }
+                                    select name="effort" {
+                                        option value="" selected[p.effort.is_empty()] { "CLI default" }
+                                        @for level in levels {
+                                            option value=(level) selected[p.effort == *level] { (level) }
+                                        }
+                                    }
+                                }
+                            }
                             @if matches!(p.provider, Provider::Deepseek | Provider::OpenAiCompatible) {
                                 div {
                                     label { "Base URL" }

@@ -56,6 +56,9 @@ pub struct ProviderSettings {
     /// The model; the CLI's default when empty.
     #[serde(default)]
     pub model: String,
+    /// The effort level; the CLI's default when empty.
+    #[serde(default)]
+    pub effort: String,
     /// The endpoint, for Deepseek and OpenAI-compatible.
     #[serde(default)]
     pub base_url: String,
@@ -71,6 +74,7 @@ impl std::fmt::Debug for ProviderSettings {
                 &if self.api_key.is_empty() { "" } else { "<set>" },
             )
             .field("model", &self.model)
+            .field("effort", &self.effort)
             .field("base_url", &self.base_url)
             .finish()
     }
@@ -83,6 +87,7 @@ impl ProviderSettings {
             use_api_key: !provider.supports_plan(),
             api_key: String::new(),
             model: String::new(),
+            effort: String::new(),
             base_url: String::new(),
         }
     }
@@ -101,6 +106,7 @@ impl ProviderSettings {
             provider: self.provider,
             auth,
             model: opt(&self.model),
+            effort: opt(&self.effort),
             base_url: opt(&self.base_url),
         }
     }

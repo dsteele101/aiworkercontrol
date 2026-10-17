@@ -94,6 +94,22 @@ impl Cli {
         }
     }
 
+    /// The effort levels the CLI accepts, lowest first; empty when it has no
+    /// effort setting.
+    ///
+    /// ```
+    /// use agent_backend::Cli;
+    /// assert!(Cli::Claude.effort_levels().contains(&"max"));
+    /// assert!(Cli::Gemini.effort_levels().is_empty());
+    /// ```
+    pub fn effort_levels(self) -> &'static [&'static str] {
+        match self {
+            Cli::Claude => &["low", "medium", "high", "xhigh", "max"],
+            Cli::Codex => &["minimal", "low", "medium", "high", "xhigh"],
+            Cli::Gemini => &[],
+        }
+    }
+
     /// Env vars that would make the CLI use an API key instead of the plan
     /// login, so a plan run must not inherit them.
     fn key_env_vars(self) -> &'static [&'static str] {
@@ -137,6 +153,10 @@ pub struct ProviderConfig {
     /// The model to request; the CLI's default when `None`.
     #[serde(default)]
     pub model: Option<String>,
+    /// The effort level, one of the CLI's [`Cli::effort_levels`]; the CLI's
+    /// default when `None`.
+    #[serde(default)]
+    pub effort: Option<String>,
     /// The endpoint, for Deepseek (optional) and OpenAI-compatible (required).
     #[serde(default)]
     pub base_url: Option<String>,
@@ -157,6 +177,9 @@ pub enum ConfigError {
     /// An OpenAI-compatible endpoint needs a model name.
     #[error("OpenAI-compatible provider needs a model")]
     MissingModel,
+    /// The provider's CLI does not accept this effort level.
+    #[error("{} does not accept effort level {:?}", .0.label(), .1)]
+    UnsupportedEffort(Provider, String),
 }
 
 /// The work a single agent run should do.
@@ -239,6 +262,7 @@ impl ProviderConfig {
             provider,
             auth,
             model: None,
+            effort: None,
             base_url: None,
         }
     }
@@ -261,6 +285,11 @@ impl ProviderConfig {
                 return Err(ConfigError::MissingKey(provider));
             }
             _ => {}
+        }
+        if let Some(effort) = non_empty(&self.effort)
+            && !provider.cli().effort_levels().contains(&effort)
+        {
+            return Err(ConfigError::UnsupportedEffort(provider, effort.to_string()));
         }
         if provider == Provider::OpenAiCompatible {
             if non_empty(&self.base_url).is_none() {
@@ -309,6 +338,9 @@ impl ProviderConfig {
         for dir in job.extra_dirs {
             run.arg("--add-dir").arg(dir.display().to_string());
         }
+        if let Some(effort) = non_empty(&self.effort) {
+            run.arg("--effort").arg(effort);
+        }
         if self.provider == Provider::Deepseek {
             let model = non_empty(&self.model).unwrap_or(DEEPSEEK_MODEL);
             let base_url = non_empty(&self.base_url).unwrap_or(DEEPSEEK_BASE_URL);
@@ -341,6 +373,10 @@ impl ProviderConfig {
         }
         if let Some(model) = non_empty(&self.model) {
             run.arg("--model").arg(model);
+        }
+        if let Some(effort) = non_empty(&self.effort) {
+            run.arg("-c")
+                .arg(format!("model_reasoning_effort={}", toml_string(effort)));
         }
         if self.provider == Provider::OpenAiCompatible {
             let base_url = non_empty(&self.base_url).unwrap_or_default();
@@ -457,6 +493,23 @@ mod tests {
         assert_eq!(config.validate(), Err(ConfigError::MissingBaseUrl));
         config.base_url = Some("http://x".into());
         assert_eq!(config.validate(), Err(ConfigError::MissingModel));
+    }
+
+    #[test]
+    fn effort_must_be_one_of_the_cli_levels() {
+        let mut config = ProviderConfig::new(Provider::Gemini, Auth::Plan);
+        config.effort = Some("high".into());
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::UnsupportedEffort(
+                Provider::Gemini,
+                "high".into()
+            ))
+        );
+        config.provider = Provider::Anthropic;
+        assert_eq!(config.validate(), Ok(()));
+        config.effort = Some("minimal".into());
+        assert!(config.validate().is_err());
     }
 
     #[test]
