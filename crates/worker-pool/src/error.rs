@@ -47,6 +47,12 @@ pub enum PoolError {
         /// The end of what it printed.
         output: String,
     },
+    /// The item's project is not configured.
+    #[error("no project named {0} is configured")]
+    UnknownProject(String),
+    /// Only closed items can be cleaned up; others may still be in use.
+    #[error("{0} is not closed")]
+    NotClosed(work_queue::WorkItem),
     /// The agent reported failure or exited unsuccessfully.
     #[error("agent failed: {0}")]
     AgentFailed(String),

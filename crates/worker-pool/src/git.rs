@@ -15,11 +15,7 @@ pub(crate) async fn prepare_worktree(
     path: &Path,
     branch: &str,
 ) -> Result<(), PoolError> {
-    if path.exists() {
-        let path = path.to_string_lossy();
-        git(repo, &["worktree", "remove", "--force", &path]).await?;
-    }
-    git(repo, &["worktree", "prune"]).await?;
+    remove_worktree(repo, path).await?;
     if let Some(parent) = path.parent() {
         tokio::fs::create_dir_all(parent)
             .await
@@ -29,6 +25,49 @@ pub(crate) async fn prepare_worktree(
     git(repo, &["worktree", "add", "-B", branch, &path, base])
         .await
         .map(drop)
+}
+
+/// Removes the worktree at `path` if there is one, discarding anything
+/// uncommitted in it, and forgets any worktree whose folder is gone.
+/// Returns whether a worktree folder was removed.
+pub(crate) async fn remove_worktree(repo: &Path, path: &Path) -> Result<bool, PoolError> {
+    let existed = path.exists();
+    if existed {
+        let path = path.to_string_lossy();
+        git(repo, &["worktree", "remove", "--force", &path]).await?;
+    }
+    git(repo, &["worktree", "prune"]).await?;
+    Ok(existed)
+}
+
+/// Whether `repo` has a local branch named `branch`.
+pub(crate) async fn branch_exists(repo: &Path, branch: &str) -> Result<bool, PoolError> {
+    let reference = format!("refs/heads/{branch}");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["show-ref", "--verify", "--quiet", &reference])
+        .status()
+        .await
+        .map_err(|source| PoolError::Spawn {
+            program: "git".into(),
+            source,
+        })?;
+    Ok(status.success())
+}
+
+/// Whether every commit on `branch` is in `base`, either itself (a merge or
+/// fast-forward) or as an identical change (a rebase or cherry-pick). A
+/// squash of several commits is not recognized.
+pub(crate) async fn is_merged(repo: &Path, base: &str, branch: &str) -> Result<bool, PoolError> {
+    let out = git(repo, &["cherry", base, branch]).await?;
+    Ok(!out.lines().any(|line| line.starts_with('+')))
+}
+
+/// Deletes `branch`. Callers check [`is_merged`] first: `git branch -d`
+/// would judge against the repo's current branch rather than the base.
+pub(crate) async fn delete_branch(repo: &Path, branch: &str) -> Result<(), PoolError> {
+    git(repo, &["branch", "-D", branch]).await.map(drop)
 }
 
 /// The commits on the worktree's branch that `base` does not have, newest

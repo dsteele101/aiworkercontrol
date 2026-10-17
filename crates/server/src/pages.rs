@@ -120,6 +120,13 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
         _ => "plan login",
     };
     let known = |item: &WorkItem| settings.projects.iter().any(|p| p.name == item.project);
+    let pool_projects = app.pool().config().projects;
+    let has_worktree = |item: &WorkItem| {
+        pool_projects
+            .iter()
+            .find(|p| p.name == item.project)
+            .is_some_and(|p| p.worktree_path(item).exists())
+    };
 
     let body = html! {
         div.panel.bar {
@@ -214,7 +221,16 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                     tr {
                         td { (item) }
                         td.ok { "closed" }
-                        td { a href={ "/result?item=" (url_encode(&item.to_string())) } { "Result" } }
+                        td {
+                            a href={ "/result?item=" (url_encode(&item.to_string())) } { "Result" }
+                            @if has_worktree(item) {
+                                " "
+                                form.inline method="post" action="/cleanup" {
+                                    input type="hidden" name="item" value=(item);
+                                    button title="Remove the worktree; delete the branch too if it is merged" { "Clean up" }
+                                }
+                            }
+                        }
                     }
                 }
             }

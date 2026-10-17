@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use agent_backend::{Auth, Provider, ProviderConfig};
 use work_queue::{Queue, State, WorkItem};
-use worker_pool::{Activity, PoolConfig, PoolSnapshot, Project, Supervisor};
+use worker_pool::{
+    Activity, BranchOutcome, Cleanup, PoolConfig, PoolError, PoolSnapshot, Project, Supervisor,
+};
 
 /// Stands in for `claude -p <prompt> …`: commits a file in its working
 /// directory and reports success, unless the prompt asks it to fail.
@@ -288,4 +290,121 @@ async fn failing_setup_fails_the_item_before_the_agent_runs() {
     let log = fs::read_to_string(fx.root.join("repo-worktrees/a.log")).unwrap();
     assert!(!log.contains("system"), "agent ran: {log}");
     assert_eq!(queue.list(State::Open).unwrap().len(), 1);
+}
+
+/// Runs one successful item to `closed` and returns the pool, stopped.
+async fn closed_item(fx: &Fixture) -> (Supervisor, WorkItem) {
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+    wait_for(&pool, |_| queue.list(State::Closed).unwrap().len() == 1).await;
+    pool.stop();
+    (pool, WorkItem::new("demo", "good.txt"))
+}
+
+fn branch_exists(repo: &Path, branch: &str) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args([
+            "show-ref",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ])
+        .status()
+        .unwrap()
+        .success()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merged_branches_are_cleaned_up_and_unmerged_ones_are_not() {
+    let fx = fixture(&[("good.txt", "Fix it")], 1);
+    let (pool, item) = closed_item(&fx).await;
+    let repo = fx.root.join("repo");
+    let worktree = fx.root.join("repo-worktrees/good");
+
+    // Not merged yet: nothing to do.
+    assert!(pool.clean_up_merged().await.unwrap().is_empty());
+    assert!(worktree.is_dir());
+
+    sh(&repo, &["merge", "-q", "--ff-only", "ai/good"]);
+    assert_eq!(pool.clean_up_merged().await.unwrap(), vec![item]);
+    assert!(!worktree.exists());
+    assert!(!branch_exists(&repo, "ai/good"));
+    assert!(
+        fx.root.join("repo-worktrees/good.log").is_file(),
+        "log is kept"
+    );
+
+    // Nothing left to clean.
+    assert!(pool.clean_up_merged().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cherry_picked_branches_count_as_merged() {
+    let fx = fixture(&[("good.txt", "Fix it")], 1);
+    let (pool, _item) = closed_item(&fx).await;
+    let repo = fx.root.join("repo");
+    // A new commit on main first, so the pick cannot fast-forward.
+    fs::write(repo.join("other"), "x").unwrap();
+    sh(&repo, &["add", "other"]);
+    sh(
+        &repo,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "other",
+        ],
+    );
+    sh(
+        &repo,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "cherry-pick",
+            "ai/good",
+        ],
+    );
+
+    assert_eq!(pool.clean_up_merged().await.unwrap().len(), 1);
+    assert!(!branch_exists(&repo, "ai/good"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn manual_clean_up_keeps_an_unmerged_branch() {
+    let fx = fixture(&[("good.txt", "Fix it")], 1);
+    let (pool, item) = closed_item(&fx).await;
+    let repo = fx.root.join("repo");
+
+    let done = pool.clean_up(&item).await.unwrap();
+    assert_eq!(
+        done,
+        Cleanup {
+            worktree_removed: true,
+            branch: BranchOutcome::KeptUnmerged
+        }
+    );
+    assert!(!fx.root.join("repo-worktrees/good").exists());
+    assert!(
+        branch_exists(&repo, "ai/good"),
+        "unmerged work must survive"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_closed_items_can_be_cleaned_up() {
+    let fx = fixture(&[("good.txt", "Fix it")], 1);
+    let pool = Supervisor::new(Queue::new(fx.root.join("work")), fx.config.clone()).unwrap();
+    let err = pool
+        .clean_up(&WorkItem::new("demo", "good.txt"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::NotClosed(_)), "{err}");
 }

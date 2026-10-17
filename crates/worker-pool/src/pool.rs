@@ -1,6 +1,9 @@
 //! The supervisor: owns the shared pool state and spawns the workers.
 
+mod cleanup;
 mod worker;
+
+pub use cleanup::{BranchOutcome, Cleanup};
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;

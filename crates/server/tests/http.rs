@@ -238,3 +238,22 @@ async fn settings_file_is_not_written_by_reads() {
     let after = fs::read_to_string(app.dir.path().join(SETTINGS_FILE)).unwrap();
     assert_eq!(before, after);
 }
+
+#[tokio::test]
+async fn clean_up_refuses_items_that_are_not_closed() {
+    let app = app();
+    let open = app.dir.path().join("work/open/demo");
+    fs::create_dir_all(&open).unwrap();
+    fs::write(open.join("a.txt"), "item").unwrap();
+
+    assert_eq!(
+        app.post("/cleanup", "item=demo%2Fa.txt").await,
+        StatusCode::SEE_OTHER
+    );
+    let (_, page) = app.get("/").await;
+    assert!(
+        page.contains("Could not clean up demo/a.txt: demo/a.txt is not closed"),
+        "{page}"
+    );
+    assert!(open.join("a.txt").is_file());
+}
