@@ -319,3 +319,35 @@ async fn max_turns_is_saved_and_clamped() {
     app.post("/settings/max-turns", "max_turns=0").await;
     assert_eq!(app.saved().max_turns, 1);
 }
+
+#[tokio::test]
+async fn in_review_items_show_their_pull_request_and_status() {
+    let app = app();
+    let review = app.dir.path().join("work/inreview/demo");
+    fs::create_dir_all(&review).unwrap();
+    fs::write(review.join("a.txt"), "item").unwrap();
+    fs::write(review.join("a.result.md"), "# reworked once").unwrap();
+    fs::write(
+        review.join("a.meta.json"),
+        r#"{"turns": 2, "pr_url": "https://github.com/up/repo/pull/7", "needs_rework": "Rename it."}"#,
+    )
+    .unwrap();
+    fs::write(review.join("b.txt"), "item").unwrap();
+    fs::write(
+        review.join("b.meta.json"),
+        r#"{"turns": 1, "pr_url": "https://github.com/up/repo/pull/8"}"#,
+    )
+    .unwrap();
+
+    let (_, page) = app.get("/").await;
+    assert!(
+        page.contains("changes requested; waiting for a worker (2 of 3 turns used)"),
+        "{page}"
+    );
+    assert!(page.contains("in review (1 of 3 turns used)"), "{page}");
+    assert!(page.contains(r#"href="https://github.com/up/repo/pull/7""#));
+
+    let (status, body) = app.get("/result?item=demo%2Fa.txt").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("# reworked once"));
+}

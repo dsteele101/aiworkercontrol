@@ -14,6 +14,8 @@ use std::path::PathBuf;
 use anyhow::{Context, bail};
 
 const DEFAULT_PORT: u16 = 8787;
+/// How often the pull requests of items in review are checked.
+const REVIEW_INTERVAL: std::time::Duration = std::time::Duration::from_secs(180);
 /// How often merged worktrees are looked for.
 const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
 
@@ -37,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
         root.display()
     );
     tokio::spawn(clean_up_merged(state.clone()));
+    tokio::spawn(watch_reviews(state.clone()));
     axum::serve(listener, server::router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -64,6 +67,24 @@ async fn shutdown_signal() {
         () = term => {}
     }
     println!("shutting down: stopping agents");
+}
+
+/// Every few minutes, checks the pull requests of items in review: merged
+/// ones close, closed ones hold, and requested changes or failing CI queue a
+/// rework for the next free worker.
+async fn watch_reviews(state: server::AppState) {
+    let mut every = tokio::time::interval(REVIEW_INTERVAL);
+    loop {
+        every.tick().await;
+        match state.pool().check_reviews().await {
+            Ok(changes) => {
+                for (item, change) in changes {
+                    println!("review of {item}: {change:?}");
+                }
+            }
+            Err(e) => eprintln!("review watcher: {e}"),
+        }
+    }
 }
 
 /// Every few minutes, frees the worktrees of closed items whose branches

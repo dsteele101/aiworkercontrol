@@ -1,9 +1,12 @@
 //! The supervisor: owns the shared pool state and spawns the workers.
 
 mod cleanup;
+mod review;
+mod run;
 mod worker;
 
 pub use cleanup::{BranchOutcome, Cleanup};
+pub use review::ReviewChange;
 
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
@@ -62,7 +65,7 @@ impl Supervisor {
     /// Creates a stopped pool over `queue`. Items left `inprogress` by an
     /// earlier run, which no worker can own any more, go back to `open`.
     pub fn new(queue: Queue, config: PoolConfig) -> Result<Self, PoolError> {
-        queue.recover_orphans()?;
+        review::recover_orphans(&queue)?;
         Ok(Self {
             shared: Arc::new(Shared {
                 queue,
@@ -101,18 +104,6 @@ impl Supervisor {
     /// The current settings.
     pub fn config(&self) -> PoolConfig {
         self.shared.config.borrow().clone()
-    }
-
-    /// Returns an item on hold to the agents with a fresh turn count.
-    pub fn resume(&self, item: &WorkItem) -> Result<(), PoolError> {
-        let queue = &self.shared.queue;
-        if !queue.list(ItemState::Hold)?.contains(item) {
-            return Err(PoolError::NotOnHold(item.clone()));
-        }
-        ItemMeta::default().save(queue, ItemState::Hold, item)?;
-        queue.transition(item, ItemState::Hold, ItemState::Open)?;
-        self.shared.changed();
-        Ok(())
     }
 
     /// What the pool has recorded about `item` while it is in `state`.

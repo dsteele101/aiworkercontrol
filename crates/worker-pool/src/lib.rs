@@ -31,6 +31,6 @@ mod status;
 
 pub use error::PoolError;
 pub use meta::ItemMeta;
-pub use pool::{BranchOutcome, Cleanup, PoolConfig, Supervisor};
+pub use pool::{BranchOutcome, Cleanup, PoolConfig, ReviewChange, Supervisor};
 pub use project::{Project, PullRequests};
 pub use status::{ActiveJob, Activity, PoolSnapshot, WorkerStatus};

@@ -12,7 +12,7 @@ use agent_backend::{Auth, Provider, ProviderConfig};
 use work_queue::{Queue, State, WorkItem};
 use worker_pool::{
     Activity, BranchOutcome, Cleanup, PoolConfig, PoolError, PoolSnapshot, Project, PullRequests,
-    Supervisor,
+    ReviewChange, Supervisor,
 };
 
 /// Stands in for `gh`: records its arguments, and answers `pr list`,
@@ -26,7 +26,15 @@ case "$1 $2" in
     if [ -f "$here/gh.fail" ]; then echo 'boom from gh' >&2; exit 1; fi
     echo 'https://github.com/up/repo/pull/7' ;;
   "pr view")
-    if [ -f "$here/gh.merged" ]; then echo '{"state":"MERGED"}'; else echo '{"state":"OPEN"}'; fi ;;
+    if [ -f "$here/gh.view.json" ]; then cat "$here/gh.view.json"
+    elif [ -f "$here/gh.merged" ]; then echo '{"state":"MERGED","headRefOid":"","reviews":[]}'
+    else echo '{"state":"OPEN","headRefOid":"","reviews":[]}'; fi ;;
+  "pr checks")
+    case "$*" in *--required*) echo 'no required checks reported on the branch' >&2; exit 1 ;; esac
+    if [ -f "$here/gh.checks.json" ]; then cat "$here/gh.checks.json"; exit 1; fi
+    echo 'no checks reported on the branch' >&2; exit 1 ;;
+  "api --paginate")
+    if [ -f "$here/gh.comments.json" ]; then echo "[$(cat "$here/gh.comments.json")]"; else echo '[[]]'; fi ;;
 esac
 "#;
 
@@ -36,6 +44,17 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 prompt="$2"
 echo '{"type":"system","subtype":"init"}'
 case "$prompt" in
+  *"<review-feedback>"*)
+    printf '%s' "$prompt" > "$(dirname "$0")/rework-prompt.txt"
+    case "$prompt" in *FAIL-REWORK*)
+      echo '{"type":"result","is_error":true,"result":"rework failed"}'
+      exit 1 ;;
+    esac
+    echo reviewed >> fixed.txt
+    git add fixed.txt
+    git -c user.name=t -c user.email=t@example.com commit -qm "fix: address review" >&2
+    echo '{"type":"result","is_error":false,"result":"Addressed the review"}'
+    exit 0 ;;
   *PLEASE-FAIL*)
     echo 'something went wrong' >&2
     echo '{"type":"result","is_error":true,"result":"could not do it"}'
@@ -259,7 +278,7 @@ async fn resuming_a_held_item_resets_its_turns() {
     // Fix the item, then return it: it runs again in a fresh worktree.
     let item = WorkItem::new("demo", "bad.txt");
     fs::write(queue.path(State::Hold, &item), "now fine").unwrap();
-    pool.resume(&item).unwrap();
+    pool.resume(&item).await.unwrap();
     wait_for(&pool, |_| queue.list(State::Closed).unwrap().len() == 1).await;
     pool.stop();
     let meta = pool.meta(State::Closed, &item).unwrap();
@@ -272,7 +291,10 @@ async fn resuming_a_held_item_resets_its_turns() {
 async fn only_held_items_can_be_resumed() {
     let fx = fixture(&[("a.txt", "Fix it")], 1);
     let pool = Supervisor::new(Queue::new(fx.root.join("work")), fx.config.clone()).unwrap();
-    let err = pool.resume(&WorkItem::new("demo", "a.txt")).unwrap_err();
+    let err = pool
+        .resume(&WorkItem::new("demo", "a.txt"))
+        .await
+        .unwrap_err();
     assert!(matches!(err, PoolError::NotOnHold(_)), "{err}");
 }
 
@@ -555,21 +577,62 @@ fn with_pull_requests(fx: &mut Fixture) -> std::path::PathBuf {
     bare
 }
 
+/// Runs one successful item of a publishing project into review and
+/// returns the pool, stopped, with the item's pushed head.
+async fn reviewed_item(fx: &Fixture) -> (Supervisor, WorkItem, String) {
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+    wait_for(&pool, |s| {
+        queue.list(State::InReview).unwrap().len() == 1 && idle(s)
+    })
+    .await;
+    pool.stop();
+    let item = WorkItem::new("demo", "good.txt");
+    let head = pool
+        .meta(State::InReview, &item)
+        .unwrap()
+        .pushed_head
+        .unwrap();
+    (pool, item, head)
+}
+
+fn git_out(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn opens_a_pull_request_from_the_agents_draft() {
+async fn published_work_waits_in_review_with_its_pull_request() {
     let mut fx = fixture(&[("good.txt", "Fix it")], 1);
     let bare = with_pull_requests(&mut fx);
-    let (pool, item) = closed_item(&fx).await;
+    let (pool, item, head) = reviewed_item(&fx).await;
 
-    let result = fs::read_to_string(fx.root.join("work/closed/demo/good.result.md")).unwrap();
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert_eq!(
+        meta.pr_url.as_deref(),
+        Some("https://github.com/up/repo/pull/7")
+    );
+    assert_eq!(meta.turns, 1);
+    assert_eq!(
+        head,
+        git_out(&fx.root.join("repo"), &["rev-parse", "ai/good"])
+    );
+    assert_eq!(
+        pool.pull_request(State::InReview, &item).as_deref(),
+        Some("https://github.com/up/repo/pull/7")
+    );
+    let result = fs::read_to_string(fx.root.join("work/inreview/demo/good.result.md")).unwrap();
     assert!(
         result.contains("- Pull request: https://github.com/up/repo/pull/7"),
         "{result}"
     );
-    assert_eq!(
-        pool.pull_request(&item).as_deref(),
-        Some("https://github.com/up/repo/pull/7")
-    );
+
     let calls = fs::read_to_string(fx.root.join("bin/gh.calls")).unwrap();
     assert!(
         calls.contains(
@@ -587,39 +650,244 @@ async fn opens_a_pull_request_from_the_agents_draft() {
         .unwrap();
     assert!(pushed.success(), "branch was not pushed");
     // The draft lives outside the worktree, so it was never committed.
-    let tracked = Command::new("git")
-        .arg("-C")
-        .arg(fx.root.join("repo-worktrees/good"))
-        .args(["ls-files"])
-        .output()
-        .unwrap();
-    assert!(!String::from_utf8_lossy(&tracked.stdout).contains(".pr"));
+    let tracked = git_out(&fx.root.join("repo-worktrees/good"), &["ls-files"]);
+    assert!(!tracked.contains(".pr"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_failed_pull_request_still_closes_the_item() {
+async fn unpublished_work_goes_on_hold() {
     let mut fx = fixture(&[("good.txt", "Fix it")], 1);
     with_pull_requests(&mut fx);
     fs::write(fx.root.join("bin/gh.fail"), "").unwrap();
-    let (pool, item) = closed_item(&fx).await;
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+    wait_for(&pool, |_| queue.list(State::Hold).unwrap().len() == 1).await;
+    pool.stop();
 
-    let result = fs::read_to_string(fx.root.join("work/closed/demo/good.result.md")).unwrap();
-    assert!(result.contains("- Pull request not opened: "), "{result}");
-    assert!(result.contains("boom from gh"), "{result}");
-    assert_eq!(pool.pull_request(&item), None);
+    let item = WorkItem::new("demo", "good.txt");
+    let reason = pool.meta(State::Hold, &item).unwrap().hold_reason.unwrap();
+    assert!(
+        reason.starts_with("its work is committed, but was not published"),
+        "{reason}"
+    );
+    assert!(reason.contains("boom from gh"), "{reason}");
+    let result = fs::read_to_string(fx.root.join("work/hold/demo/good.result.md")).unwrap();
+    assert!(result.contains("- Not published: "), "{result}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_merged_pull_request_frees_the_worktree() {
+async fn requested_changes_are_reworked_in_the_same_worktree() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    let bare = with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(
+            r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[
+                {{"state":"COMMENTED","author":{{"login":"bot"}},"body":"Old note.","commit":{{"oid":"0000"}}}},
+                {{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"Please rename it.","commit":{{"oid":"{head}"}}}}]}}"#
+        ),
+    )
+    .unwrap();
+    fs::write(
+        bin.join("gh.comments.json"),
+        format!(
+            r#"[{{"commit_id":"{head}","path":"fixed.txt","line":1,"body":"Use a better word","user":{{"login":"maint"}}}},
+                {{"commit_id":"0000","path":"old.txt","line":9,"body":"stale","user":{{"login":"maint"}}}}]"#
+        ),
+    )
+    .unwrap();
+
+    let changes = pool.check_reviews().await.unwrap();
+    assert_eq!(
+        changes,
+        vec![(item.clone(), ReviewChange::ChangesRequested)]
+    );
+    pool.start();
+    let queue = pool.queue().clone();
+    wait_for(&pool, |s| {
+        idle(s)
+            && queue.list(State::InReview).unwrap().len() == 1
+            && pool.meta(State::InReview, &item).unwrap().turns == 2
+    })
+    .await;
+    pool.stop();
+
+    let prompt = fs::read_to_string(bin.join("rework-prompt.txt")).unwrap();
+    assert!(
+        prompt.contains("pull request https://github.com/up/repo/pull/7"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("Please rename it."), "{prompt}");
+    assert!(
+        prompt.contains("`fixed.txt:1` (maint): Use a better word"),
+        "{prompt}"
+    );
+    assert!(
+        !prompt.contains("Old note.") && !prompt.contains("stale"),
+        "{prompt}"
+    );
+
+    let worktree = fx.root.join("repo-worktrees/good");
+    let log = git_out(&worktree, &["log", "--format=%s", "main..HEAD"]);
+    assert_eq!(
+        log, "fix: address review\nfix: the thing",
+        "kept the first commit"
+    );
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    let new_head = git_out(&worktree, &["rev-parse", "HEAD"]);
+    assert_eq!(meta.pushed_head.as_deref(), Some(new_head.as_str()));
+    assert_eq!(meta.answered_head.as_deref(), Some(head.as_str()));
+    assert_eq!(meta.needs_rework, None);
+    let pushed = Command::new("git")
+        .arg("--git-dir")
+        .arg(&bare)
+        .args(["rev-parse", "ai/good"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&pushed.stdout).trim(), new_head);
+
+    // The same feedback on the same commit is not acted on twice.
+    assert!(pool.check_reviews().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failing_ci_queues_a_rework() {
     let mut fx = fixture(&[("good.txt", "Fix it")], 1);
     with_pull_requests(&mut fx);
-    let (pool, item) = closed_item(&fx).await;
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[]}}"#),
+    )
+    .unwrap();
+    fs::write(
+        bin.join("gh.checks.json"),
+        r#"[{"name":"lint","bucket":"pass","link":"https://ci/0"},{"name":"build","bucket":"fail","link":"https://ci/1"}]"#,
+    )
+    .unwrap();
 
-    // Open, and not in main: kept.
+    let changes = pool.check_reviews().await.unwrap();
+    assert_eq!(
+        changes,
+        vec![(item.clone(), ReviewChange::ChangesRequested)]
+    );
+    let feedback = pool
+        .meta(State::InReview, &item)
+        .unwrap()
+        .needs_rework
+        .unwrap();
+    assert!(feedback.contains("- build: https://ci/1"), "{feedback}");
+    assert!(!feedback.contains("lint"), "{feedback}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn merged_pull_requests_close_and_closed_ones_hold() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, _) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+
+    fs::write(
+        bin.join("gh.view.json"),
+        r#"{"state":"CLOSED","headRefOid":"","reviews":[]}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        pool.check_reviews().await.unwrap(),
+        vec![(item.clone(), ReviewChange::ClosedUnmerged)]
+    );
+    let reason = pool.meta(State::Hold, &item).unwrap().hold_reason.unwrap();
+    assert!(reason.contains("closed without merging"), "{reason}");
+
+    // Returned while its pull request is closed: it starts over.
+    pool.resume(&item).await.unwrap();
+    assert_eq!(pool.queue().list(State::Open).unwrap(), vec![item.clone()]);
+    assert_eq!(pool.meta(State::Open, &item).unwrap(), Default::default());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_merged_pull_request_closes_the_item_and_frees_the_worktree() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, _) = reviewed_item(&fx).await;
+
+    // Open, and not in main: nothing to clean.
+    assert!(pool.check_reviews().await.unwrap().is_empty());
     assert!(pool.clean_up_merged().await.unwrap().is_empty());
     // Squash-merged upstream: git cannot tell, the pull request can.
     fs::write(fx.root.join("bin/gh.merged"), "").unwrap();
+    assert_eq!(
+        pool.check_reviews().await.unwrap(),
+        vec![(item.clone(), ReviewChange::Merged)]
+    );
+    assert_eq!(
+        pool.queue().list(State::Closed).unwrap(),
+        vec![item.clone()]
+    );
     assert_eq!(pool.clean_up_merged().await.unwrap(), vec![item]);
     assert!(!fx.root.join("repo-worktrees/good").exists());
     assert!(!branch_exists(&fx.root.join("repo"), "ai/good"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failing_rework_retries_from_review_then_holds_and_resumes_there() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    fx.config.max_turns = 3;
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let view = format!(
+        r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[{{"state":"CHANGES_REQUESTED","author":{{"login":"m"}},"body":"FAIL-REWORK","commit":{{"oid":"{head}"}}}}]}}"#
+    );
+    fs::write(fx.root.join("bin/gh.view.json"), view).unwrap();
+    pool.check_reviews().await.unwrap();
+
+    pool.start();
+    let queue = pool.queue().clone();
+    wait_for(&pool, |s| {
+        idle(s) && queue.list(State::Hold).unwrap().len() == 1
+    })
+    .await;
+    pool.stop();
+    let held = pool.meta(State::Hold, &item).unwrap();
+    assert_eq!(held.turns, 3, "first run, then two failed reworks");
+    assert!(held.needs_rework.is_some(), "the feedback is kept");
+
+    // Its pull request is still open: back to review, feedback intact.
+    pool.resume(&item).await.unwrap();
+    assert_eq!(queue.list(State::InReview).unwrap(), vec![item.clone()]);
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert_eq!(meta.turns, 0);
+    assert!(meta.needs_rework.unwrap().contains("FAIL-REWORK"));
+    assert_eq!(
+        meta.pr_url.as_deref(),
+        Some("https://github.com/up/repo/pull/7")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn orphans_with_a_pull_request_return_to_review() {
+    let fx = fixture(&[], 1);
+    let inprogress = fx.root.join("work/inprogress/demo");
+    fs::create_dir_all(&inprogress).unwrap();
+    fs::write(inprogress.join("a.txt"), "").unwrap();
+    fs::write(
+        inprogress.join("a.meta.json"),
+        r#"{"turns":2,"pr_url":"https://github.com/up/repo/pull/7"}"#,
+    )
+    .unwrap();
+    fs::write(inprogress.join("b.txt"), "").unwrap();
+    let queue = Queue::new(fx.root.join("work"));
+    Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    assert_eq!(
+        queue.list(State::InReview).unwrap(),
+        vec![WorkItem::new("demo", "a.txt")]
+    );
+    assert_eq!(
+        queue.list(State::Open).unwrap(),
+        vec![WorkItem::new("demo", "b.txt")]
+    );
 }

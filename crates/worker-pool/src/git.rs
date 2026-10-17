@@ -87,6 +87,35 @@ pub(crate) async fn push(worktree: &Path, remote: &str, branch: &str) -> Result<
         .map(drop)
 }
 
+/// Makes sure the worktree at `path` exists, checking out the existing
+/// `branch` there if it does not. Returns whether it had to be created.
+pub(crate) async fn ensure_worktree(
+    repo: &Path,
+    path: &Path,
+    branch: &str,
+) -> Result<bool, PoolError> {
+    if path.exists() {
+        return Ok(false);
+    }
+    git(repo, &["worktree", "prune"]).await?;
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(PoolError::io("create", parent))?;
+    }
+    let path = path.to_string_lossy();
+    git(repo, &["worktree", "add", &path, branch]).await?;
+    Ok(true)
+}
+
+/// The commit the worktree has checked out.
+pub(crate) async fn head(worktree: &Path) -> Result<String, PoolError> {
+    Ok(git(worktree, &["rev-parse", "HEAD"])
+        .await?
+        .trim()
+        .to_string())
+}
+
 /// The commits on the worktree's branch that `base` does not have, newest
 /// first, as `<short hash> <subject>`.
 pub(crate) async fn commits_since(worktree: &Path, base: &str) -> Result<Vec<String>, PoolError> {
