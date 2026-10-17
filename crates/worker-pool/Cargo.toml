@@ -1,0 +1,23 @@
+[package]
+name = "worker-pool"
+description = "Resizable pool of workers that take items off the work queue and run agents on them"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+agent-backend = { path = "../agent-backend" }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
+work-queue = { path = "../work-queue" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

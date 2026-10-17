@@ -22,7 +22,5 @@
 
 # Cargo.lock is deliberately NOT ignored — see the note in README.md.
 
-# Runtime state of the worker control app: settings (holds API keys) and the
-# per-item git worktrees agents work in.
+# Runtime settings of the worker control app; holds API keys.
 /aiworkercontrol.toml
-/worktrees/
