@@ -28,9 +28,11 @@ mod pool;
 mod project;
 mod prompt;
 mod status;
+mod usage;
 
 pub use error::PoolError;
 pub use meta::ItemMeta;
 pub use pool::{BranchOutcome, Cleanup, PoolConfig, ReviewChange, Supervisor};
 pub use project::{Project, PullRequests};
 pub use status::{ActiveJob, Activity, PoolSnapshot, WorkerStatus};
+pub use usage::ProviderUsage;

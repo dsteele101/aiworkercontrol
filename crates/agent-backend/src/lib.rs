@@ -31,7 +31,9 @@
 mod auth;
 mod events;
 mod provider;
+mod usage;
 
 pub use auth::{AuthStatus, gemini_status, login_invocation, parse_status, status_invocation};
 pub use events::{AgentEvent, parse_line};
 pub use provider::{Auth, Cli, ConfigError, Invocation, Job, Provider, ProviderConfig};
+pub use usage::{PlanUsage, UsageWindow};

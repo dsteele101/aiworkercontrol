@@ -6,6 +6,8 @@ use std::time::SystemTime;
 use agent_backend::{AgentEvent, Provider};
 use work_queue::WorkItem;
 
+use crate::ProviderUsage;
+
 /// Most recent events kept per running job.
 pub(crate) const EVENT_TAIL: usize = 50;
 
@@ -21,6 +23,9 @@ pub struct PoolSnapshot {
     pub workers: Vec<WorkerStatus>,
     /// The last error that kept workers from claiming items, if any.
     pub last_error: Option<String>,
+    /// Each provider's latest reported plan usage; providers that never
+    /// reported any are left out.
+    pub usage: Vec<ProviderUsage>,
 }
 
 /// One worker.

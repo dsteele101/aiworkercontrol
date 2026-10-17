@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::Cli;
+use crate::{Cli, PlanUsage, UsageWindow};
 
 /// Something an agent did, in a form common to every CLI.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +18,8 @@ pub enum AgentEvent {
     },
     /// A non-fatal problem, or output that was not an event.
     Notice(String),
+    /// The plan's usage, as the CLI last reported it.
+    Usage(PlanUsage),
     /// The run ended.
     Finished {
         /// Whether the agent reported success.
@@ -70,6 +72,7 @@ fn claude(v: &Value) -> Vec<AgentEvent> {
                 _ => None,
             })
             .collect(),
+        Some("rate_limit_event") => claude_usage(v).map(AgentEvent::Usage).into_iter().collect(),
         Some("result") => vec![AgentEvent::Finished {
             // `subtype` can read "success" on a failed run; `is_error` is the truth.
             ok: !v.get("is_error").and_then(Value::as_bool).unwrap_or(true),
@@ -77,6 +80,26 @@ fn claude(v: &Value) -> Vec<AgentEvent> {
         }],
         _ => Vec::new(),
     }
+}
+
+/// The plan usage in a `rate_limit_event`: its `unifiedWindows` give each
+/// window's utilization as a fraction and its reset time in Unix seconds.
+fn claude_usage(v: &Value) -> Option<PlanUsage> {
+    let windows = v.pointer("/rate_limit_info/unifiedWindows")?;
+    let window = |name: &str| {
+        let w = windows.get(name)?;
+        let used = w.get("utilization").and_then(Value::as_f64)?;
+        Some(UsageWindow {
+            // Clamped, so the cast cannot truncate.
+            percent: (used * 100.0).round().clamp(0.0, 100.0) as u8,
+            resets_at: w.get("resetsAt").and_then(Value::as_u64),
+        })
+    };
+    let usage = PlanUsage {
+        session: window("five_hour"),
+        weekly: window("seven_day"),
+    };
+    (usage != PlanUsage::default()).then_some(usage)
 }
 
 fn codex(v: &Value) -> Vec<AgentEvent> {
@@ -239,6 +262,28 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// A `rate_limit_event` from `claude -p` 2.1.302 on a plan login.
+    const CLAUDE_RATE_LIMIT: &str = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1792225800,"rateLimitType":"five_hour","overageStatus":"rejected","overageDisabledReason":"org_level_disabled","isUsingOverage":false,"unifiedWindows":{"five_hour":{"utilization":0.64,"resetsAt":1792225800},"seven_day":{"utilization":0.09,"resetsAt":1792800000}}},"uuid":"u","session_id":"s"}"#;
+
+    #[test]
+    fn claude_rate_limit_event_reports_both_windows() {
+        assert_eq!(
+            parse_line(Cli::Claude, CLAUDE_RATE_LIMIT),
+            vec![AgentEvent::Usage(PlanUsage {
+                session: Some(UsageWindow {
+                    percent: 64,
+                    resets_at: Some(1_792_225_800)
+                }),
+                weekly: Some(UsageWindow {
+                    percent: 9,
+                    resets_at: Some(1_792_800_000)
+                }),
+            })]
+        );
+        let bare = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}"#;
+        assert!(parse_line(Cli::Claude, bare).is_empty());
     }
 
     #[test]

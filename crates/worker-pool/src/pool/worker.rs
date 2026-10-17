@@ -4,12 +4,13 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use agent_backend::AgentEvent;
+use agent_backend::{AgentEvent, PlanUsage};
 use work_queue::{State as ItemState, WorkItem};
 
 use super::run::{Finish, Kind};
-use super::{POLL_INTERVAL, PoolConfig, Shared};
+use super::{POLL_INTERVAL, PoolConfig, Shared, State};
 use crate::status::EVENT_TAIL;
+use crate::usage;
 use crate::{ActiveJob, Activity, ItemMeta, PoolError, Project};
 
 /// How a result file records its pull request; read back by `pull_request`.
@@ -201,7 +202,9 @@ impl Shared {
     pub(super) fn push_event(&self, id: usize, event: AgentEvent) {
         {
             let mut state = self.lock();
-            if let Some(Activity::Working(job)) = state.workers.get_mut(&id) {
+            if let AgentEvent::Usage(usage) = event {
+                self.record_usage(&mut state, id, usage);
+            } else if let Some(Activity::Working(job)) = state.workers.get_mut(&id) {
                 if job.events.len() == EVENT_TAIL {
                     job.events.pop_front();
                 }
@@ -209,5 +212,21 @@ impl Shared {
             }
         }
         self.version.send_modify(|v| *v = v.wrapping_add(1));
+    }
+
+    /// Records usage reported by worker `id`'s agent against its provider,
+    /// and saves it when it changed.
+    fn record_usage(&self, state: &mut State, id: usize, usage: PlanUsage) {
+        let Some(Activity::Working(job)) = state.workers.get(&id) else {
+            return;
+        };
+        let provider = job.provider;
+        if state.usage.get(&provider) == Some(&usage) {
+            return;
+        }
+        state.usage.insert(provider, usage);
+        if let Err(e) = usage::save(&self.usage_file, &state.usage) {
+            state.last_error = Some(e.to_string());
+        }
     }
 }

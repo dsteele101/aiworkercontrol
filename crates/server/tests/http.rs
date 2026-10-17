@@ -81,6 +81,29 @@ async fn dashboard_renders() {
 }
 
 #[tokio::test]
+async fn dashboard_shows_recorded_plan_usage() {
+    let app = app();
+    let (_, body) = app.get("/").await;
+    assert!(body.contains("No usage reported yet"));
+
+    // A window that resets far in the future, and one that already has.
+    fs::write(
+        app.dir.path().join("work/usage.json"),
+        r#"{"anthropic":{"session":{"percent":64,"resets_at":4000000000},"weekly":{"percent":9,"resets_at":1}}}"#,
+    )
+    .unwrap();
+    let app = App {
+        state: AppState::new(app.dir.path(), PORT).unwrap(),
+        ..app
+    };
+    let (_, body) = app.get("/").await;
+    assert!(body.contains("<strong>64%</strong>"), "{body}");
+    assert!(body.contains("resets in "));
+    assert!(body.contains("<strong>0%</strong>"));
+    assert!(body.contains("reset since last report"));
+}
+
+#[tokio::test]
 async fn foreign_host_is_refused() {
     let app = app();
     let req = Request::get("/")
