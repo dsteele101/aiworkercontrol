@@ -69,6 +69,18 @@ pub enum PoolError {
     /// Only closed items can be cleaned up; others may still be in use.
     #[error("{0} is not closed")]
     NotClosed(work_queue::WorkItem),
+    /// An item's metadata file is not valid.
+    #[error("{}: {source}", path.display())]
+    BadMeta {
+        /// The metadata file.
+        path: std::path::PathBuf,
+        /// The parse error.
+        #[source]
+        source: serde_json::Error,
+    },
+    /// Only items on hold can be returned to an agent.
+    #[error("{0} is not on hold")]
+    NotOnHold(work_queue::WorkItem),
     /// The agent reported failure or exited unsuccessfully.
     #[error("agent failed: {0}")]
     AgentFailed(String),

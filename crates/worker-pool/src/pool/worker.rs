@@ -10,10 +10,12 @@ use work_queue::{State as ItemState, WorkItem};
 
 use super::{POLL_INTERVAL, PoolConfig, Shared};
 use crate::status::EVENT_TAIL;
+use crate::{
+    ActiveJob, Activity, ItemMeta, PoolError, Project, PullRequests, agent, git, github, prompt,
+};
 
 /// How a result file records its pull request; read back by `pull_request`.
 pub(crate) const PR_LINE: &str = "- Pull request: ";
-use crate::{ActiveJob, Activity, PoolError, Project, PullRequests, agent, git, github, prompt};
 
 impl Shared {
     /// Whether worker `id` should exit. Decided under the state lock, together
@@ -61,13 +63,9 @@ impl Shared {
 
     fn claim(&self) -> Result<Option<(WorkItem, Project, PoolConfig)>, PoolError> {
         let config = self.config.borrow().clone();
-        let item = {
-            let state = self.lock();
-            self.queue.claim_next(|item| {
-                state.failed.contains_key(item)
-                    || !config.projects.iter().any(|p| p.name == item.project)
-            })?
-        };
+        let item = self
+            .queue
+            .claim_next(|item| !config.projects.iter().any(|p| p.name == item.project))?;
         Ok(item.and_then(|item| {
             let project = config
                 .projects
@@ -89,20 +87,62 @@ impl Shared {
             }),
         );
 
-        let outcome = match self.run_item(id, &item, &project, &config).await {
-            Ok(report) => self.queue.complete(&item, &report).map_err(PoolError::from),
-            Err(e) => Err(e),
+        let outcome = match self.begin_turn(&item) {
+            Ok(turn) => match self.run_item(id, &item, &project, &config).await {
+                Ok(report) => self.finish(&item, &report).map_err(|e| (turn, e)),
+                Err(e) => Err((turn, e)),
+            },
+            // Without a turn count the item cannot be tracked; hold it.
+            Err(e) => Err((config.max_turns, e)),
         };
-        if let Err(e) = outcome {
-            // Releasing can only fail if the file vanished from `inprogress`;
-            // the failure is still recorded so the item is not retried blindly.
-            let reason = match self.queue.release(&item) {
-                Ok(()) => e.to_string(),
-                Err(release) => format!("{e}; also could not reopen: {release}"),
-            };
-            self.lock().failed.insert(item, reason);
+        if let Err((turn, e)) = outcome
+            && let Err(bookkeeping) =
+                self.after_failure(&item, &e.to_string(), turn, config.max_turns)
+        {
+            self.lock().last_error = Some(format!("{item}: {e}; then {bookkeeping}"));
         }
         self.set_activity(id, Activity::Idle);
+    }
+
+    /// Counts a new turn for an in-progress item and returns its number.
+    fn begin_turn(&self, item: &WorkItem) -> Result<u32, PoolError> {
+        let mut meta = ItemMeta::load(&self.queue, ItemState::InProgress, item)?;
+        meta.turns += 1;
+        meta.save(&self.queue, ItemState::InProgress, item)?;
+        Ok(meta.turns)
+    }
+
+    /// Closes a successful item with its report.
+    fn finish(&self, item: &WorkItem, report: &str) -> Result<(), PoolError> {
+        let mut meta = ItemMeta::load(&self.queue, ItemState::InProgress, item)?;
+        meta.last_error = None;
+        meta.save(&self.queue, ItemState::InProgress, item)?;
+        Ok(self.queue.complete(item, report)?)
+    }
+
+    /// Returns a failed item to `open` to be tried again, or puts it on hold
+    /// once it has used its last turn.
+    fn after_failure(
+        &self,
+        item: &WorkItem,
+        reason: &str,
+        turn: u32,
+        max_turns: u32,
+    ) -> Result<(), PoolError> {
+        let mut meta = ItemMeta::load(&self.queue, ItemState::InProgress, item).unwrap_or_default();
+        meta.last_error = Some(reason.to_string());
+        if turn >= max_turns {
+            meta.hold_reason = Some(format!(
+                "used {turn} of {max_turns} turns; the last one failed: {reason}"
+            ));
+            meta.save(&self.queue, ItemState::InProgress, item)?;
+            self.queue
+                .transition(item, ItemState::InProgress, ItemState::Hold)?;
+        } else {
+            meta.save(&self.queue, ItemState::InProgress, item)?;
+            self.queue.release(item)?;
+        }
+        Ok(())
     }
 
     async fn run_item(

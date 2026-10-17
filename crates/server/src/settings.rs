@@ -29,6 +29,16 @@ pub struct Settings {
     /// Where to find the agent CLIs; `PATH` when unset.
     #[serde(default)]
     pub cli_dir: Option<PathBuf>,
+    /// Agent runs an item may use before it goes on hold.
+    #[serde(default = "default_max_turns")]
+    pub max_turns: u32,
+}
+
+/// The default for [`Settings::max_turns`].
+pub const DEFAULT_MAX_TURNS: u32 = 3;
+
+fn default_max_turns() -> u32 {
+    DEFAULT_MAX_TURNS
 }
 
 /// One provider's settings. Unlike [`ProviderConfig`], the API key is kept
@@ -104,6 +114,7 @@ impl Default for Settings {
             providers: Provider::ALL.map(ProviderSettings::new).to_vec(),
             projects: Vec::new(),
             cli_dir: None,
+            max_turns: DEFAULT_MAX_TURNS,
         }
     }
 }
@@ -200,6 +211,7 @@ impl Settings {
             provider,
             projects,
             cli_dir: self.cli_dir.clone(),
+            max_turns: self.max_turns.max(1),
         }
     }
 }

@@ -8,7 +8,7 @@ use maud::{DOCTYPE, Markup, html};
 use work_queue::{State as ItemState, WorkItem};
 use worker_pool::Activity;
 
-use crate::routes::MAX_WORKERS;
+use crate::routes::{MAX_TURNS, MAX_WORKERS};
 use crate::{AppState, Settings};
 
 /// Agent events shown per worker card.
@@ -112,8 +112,8 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
         .iter()
         .map(|s| (s.dir_name(), queue.list(*s).unwrap_or_default()))
         .collect();
-    let failed: BTreeMap<&WorkItem, &String> =
-        snapshot.failed.iter().map(|(i, r)| (i, r)).collect();
+    let max_turns = settings.max_turns.max(1);
+    let meta = |state: ItemState, item: &WorkItem| app.pool().meta(state, item).unwrap_or_default();
     let provider = settings.provider(settings.active);
     let auth = match provider {
         Some(p) if p.use_api_key || !settings.active.supports_plan() => "API key",
@@ -201,14 +201,10 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                 @for item in lists.get("open").into_iter().flatten() {
                     tr {
                         td { (item) }
-                        @if let Some(reason) = failed.get(item) {
-                            td.bad { "failed: " (reason) }
-                            td {
-                                form.inline method="post" action="/retry" {
-                                    input type="hidden" name="item" value=(item);
-                                    button { "Retry" }
-                                }
-                            }
+                        @let m = meta(ItemState::Open, item);
+                        @if let Some(error) = &m.last_error {
+                            td.warn { "retrying (" (m.turns) " of " (max_turns) " turns used); last run: " (error) }
+                            td {}
                         } @else if !known(item) {
                             td.muted { "no project “" (item.project) "” configured" }
                             td {}
@@ -216,6 +212,24 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                             td { "open" } td {}
                         }
                     }
+                }
+                @for item in lists.get("hold").into_iter().flatten() {
+                    tr {
+                        td { (item) }
+                        td.bad {
+                            "on hold: "
+                            (meta(ItemState::Hold, item).hold_reason.unwrap_or_else(|| "set aside for manual review".into()))
+                        }
+                        td {
+                            form.inline method="post" action="/resume" {
+                                input type="hidden" name="item" value=(item);
+                                button title="Reset its turn count and give it back to the agents" { "Return to agent" }
+                            }
+                        }
+                    }
+                }
+                @for item in lists.get("inreview").into_iter().flatten() {
+                    tr { td { (item) } td.warn { "in review" } td {} }
                 }
                 @for item in lists.get("closed").into_iter().flatten() {
                     tr {
@@ -255,6 +269,15 @@ pub(crate) fn settings(
             label for="count" { "Number of workers" }
             input #count type="number" name="count" min="0" max=(MAX_WORKERS) value=(settings.workers) style="width:6em";
             button { "Save" }
+        }
+        form.panel.bar method="post" action="/settings/max-turns" style="margin-top:12px" {
+            label for="max_turns" { "Turns per item before hold" }
+            input #max_turns type="number" name="max_turns" min="1" max=(MAX_TURNS) value=(settings.max_turns) style="width:6em";
+            button { "Save" }
+            span.muted {
+                "Every agent run on an item is a turn, failed ones included; failures retry until "
+                "the limit, then the item goes on hold for you to review and return."
+            }
         }
 
         h2 { "AI system" }

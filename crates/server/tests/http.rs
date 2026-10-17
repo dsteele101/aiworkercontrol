@@ -278,3 +278,44 @@ async fn clean_up_refuses_items_that_are_not_closed() {
     );
     assert!(open.join("a.txt").is_file());
 }
+
+#[tokio::test]
+async fn held_items_show_their_reason_and_can_be_returned() {
+    let app = app();
+    let hold = app.dir.path().join("work/hold/demo");
+    fs::create_dir_all(&hold).unwrap();
+    fs::write(hold.join("a.txt"), "item").unwrap();
+    fs::write(
+        hold.join("a.meta.json"),
+        r#"{"turns": 3, "last_error": "boom", "hold_reason": "used 3 of 3 turns; the last one failed: boom"}"#,
+    )
+    .unwrap();
+
+    let (_, page) = app.get("/").await;
+    assert!(
+        page.contains("on hold: used 3 of 3 turns; the last one failed: boom"),
+        "{page}"
+    );
+    assert!(page.contains("Return to agent"));
+
+    assert_eq!(
+        app.post("/resume", "item=demo%2Fa.txt").await,
+        StatusCode::SEE_OTHER
+    );
+    let open = app.dir.path().join("work/open/demo");
+    assert!(open.join("a.txt").is_file());
+    let meta = fs::read_to_string(open.join("a.meta.json")).unwrap();
+    assert!(meta.contains(r#""turns": 0"#), "{meta}");
+    assert!(!meta.contains("hold_reason"), "{meta}");
+}
+
+#[tokio::test]
+async fn max_turns_is_saved_and_clamped() {
+    let app = app();
+    assert_eq!(app.saved().max_turns, 3);
+    app.post("/settings/max-turns", "max_turns=5").await;
+    assert_eq!(app.saved().max_turns, 5);
+    assert_eq!(app.state.pool().config().max_turns, 5);
+    app.post("/settings/max-turns", "max_turns=0").await;
+    assert_eq!(app.saved().max_turns, 1);
+}

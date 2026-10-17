@@ -129,6 +129,7 @@ fn fixture(items: &[(&str, &str)], workers: usize) -> Fixture {
         provider: ProviderConfig::new(Provider::Anthropic, Auth::Plan),
         projects: vec![Project::new("demo", &spec, &repo)],
         cli_dir: Some(bin),
+        max_turns: 1,
     };
     Fixture {
         _dir: dir,
@@ -152,8 +153,28 @@ async fn wait_for(pool: &Supervisor, done: impl Fn(&PoolSnapshot) -> bool) -> Po
     .expect("pool did not reach the expected state")
 }
 
+/// Items on hold with the error of their last run, as `(file, error)`.
+fn held(pool: &Supervisor) -> Vec<(String, String)> {
+    let queue = pool.queue();
+    queue
+        .list(State::Hold)
+        .unwrap()
+        .into_iter()
+        .map(|item| {
+            let meta = pool.meta(State::Hold, &item).unwrap();
+            (item.file, meta.last_error.unwrap_or_default())
+        })
+        .collect()
+}
+
+fn idle(s: &PoolSnapshot) -> bool {
+    s.workers
+        .iter()
+        .all(|w| matches!(w.activity, Activity::Idle))
+}
+
 #[tokio::test(flavor = "multi_thread")]
-async fn closes_successful_items_and_reopens_failed_ones() {
+async fn closes_successful_items_and_holds_failed_ones() {
     let fx = fixture(
         &[
             ("good.txt", "Fix the thing"),
@@ -166,11 +187,8 @@ async fn closes_successful_items_and_reopens_failed_ones() {
     let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
     pool.start();
 
-    let snapshot = wait_for(&pool, |s| {
-        s.failed.len() == 2
-            && s.workers
-                .iter()
-                .all(|w| matches!(w.activity, Activity::Idle))
+    wait_for(&pool, |s| {
+        queue.list(State::Hold).unwrap().len() == 2 && idle(s)
     })
     .await;
     pool.stop();
@@ -192,37 +210,70 @@ async fn closes_successful_items_and_reopens_failed_ones() {
     );
     assert!(fx.root.join("repo-worktrees/good.log").is_file());
 
-    let reasons: Vec<_> = snapshot
-        .failed
-        .iter()
-        .map(|(i, r)| (i.file.as_str(), r.as_str()))
-        .collect();
     assert_eq!(
-        reasons,
+        held(&pool),
         vec![
-            ("bad.txt", "agent failed: could not do it"),
-            ("idle.txt", "agent finished without committing to ai/idle"),
+            ("bad.txt".into(), "agent failed: could not do it".into()),
+            (
+                "idle.txt".into(),
+                "agent finished without committing to ai/idle".into()
+            ),
         ]
     );
-    let open = queue.list(State::Open).unwrap();
-    assert_eq!(open.len(), 2);
+    let bad = pool
+        .meta(State::Hold, &WorkItem::new("demo", "bad.txt"))
+        .unwrap();
+    assert_eq!(bad.turns, 1);
+    assert_eq!(
+        bad.hold_reason.as_deref(),
+        Some("used 1 of 1 turns; the last one failed: agent failed: could not do it")
+    );
+    assert!(queue.list(State::Open).unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn retry_reruns_a_failed_item_in_a_fresh_worktree() {
+async fn failures_are_retried_until_the_turns_run_out() {
+    let mut fx = fixture(&[("bad.txt", "PLEASE-FAIL")], 1);
+    fx.config.max_turns = 3;
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+    wait_for(&pool, |_| queue.list(State::Hold).unwrap().len() == 1).await;
+    pool.stop();
+
+    let meta = pool
+        .meta(State::Hold, &WorkItem::new("demo", "bad.txt"))
+        .unwrap();
+    assert_eq!(meta.turns, 3);
+    assert!(meta.hold_reason.unwrap().starts_with("used 3 of 3 turns"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resuming_a_held_item_resets_its_turns() {
     let fx = fixture(&[("bad.txt", "PLEASE-FAIL")], 1);
     let queue = Queue::new(fx.root.join("work"));
     let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
     pool.start();
-    wait_for(&pool, |s| s.failed.len() == 1).await;
+    wait_for(&pool, |_| queue.list(State::Hold).unwrap().len() == 1).await;
 
-    // Fix the item, then retry it: the old worktree is replaced.
+    // Fix the item, then return it: it runs again in a fresh worktree.
     let item = WorkItem::new("demo", "bad.txt");
-    fs::write(queue.path(State::Open, &item), "now fine").unwrap();
-    pool.retry(&item);
+    fs::write(queue.path(State::Hold, &item), "now fine").unwrap();
+    pool.resume(&item).unwrap();
     wait_for(&pool, |_| queue.list(State::Closed).unwrap().len() == 1).await;
     pool.stop();
-    assert!(pool.snapshot().failed.is_empty());
+    let meta = pool.meta(State::Closed, &item).unwrap();
+    assert_eq!(meta.turns, 1, "turns restart from zero");
+    assert_eq!(meta.last_error, None);
+    assert_eq!(meta.hold_reason, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_held_items_can_be_resumed() {
+    let fx = fixture(&[("a.txt", "Fix it")], 1);
+    let pool = Supervisor::new(Queue::new(fx.root.join("work")), fx.config.clone()).unwrap();
+    let err = pool.resume(&WorkItem::new("demo", "a.txt")).unwrap_err();
+    assert!(matches!(err, PoolError::NotOnHold(_)), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -280,12 +331,12 @@ async fn setup_runs_in_the_worktree_and_builds_share_a_cache() {
     let queue = Queue::new(fx.root.join("work"));
     let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
     pool.start();
-    let s = wait_for(&pool, |s| {
-        !s.failed.is_empty() || queue.list(State::Closed).unwrap().len() == 1
+    wait_for(&pool, |_| {
+        queue.list(State::Hold).unwrap().len() + queue.list(State::Closed).unwrap().len() == 1
     })
     .await;
     pool.stop();
-    assert!(s.failed.is_empty(), "{:?}", s.failed);
+    assert!(held(&pool).is_empty(), "{:?}", held(&pool));
 
     let worktrees = fx.root.join("repo-worktrees");
     let cache = fs::read_to_string(worktrees.join("data/cache.txt")).unwrap();
@@ -306,15 +357,14 @@ async fn failing_setup_fails_the_item_before_the_agent_runs() {
     let queue = Queue::new(fx.root.join("work"));
     let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
     pool.start();
-    let s = wait_for(&pool, |s| !s.failed.is_empty()).await;
+    wait_for(&pool, |_| queue.list(State::Hold).unwrap().len() == 1).await;
     pool.stop();
 
-    let reason = &s.failed[0].1;
+    let (_, reason) = &held(&pool)[0];
     assert!(reason.starts_with("setup command failed"), "{reason}");
     assert!(reason.ends_with("boom"), "{reason}");
     let log = fs::read_to_string(fx.root.join("repo-worktrees/a.log")).unwrap();
     assert!(!log.contains("system"), "agent ran: {log}");
-    assert_eq!(queue.list(State::Open).unwrap().len(), 1);
 }
 
 /// Runs one successful item to `closed` and returns the pool, stopped.
@@ -454,10 +504,10 @@ async fn background_processes_of_an_agent_are_stopped_with_it() {
     fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
 
     let queue = Queue::new(fx.root.join("work"));
-    let pool = Supervisor::new(queue, fx.config.clone()).unwrap();
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
     pool.start();
     // The agent commits nothing, so the item fails; the run has ended.
-    wait_for(&pool, |s| !s.failed.is_empty()).await;
+    wait_for(&pool, |_| queue.list(State::Hold).unwrap().len() == 1).await;
     pool.stop();
 
     let pid = fs::read_to_string(&pid_file).unwrap();
