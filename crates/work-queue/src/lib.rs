@@ -1,7 +1,9 @@
 //! File-based work queue.
 //!
 //! Work items are plain files laid out as `<root>/<state>/<project>/<file>`,
-//! where `<state>` is `open`, `inprogress` or `closed`. Moving an item between
+//! where `<state>` is `open`, `inprogress`, `inreview`, `closed` or `hold`.
+//! An item's sidecar files (`<stem>.result.md`, `<stem>.meta.json`) sit
+//! beside it and move with it. Moving an item between
 //! states is a single `rename`, which is atomic on one filesystem, so several
 //! workers can claim from the same queue without ever claiming the same item.
 //!
@@ -27,4 +29,4 @@ mod queue;
 
 pub use error::QueueError;
 pub use item::{State, WorkItem};
-pub use queue::{Queue, RESULT_SUFFIX};
+pub use queue::{META_SUFFIX, Queue, RESULT_SUFFIX};

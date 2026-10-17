@@ -10,13 +10,23 @@ pub enum State {
     Open,
     /// Picked up by a worker.
     InProgress,
+    /// Pushed, with a pull request open for review.
+    InReview,
     /// Completed.
     Closed,
+    /// Set aside for manual review; returned to an agent only by hand.
+    Hold,
 }
 
 impl State {
     /// Every state, in lifecycle order.
-    pub const ALL: [State; 3] = [State::Open, State::InProgress, State::Closed];
+    pub const ALL: [State; 5] = [
+        State::Open,
+        State::InProgress,
+        State::InReview,
+        State::Closed,
+        State::Hold,
+    ];
 
     /// The directory name for this state under the queue root.
     ///
@@ -27,7 +37,9 @@ impl State {
         match self {
             State::Open => "open",
             State::InProgress => "inprogress",
+            State::InReview => "inreview",
             State::Closed => "closed",
+            State::Hold => "hold",
         }
     }
 }

@@ -6,8 +6,12 @@ use std::path::{Path, PathBuf};
 
 use crate::{QueueError, State, WorkItem};
 
-/// Suffix of the result file written next to a closed item.
+/// Suffix of an item's result file, a report of its latest run.
 pub const RESULT_SUFFIX: &str = ".result.md";
+/// Suffix of an item's metadata file, kept by whoever runs the queue.
+pub const META_SUFFIX: &str = ".meta.json";
+/// Files that sit beside an item and move with it.
+const SIDECARS: [&str; 2] = [RESULT_SUFFIX, META_SUFFIX];
 
 /// A work queue rooted at a directory holding `open/`, `inprogress/` and `closed/`.
 #[derive(Debug, Clone)]
@@ -43,16 +47,33 @@ impl Queue {
             .join(&item.file)
     }
 
+    /// The path of `item`'s sidecar file with `suffix` (such as
+    /// [`RESULT_SUFFIX`]) while the item is in `state`.
+    ///
+    /// ```
+    /// use work_queue::{Queue, State, WorkItem, META_SUFFIX};
+    ///
+    /// let queue = Queue::new("/work");
+    /// let item = WorkItem::new("phase", "fix.txt");
+    /// assert_eq!(
+    ///     queue.sidecar_path(State::Hold, &item, META_SUFFIX),
+    ///     std::path::Path::new("/work/hold/phase/fix.meta.json"),
+    /// );
+    /// ```
+    pub fn sidecar_path(&self, state: State, item: &WorkItem, suffix: &str) -> PathBuf {
+        self.path(state, item)
+            .with_file_name(format!("{}{suffix}", item.stem()))
+    }
+
     /// Lists the items in `state`, sorted by project then file name.
     ///
-    /// Hidden files (such as `.gitkeep`) and the result files written by
-    /// [`Queue::complete`] are not items.
+    /// Hidden files (such as `.gitkeep`) and sidecar files are not items.
     pub fn list(&self, state: State) -> Result<Vec<WorkItem>, QueueError> {
         let state_dir = self.root.join(state.dir_name());
         let mut items = Vec::new();
         for project in read_dir_names(&state_dir, true)? {
             for file in read_dir_names(&state_dir.join(&project), false)? {
-                if !file.ends_with(RESULT_SUFFIX) {
+                if !SIDECARS.iter().any(|s| file.ends_with(s)) {
                     items.push(WorkItem::new(project.clone(), file));
                 }
             }
@@ -94,11 +115,35 @@ impl Queue {
     /// Closes an in-progress item, writing `result` beside it as
     /// `<stem>.result.md`.
     pub fn complete(&self, item: &WorkItem, result: &str) -> Result<(), QueueError> {
-        let closed = self.path(State::Closed, item);
-        let result_path = closed.with_file_name(format!("{}{RESULT_SUFFIX}", item.stem()));
-        ensure_parent(&result_path)?;
-        fs::write(&result_path, result).map_err(QueueError::io("write", result_path))?;
-        self.move_item(item, State::InProgress, State::Closed)
+        self.write_result(State::InProgress, item, result)?;
+        self.transition(item, State::InProgress, State::Closed)
+    }
+
+    /// Writes `item`'s result file while it is in `state`.
+    pub fn write_result(
+        &self,
+        state: State,
+        item: &WorkItem,
+        result: &str,
+    ) -> Result<(), QueueError> {
+        let path = self.sidecar_path(state, item, RESULT_SUFFIX);
+        ensure_parent(&path)?;
+        fs::write(&path, result).map_err(QueueError::io("write", path))
+    }
+
+    /// Moves `item` and its sidecar files from `from` to `to`.
+    pub fn transition(&self, item: &WorkItem, from: State, to: State) -> Result<(), QueueError> {
+        self.move_item(item, from, to)
+    }
+
+    /// Moves `item` from `from` to `inprogress` if it is still in `from`.
+    /// Returns false if another worker took it first.
+    pub fn take(&self, item: &WorkItem, from: State) -> Result<bool, QueueError> {
+        match self.move_item(item, from, State::InProgress) {
+            Ok(()) => Ok(true),
+            Err(QueueError::Io { source, .. }) if source.kind() == ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 
     /// Returns an in-progress item to `open` so it can be claimed again.
@@ -116,11 +161,23 @@ impl Queue {
         Ok(orphans)
     }
 
+    /// Moves the item file, then its sidecars. The item file goes first: its
+    /// rename is what claims the item, so a lost race moves nothing.
     fn move_item(&self, item: &WorkItem, from: State, to: State) -> Result<(), QueueError> {
         let src = self.path(from, item);
         let dst = self.path(to, item);
         ensure_parent(&dst)?;
-        fs::rename(&src, &dst).map_err(QueueError::io("move", src))
+        fs::rename(&src, &dst).map_err(QueueError::io("move", src))?;
+        for suffix in SIDECARS {
+            let src = self.sidecar_path(from, item, suffix);
+            match fs::rename(&src, self.sidecar_path(to, item, suffix)) {
+                Err(e) if e.kind() != ErrorKind::NotFound => {
+                    return Err(QueueError::io("move", src)(e));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 }
 
