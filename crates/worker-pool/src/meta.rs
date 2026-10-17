@@ -19,6 +19,21 @@ pub struct ItemMeta {
     /// Why the item was put on hold, while it is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold_reason: Option<String>,
+    /// The pull request proposing the item's work, once opened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    /// The commit last pushed to the pull request. Feedback counts only when
+    /// it is on this commit, i.e. given since the last push.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pushed_head: Option<String>,
+    /// Feedback waiting to be addressed by a rework run. While set, the item
+    /// waits in review for a free worker.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub needs_rework: Option<String>,
+    /// The pushed commit whose feedback was last handed to a rework, so the
+    /// same feedback is not acted on twice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_head: Option<String>,
 }
 
 impl ItemMeta {

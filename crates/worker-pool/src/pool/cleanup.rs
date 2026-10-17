@@ -5,7 +5,7 @@ use work_queue::{RESULT_SUFFIX, State as ItemState, WorkItem};
 
 use super::Supervisor;
 use super::worker::PR_LINE;
-use crate::{PoolError, Project, git, github};
+use crate::{ItemMeta, PoolError, Project, git, github};
 
 /// What cleaning up an item did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,12 +79,16 @@ impl Supervisor {
         Ok(cleaned)
     }
 
-    /// The pull request a closed item's result records, if one was opened.
-    pub fn pull_request(&self, item: &WorkItem) -> Option<String> {
-        let result = self
-            .queue()
-            .path(ItemState::Closed, item)
-            .with_file_name(format!("{}{RESULT_SUFFIX}", item.stem()));
+    /// The pull request of `item` while it is in `state`, if one was
+    /// opened: from its metadata, or from its result for older items.
+    pub fn pull_request(&self, state: ItemState, item: &WorkItem) -> Option<String> {
+        if let Some(url) = ItemMeta::load(self.queue(), state, item)
+            .ok()
+            .and_then(|m| m.pr_url)
+        {
+            return Some(url);
+        }
+        let result = self.queue().sidecar_path(state, item, RESULT_SUFFIX);
         let text = std::fs::read_to_string(result).ok()?;
         text.lines()
             .find_map(|line| line.strip_prefix(PR_LINE))
@@ -100,7 +104,7 @@ impl Supervisor {
         if git::is_merged(&project.repo, &project.base_ref, branch).await? {
             return Ok(true);
         }
-        match self.pull_request(item) {
+        match self.pull_request(ItemState::Closed, item) {
             Some(url) => {
                 let gh = github::program(self.config().cli_dir.as_deref());
                 github::is_merged(&gh, &url).await

@@ -20,18 +20,7 @@ pub(crate) fn build(project: &Project, item: &WorkItem, body: &str) -> Result<St
         body = body.trim(),
     );
 
-    let specs = spec_files(&project.spec_dir)?;
-    if !specs.is_empty() {
-        prompt.push_str(
-            "The project's spec files give direction for this work. Read the ones \
-             relevant to the task and follow them:\n",
-        );
-        for spec in specs {
-            prompt.push_str(&format!("- {}\n", spec.display()));
-        }
-        prompt.push('\n');
-    }
-
+    prompt.push_str(&specs_section(project)?);
     prompt.push_str(&format!(
         "Also follow this repository's own agent instructions and contribution \
          rules (CLAUDE.md, AGENTS.md, GEMINI.md or similar) wherever they apply.\n\n\
@@ -59,6 +48,62 @@ pub(crate) fn build(project: &Project, item: &WorkItem, body: &str) -> Result<St
         ));
     }
     Ok(prompt)
+}
+
+/// Builds the prompt for reworking `item` in its existing worktree after
+/// its pull request at `pr_url` received `feedback` on its latest commit.
+pub(crate) fn build_rework(
+    project: &Project,
+    item: &WorkItem,
+    body: &str,
+    pr_url: &str,
+    feedback: &str,
+) -> Result<String, PoolError> {
+    let branch = Project::branch(item);
+    let mut prompt = format!(
+        "You are an autonomous coding agent continuing work on the project \"{name}\".\n\
+         You earlier carried out this work item ({item}):\n\n\
+         <work-item>\n{body}\n</work-item>\n\n\
+         That work is on branch `{branch}` in this worktree, proposed in the pull \
+         request {pr_url}. Its latest commit received this feedback:\n\n\
+         <review-feedback>\n{feedback}\n</review-feedback>\n\n",
+        name = project.name,
+        body = body.trim(),
+        feedback = feedback.trim(),
+    );
+    prompt.push_str(&specs_section(project)?);
+    prompt.push_str(&format!(
+        "Also follow this repository's own agent instructions and contribution \
+         rules (CLAUDE.md, AGENTS.md, GEMINI.md or similar) wherever they apply.\n\n\
+         - Address each point of the feedback that is correct, and fix failing CI. \
+           If you disagree with a point, leave the code as it is and say why in \
+           your summary.\n\
+         - Run the repository's own checks for what you changed. `CARGO_TARGET_DIR` \
+           points at a build cache kept between your runs; leave it as it is.\n\
+         - Commit the changes on `{branch}` as new commits, using the repository's \
+           commit message conventions; do not rewrite or squash the existing ones. \
+           Do not push, and do not switch branches: the pull request is updated \
+           for you once you finish.\n\
+         - Finish with a short summary of how you handled each point.\n"
+    ));
+    Ok(prompt)
+}
+
+/// The list of the project's spec files, by absolute path.
+fn specs_section(project: &Project) -> Result<String, PoolError> {
+    let specs = spec_files(&project.spec_dir)?;
+    if specs.is_empty() {
+        return Ok(String::new());
+    }
+    let mut text = String::from(
+        "The project's spec files give direction for this work. Read the ones \
+         relevant to the task and follow them:\n",
+    );
+    for spec in specs {
+        text.push_str(&format!("- {}\n", spec.display()));
+    }
+    text.push('\n');
+    Ok(text)
 }
 
 /// The non-hidden files directly inside `dir`, sorted, as absolute paths.
@@ -124,6 +169,27 @@ mod tests {
         assert!(prompt.contains("to /dev/phase-worktrees/.pr/timesifter.md: the title"));
         assert!(prompt.contains("against phase-rs/phase `main`"));
         assert!(prompt.contains("do not push or open it yourself"));
+    }
+
+    #[test]
+    fn rework_prompt_carries_the_feedback() {
+        let spec = tempfile::tempdir().unwrap();
+        std::fs::write(spec.path().join("SPEC.md"), "").unwrap();
+        let project = Project::new("phase", spec.path(), "/dev/phase");
+        let item = WorkItem::new("phase", "timesifter.txt");
+        let prompt = build_rework(
+            &project,
+            &item,
+            "No extra turns.",
+            "https://github.com/up/repo/pull/7",
+            "### Review by maint (CHANGES_REQUESTED)\n\nRename it.",
+        )
+        .unwrap();
+        assert!(prompt.contains("<work-item>\nNo extra turns.\n</work-item>"));
+        assert!(prompt.contains("pull request https://github.com/up/repo/pull/7"));
+        assert!(prompt.contains("<review-feedback>\n### Review by maint"));
+        assert!(prompt.contains("SPEC.md"));
+        assert!(prompt.contains("do not rewrite or squash the existing ones"));
     }
 
     #[test]

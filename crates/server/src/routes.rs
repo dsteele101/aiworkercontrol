@@ -66,15 +66,19 @@ struct ItemQuery {
 
 async fn result(State(app): State<AppState>, Query(q): Query<ItemQuery>) -> Response {
     let queue = app.pool().queue();
-    // Only items actually listed as closed are served, so the query cannot
-    // name an arbitrary path.
-    let closed = queue.list(ItemState::Closed).unwrap_or_default();
-    let Some(item) = closed.into_iter().find(|i| i.to_string() == q.item) else {
-        return (StatusCode::NOT_FOUND, "no such closed item").into_response();
+    // Only items actually listed in some state are served, so the query
+    // cannot name an arbitrary path.
+    let found = ItemState::ALL.into_iter().find_map(|state| {
+        let items = queue.list(state).unwrap_or_default();
+        items
+            .into_iter()
+            .find(|i| i.to_string() == q.item)
+            .map(|item| (state, item))
+    });
+    let Some((state, item)) = found else {
+        return (StatusCode::NOT_FOUND, "no such item").into_response();
     };
-    let path = queue
-        .path(ItemState::Closed, &item)
-        .with_file_name(format!("{}{RESULT_SUFFIX}", item.stem()));
+    let path = queue.sidecar_path(state, &item, RESULT_SUFFIX);
     let body = std::fs::read_to_string(&path).unwrap_or_else(|e| format!("(no result file: {e})"));
     Html(pages::result(&item, &body).into_string()).into_response()
 }
@@ -124,7 +128,7 @@ struct ItemForm {
 async fn resume(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {
     if let Some((project, file)) = f.item.split_once('/') {
         let item = WorkItem::new(project, file);
-        let message = match app.pool().resume(&item) {
+        let message = match app.pool().resume(&item).await {
             Ok(()) => format!("Returned {item} to the agents with a fresh turn count."),
             Err(e) => format!("Could not return {item}: {e}"),
         };

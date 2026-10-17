@@ -229,7 +229,26 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                     }
                 }
                 @for item in lists.get("inreview").into_iter().flatten() {
-                    tr { td { (item) } td.warn { "in review" } td {} }
+                    @let m = meta(ItemState::InReview, item);
+                    tr {
+                        td { (item) }
+                        @if m.needs_rework.is_some() {
+                            td.warn {
+                                "changes requested; waiting for a worker (" (m.turns) " of "
+                                (max_turns) " turns used)"
+                                @if let Some(error) = &m.last_error { "; last run: " (error) }
+                            }
+                        } @else {
+                            td.warn { "in review (" (m.turns) " of " (max_turns) " turns used)" }
+                        }
+                        td {
+                            @if let Some(url) = &m.pr_url {
+                                a href=(url) target="_blank" rel="noopener" { "Pull request" }
+                            }
+                            " "
+                            a href={ "/result?item=" (url_encode(&item.to_string())) } { "Result" }
+                        }
+                    }
                 }
                 @for item in lists.get("closed").into_iter().flatten() {
                     tr {
@@ -237,7 +256,7 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                         td.ok { "closed" }
                         td {
                             a href={ "/result?item=" (url_encode(&item.to_string())) } { "Result" }
-                            @if let Some(url) = app.pool().pull_request(item) {
+                            @if let Some(url) = app.pool().pull_request(ItemState::Closed, item) {
                                 " " a href=(url) target="_blank" rel="noopener" { "Pull request" }
                             }
                             @if has_worktree(item) {
