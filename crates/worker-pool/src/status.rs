@@ -19,8 +19,6 @@ pub struct PoolSnapshot {
     /// The workers that currently exist, by id. While shrinking there can be
     /// more than `target_workers`, each finishing its current item.
     pub workers: Vec<WorkerStatus>,
-    /// Items that failed and wait for a retry, with the reason.
-    pub failed: Vec<(WorkItem, String)>,
     /// The last error that kept workers from claiming items, if any.
     pub last_error: Option<String>,
 }

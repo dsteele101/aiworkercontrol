@@ -15,6 +15,8 @@ use crate::{AppState, login, pages};
 
 /// The most workers the UI allows.
 pub(crate) const MAX_WORKERS: usize = 32;
+/// The highest turn limit the UI allows.
+pub(crate) const MAX_TURNS: u32 = 50;
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -24,7 +26,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/start", post(start))
         .route("/stop", post(stop))
         .route("/workers", post(set_workers))
-        .route("/retry", post(retry))
+        .route("/resume", post(resume))
+        .route("/settings/max-turns", post(set_max_turns))
         .route("/cleanup", post(clean_up))
         .route("/settings/active", post(set_active))
         .route("/settings/provider", post(save_provider))
@@ -118,11 +121,33 @@ struct ItemForm {
     item: String,
 }
 
-async fn retry(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {
+async fn resume(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {
     if let Some((project, file)) = f.item.split_once('/') {
-        app.pool().retry(&WorkItem::new(project, file));
+        let item = WorkItem::new(project, file);
+        let message = match app.pool().resume(&item) {
+            Ok(()) => format!("Returned {item} to the agents with a fresh turn count."),
+            Err(e) => format!("Could not return {item}: {e}"),
+        };
+        app.notify(message);
     }
     Redirect::to("/")
+}
+
+#[derive(Deserialize)]
+struct MaxTurnsForm {
+    max_turns: u32,
+}
+
+async fn set_max_turns(State(app): State<AppState>, Form(f): Form<MaxTurnsForm>) -> Redirect {
+    let max_turns = f.max_turns.clamp(1, MAX_TURNS);
+    report(
+        &app,
+        app.update_settings(|s| {
+            s.max_turns = max_turns;
+            Ok(())
+        }),
+    );
+    Redirect::to("/settings")
 }
 
 async fn clean_up(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {

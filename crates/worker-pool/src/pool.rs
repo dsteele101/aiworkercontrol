@@ -13,9 +13,9 @@ use std::time::Duration;
 
 use agent_backend::ProviderConfig;
 use tokio::sync::{Notify, watch};
-use work_queue::{Queue, WorkItem};
+use work_queue::{Queue, State as ItemState, WorkItem};
 
-use crate::{Activity, PoolError, PoolSnapshot, Project, WorkerStatus};
+use crate::{Activity, ItemMeta, PoolError, PoolSnapshot, Project, WorkerStatus};
 
 /// How often idle workers look for new items when nothing wakes them.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -32,6 +32,8 @@ pub struct PoolConfig {
     pub projects: Vec<Project>,
     /// Where to find the agent CLIs; `PATH` when `None`.
     pub cli_dir: Option<PathBuf>,
+    /// Agent runs an item may use before it goes to `hold`; at least 1.
+    pub max_turns: u32,
 }
 
 /// Owns the workers. Cheap to clone; every clone controls the same pool.
@@ -53,7 +55,6 @@ struct Shared {
 #[derive(Debug, Default)]
 struct State {
     workers: BTreeMap<usize, Activity>,
-    failed: BTreeMap<WorkItem, String>,
     last_error: Option<String>,
 }
 
@@ -102,10 +103,21 @@ impl Supervisor {
         self.shared.config.borrow().clone()
     }
 
-    /// Makes a failed item eligible to be picked up again.
-    pub fn retry(&self, item: &WorkItem) {
-        self.shared.lock().failed.remove(item);
+    /// Returns an item on hold to the agents with a fresh turn count.
+    pub fn resume(&self, item: &WorkItem) -> Result<(), PoolError> {
+        let queue = &self.shared.queue;
+        if !queue.list(ItemState::Hold)?.contains(item) {
+            return Err(PoolError::NotOnHold(item.clone()));
+        }
+        ItemMeta::default().save(queue, ItemState::Hold, item)?;
+        queue.transition(item, ItemState::Hold, ItemState::Open)?;
         self.shared.changed();
+        Ok(())
+    }
+
+    /// What the pool has recorded about `item` while it is in `state`.
+    pub fn meta(&self, state: ItemState, item: &WorkItem) -> Result<ItemMeta, PoolError> {
+        ItemMeta::load(&self.shared.queue, state, item)
     }
 
     /// The work queue the pool takes items from.
@@ -128,11 +140,6 @@ impl Supervisor {
                     id: *id,
                     activity: activity.clone(),
                 })
-                .collect(),
-            failed: state
-                .failed
-                .iter()
-                .map(|(item, reason)| (item.clone(), reason.clone()))
                 .collect(),
             last_error: state.last_error.clone(),
         }
