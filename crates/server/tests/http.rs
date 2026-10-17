@@ -1,0 +1,239 @@
+//! The app over HTTP, through the router.
+
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic_in_result_fn)]
+
+use std::fs;
+
+use agent_backend::Provider;
+use axum::body::{Body, to_bytes};
+use axum::http::{Request, StatusCode, header};
+use server::{AppState, SETTINGS_FILE, Settings};
+use tower::ServiceExt;
+
+const PORT: u16 = 8787;
+const HOST: &str = "127.0.0.1:8787";
+
+struct App {
+    dir: tempfile::TempDir,
+    state: AppState,
+}
+
+/// An app over an empty work queue. Agent CLIs are looked up in an empty
+/// directory, so login status checks never reach a real CLI.
+fn app() -> App {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work/open")).unwrap();
+    fs::create_dir_all(dir.path().join("no-clis")).unwrap();
+    let settings = Settings {
+        cli_dir: Some(dir.path().join("no-clis")),
+        ..Settings::default()
+    };
+    settings.save(dir.path()).unwrap();
+    let state = AppState::new(dir.path(), PORT).unwrap();
+    App { dir, state }
+}
+
+impl App {
+    async fn send(&self, req: Request<Body>) -> (StatusCode, String) {
+        let res = server::router(self.state.clone())
+            .oneshot(req)
+            .await
+            .unwrap();
+        let status = res.status();
+        let body = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    async fn get(&self, path: &str) -> (StatusCode, String) {
+        self.send(
+            Request::get(path)
+                .header(header::HOST, HOST)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+    }
+
+    async fn post(&self, path: &str, form: &str) -> StatusCode {
+        let req = Request::post(path)
+            .header(header::HOST, HOST)
+            .header(header::ORIGIN, format!("http://{HOST}"))
+            .header("sec-fetch-site", "same-origin")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(form.to_string()))
+            .unwrap();
+        self.send(req).await.0
+    }
+
+    fn saved(&self) -> Settings {
+        Settings::load(self.dir.path()).unwrap()
+    }
+}
+
+#[tokio::test]
+async fn dashboard_renders() {
+    let app = app();
+    let (status, body) = app.get("/").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Workers"));
+    assert!(body.contains("Stopped"));
+    assert!(body.contains(r#"http-equiv="refresh""#));
+}
+
+#[tokio::test]
+async fn foreign_host_is_refused() {
+    let app = app();
+    let req = Request::get("/")
+        .header(header::HOST, "attacker.test:8787")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(app.send(req).await.0, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn cross_site_post_is_refused() {
+    let app = app();
+    let req = Request::post("/workers")
+        .header(header::HOST, HOST)
+        .header(header::ORIGIN, "https://attacker.test")
+        .header("sec-fetch-site", "cross-site")
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .body(Body::from("count=9"))
+        .unwrap();
+    assert_eq!(app.send(req).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(app.saved().workers, 1);
+}
+
+#[tokio::test]
+async fn worker_count_is_saved_and_applied() {
+    let app = app();
+    assert_eq!(app.post("/workers", "count=3").await, StatusCode::SEE_OTHER);
+    assert_eq!(app.saved().workers, 3);
+    assert_eq!(app.state.pool().config().workers, 3);
+
+    // Capped at the UI's maximum.
+    app.post("/workers", "count=500").await;
+    assert_eq!(app.saved().workers, 32);
+}
+
+#[tokio::test]
+async fn api_key_is_saved_but_never_shown() {
+    let app = app();
+    let status = app
+        .post(
+            "/settings/provider",
+            "provider=open_ai&use_api_key=on&api_key=sk-very-secret&model=gpt-5",
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let saved = app.saved();
+    let openai = saved.provider(Provider::OpenAi).unwrap();
+    assert_eq!(openai.api_key, "sk-very-secret");
+    assert!(openai.use_api_key);
+    assert_eq!(openai.model, "gpt-5");
+
+    let (_, page) = app.get("/settings").await;
+    assert!(!page.contains("sk-very-secret"));
+    assert!(page.contains("saved — leave blank to keep"));
+
+    // A blank key field keeps the key.
+    app.post(
+        "/settings/provider",
+        "provider=open_ai&use_api_key=on&api_key=",
+    )
+    .await;
+    assert_eq!(
+        app.saved().provider(Provider::OpenAi).unwrap().api_key,
+        "sk-very-secret"
+    );
+}
+
+#[tokio::test]
+async fn unrunnable_active_provider_is_rejected() {
+    let app = app();
+    app.post("/settings/active", "provider=deepseek").await;
+    assert_eq!(app.saved().active, Provider::Anthropic);
+    let (_, page) = app.get("/settings").await;
+    assert!(
+        page.contains("Not saved: Deepseek needs an API key"),
+        "{page}"
+    );
+
+    app.post("/settings/provider", "provider=deepseek&api_key=sk-ds")
+        .await;
+    app.post("/settings/active", "provider=deepseek").await;
+    assert_eq!(app.saved().active, Provider::Deepseek);
+    assert_eq!(
+        app.state.pool().config().provider.provider,
+        Provider::Deepseek
+    );
+}
+
+#[tokio::test]
+async fn start_needs_a_project() {
+    let app = app();
+    app.post("/start", "").await;
+    assert!(!app.state.pool().snapshot().running);
+    let (_, page) = app.get("/").await;
+    assert!(page.contains("add a project in Settings first"));
+}
+
+#[tokio::test]
+async fn projects_are_validated() {
+    let app = app();
+    fs::create_dir_all(app.dir.path().join("spec/demo")).unwrap();
+    app.post(
+        "/settings/projects",
+        "name=demo&spec_dir=spec/demo&repo=nowhere",
+    )
+    .await;
+    assert!(app.saved().projects.is_empty());
+    let (_, page) = app.get("/settings").await;
+    assert!(page.contains("nowhere is not a git repository"), "{page}");
+
+    fs::create_dir_all(app.dir.path().join("repo/.git")).unwrap();
+    app.post(
+        "/settings/projects",
+        "name=demo&spec_dir=spec/demo&repo=repo&base_ref=develop",
+    )
+    .await;
+    let projects = app.saved().projects;
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].base_ref, "develop");
+
+    app.post(
+        "/settings/projects",
+        "name=..%2Fx&spec_dir=spec/demo&repo=repo",
+    )
+    .await;
+    assert_eq!(app.saved().projects.len(), 1);
+
+    app.post("/settings/projects/delete", "name=demo").await;
+    assert!(app.saved().projects.is_empty());
+}
+
+#[tokio::test]
+async fn result_serves_only_closed_items() {
+    let app = app();
+    let closed = app.dir.path().join("work/closed/demo");
+    fs::create_dir_all(&closed).unwrap();
+    fs::write(closed.join("a.txt"), "item").unwrap();
+    fs::write(closed.join("a.result.md"), "# all good").unwrap();
+
+    let (status, body) = app.get("/result?item=demo%2Fa.txt").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("# all good"));
+
+    let (status, _) = app.get("/result?item=..%2F..%2Fetc%2Fpasswd").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn settings_file_is_not_written_by_reads() {
+    let app = app();
+    let before = fs::read_to_string(app.dir.path().join(SETTINGS_FILE)).unwrap();
+    app.get("/settings").await;
+    app.get("/").await;
+    let after = fs::read_to_string(app.dir.path().join(SETTINGS_FILE)).unwrap();
+    assert_eq!(before, after);
+}

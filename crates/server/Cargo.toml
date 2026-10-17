@@ -1,0 +1,32 @@
+[package]
+name = "server"
+description = "Web dashboard and settings for AI Worker Control"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "aiworkercontrol"
+path = "src/main.rs"
+
+[dependencies]
+agent-backend = { path = "../agent-backend" }
+anyhow = { workspace = true }
+axum = { workspace = true }
+maud = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync"] }
+toml = { workspace = true }
+work-queue = { path = "../work-queue" }
+worker-pool = { path = "../worker-pool" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true
