@@ -24,3 +24,10 @@
 
 # Runtime settings of the worker control app; holds API keys.
 /aiworkercontrol.toml
+
+# Work items are runtime state: the app moves them between open/,
+# inprogress/ and closed/, so tracking them would leave the tree dirty.
+# Only the .gitkeep files that hold the directory layout are committed.
+/work/**
+!/work/**/
+!/work/**/.gitkeep
