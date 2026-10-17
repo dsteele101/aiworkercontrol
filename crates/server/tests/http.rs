@@ -97,10 +97,74 @@ async fn dashboard_shows_recorded_plan_usage() {
         ..app
     };
     let (_, body) = app.get("/").await;
-    assert!(body.contains("<strong>64%</strong>"), "{body}");
+    assert!(
+        body.contains(r#"<strong class="warn">64%</strong>"#),
+        "{body}"
+    );
+    assert!(body.contains("Past the 50% warning"));
     assert!(body.contains("resets in "));
     assert!(body.contains("<strong>0%</strong>"));
     assert!(body.contains("reset since last report"));
+}
+
+#[tokio::test]
+async fn stop_level_offers_an_override() {
+    let app = app();
+    fs::write(
+        app.dir.path().join("work/usage.json"),
+        r#"{"anthropic":{"session":{"percent":86,"resets_at":4000000000}}}"#,
+    )
+    .unwrap();
+    let app = App {
+        state: AppState::new(app.dir.path(), PORT).unwrap(),
+        ..app
+    };
+    let (_, body) = app.get("/").await;
+    assert!(
+        body.contains(r#"<strong class="bad">86%</strong>"#),
+        "{body}"
+    );
+    assert!(body.contains("Stopped at the 85% level"));
+    assert!(body.contains(r#"action="/usage/override""#));
+
+    let status = app.post("/usage/override", "provider=anthropic").await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        app.state.pool().snapshot().overridden,
+        vec![Provider::Anthropic]
+    );
+    let (_, body) = app.get("/").await;
+    assert!(body.contains("overridden until the window resets"));
+}
+
+#[tokio::test]
+async fn usage_limits_are_saved_and_checked() {
+    let app = app();
+    let status = app
+        .post(
+            "/settings/limits",
+            "warn=70%2C+60%2C+60&stop=90&fallback1=gemini&fallback2=&fallback3=open_ai&fallback4=",
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let saved = app.saved();
+    assert_eq!(saved.limits.warn, vec![60, 70]);
+    assert_eq!(saved.limits.stop, 90);
+    assert!(!saved.limits.failover, "an unticked box turns failover off");
+    assert_eq!(saved.fallbacks, vec![Provider::Gemini, Provider::OpenAi]);
+    assert_eq!(app.state.pool().config().limits.stop, 90);
+
+    let (_, page) = app.get("/settings").await;
+    assert!(page.contains(r#"value="60, 70""#), "{page}");
+
+    // A warning at or above the stop level is refused, and nothing changes.
+    app.post("/settings/limits", "warn=95&stop=90&failover=on")
+        .await;
+    assert_eq!(app.saved().limits.warn, vec![60, 70]);
+    let (_, page) = app.get("/settings").await;
+    assert!(
+        page.contains("Not saved: warning levels must be above 0 and below the 90% stop level")
+    );
 }
 
 #[tokio::test]
