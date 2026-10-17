@@ -1,5 +1,6 @@
 //! Running an agent CLI and following its event stream.
 
+use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Stdio;
 
@@ -9,7 +10,7 @@ use tokio::process::Command;
 
 use crate::PoolError;
 
-/// Bytes of stderr kept for the failure reason.
+/// Bytes of stderr or setup output kept for a failure reason.
 const STDERR_TAIL: usize = 2000;
 
 /// How an agent run ended.
@@ -40,8 +41,48 @@ impl Outcome {
     }
 }
 
+/// Runs a project's setup command with `sh -c` in `worktree`, with `env`
+/// set, writing its output to `log`. Fails if it exits unsuccessfully.
+pub(crate) async fn setup(
+    script: &str,
+    worktree: &Path,
+    env: &[(&str, &OsStr)],
+    log: &Path,
+) -> Result<(), PoolError> {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .current_dir(worktree)
+        .envs(env.iter().copied())
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|source| PoolError::Spawn {
+            program: "sh".into(),
+            source,
+        })?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    let entry = format!(
+        "--- setup: {script} ---\n{text}\n--- setup {} ---\n",
+        output.status
+    );
+    tokio::fs::write(log, entry)
+        .await
+        .map_err(PoolError::io("write", log))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(PoolError::Setup {
+            status: output.status.to_string(),
+            output: tail(&text),
+        })
+    }
+}
+
 /// Runs `run` (with the program looked up in `cli_dir` when given), feeding
-/// each parsed event to `on_event` and copying raw output to `log`.
+/// each parsed event to `on_event` and appending raw output to `log`.
 pub(crate) async fn run(
     run: &Invocation,
     cli: Cli,
@@ -72,9 +113,12 @@ pub(crate) async fn run(
         source,
     })?;
 
-    let mut log_file = tokio::fs::File::create(log)
+    let mut log_file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
         .await
-        .map_err(PoolError::io("create", log))?;
+        .map_err(PoolError::io("open", log))?;
     let mut stderr = child.stderr.take();
     let stderr_task = tokio::spawn(async move {
         let mut buf = Vec::new();
@@ -119,15 +163,19 @@ pub(crate) async fn run(
         .and(log_file.write_all(&stderr).await)
         .map_err(PoolError::io("write", log))?;
 
-    let stderr = String::from_utf8_lossy(&stderr);
-    let tail_start = stderr.len().saturating_sub(STDERR_TAIL);
-    let tail_start = (tail_start..stderr.len())
-        .find(|i| stderr.is_char_boundary(*i))
-        .unwrap_or(stderr.len());
     Ok(Outcome {
         exit_ok: status.success(),
         finished,
         last_text,
-        stderr_tail: stderr[tail_start..].trim().to_string(),
+        stderr_tail: tail(&String::from_utf8_lossy(&stderr)),
     })
+}
+
+/// The last [`STDERR_TAIL`] bytes of `text`, cut on a char boundary.
+fn tail(text: &str) -> String {
+    let start = text.len().saturating_sub(STDERR_TAIL);
+    let start = (start..text.len())
+        .find(|i| text.is_char_boundary(*i))
+        .unwrap_or(text.len());
+    text[start..].trim().to_string()
 }

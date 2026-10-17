@@ -14,10 +14,12 @@ fn key() -> Auth {
 
 fn run(config: &ProviderConfig) -> Invocation {
     let extra = [PathBuf::from("/spec/phase")];
+    let writable = [PathBuf::from("/cache/target-1")];
     let job = Job {
         prompt: "PROMPT",
         workdir: Path::new("/wt/phase/a"),
         extra_dirs: &extra,
+        writable_dirs: &writable,
     };
     config.invocation(&job).unwrap()
 }
@@ -83,6 +85,7 @@ fn deepseek_plan_is_rejected() {
         prompt: "",
         workdir: Path::new("/wt"),
         extra_dirs: &[],
+        writable_dirs: &[],
     };
     assert_eq!(
         config.invocation(&job),
@@ -164,4 +167,18 @@ fn config_round_trips_through_json() {
     assert!(json.contains(r#""mode":"api_key""#), "{json}");
     let back: ProviderConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(back, config);
+}
+
+#[test]
+fn only_codex_is_told_about_writable_dirs() {
+    let codex = run(&ProviderConfig::new(Provider::OpenAi, Auth::Plan));
+    assert!(has_pair(&codex, "--add-dir", "/cache/target-1"));
+
+    for provider in [Provider::Anthropic, Provider::Gemini] {
+        let other = run(&ProviderConfig::new(provider, Auth::Plan));
+        assert!(
+            !other.args.iter().any(|a| a == "/cache/target-1"),
+            "{provider:?}"
+        );
+    }
 }

@@ -39,6 +39,14 @@ pub enum PoolError {
         #[source]
         source: std::io::Error,
     },
+    /// The project's setup command failed.
+    #[error("setup command failed ({status}): {output}")]
+    Setup {
+        /// How it exited.
+        status: String,
+        /// The end of what it printed.
+        output: String,
+    },
     /// The agent reported failure or exited unsuccessfully.
     #[error("agent failed: {0}")]
     AgentFailed(String),

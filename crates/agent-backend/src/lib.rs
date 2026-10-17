@@ -21,7 +21,7 @@
 //! use std::path::Path;
 //!
 //! let config = ProviderConfig::new(Provider::Anthropic, Auth::Plan);
-//! let job = Job { prompt: "Fix the bug", workdir: Path::new("/wt"), extra_dirs: &[] };
+//! let job = Job { prompt: "Fix the bug", workdir: Path::new("/wt"), extra_dirs: &[], writable_dirs: &[] };
 //! let run = config.invocation(&job)?;
 //! assert_eq!(run.program, "claude");
 //! assert!(run.env_remove.contains(&"ANTHROPIC_API_KEY".to_string()));

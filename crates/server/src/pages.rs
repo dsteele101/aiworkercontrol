@@ -306,13 +306,17 @@ pub(crate) fn settings(
             }
             @if !settings.projects.is_empty() {
                 table {
-                    tr { th { "Name" } th { "Spec directory" } th { "Repository" } th { "Branch from" } th {} }
+                    tr { th { "Name" } th { "Spec directory" } th { "Repository" } th { "Branch from" } th { "Worktree setup" } th {} }
                     @for project in &settings.projects {
                         tr {
                             td { (project.name) }
                             td { code { (project.spec_dir.display()) } }
                             td { code { (project.repo.display()) } }
                             td { code { (project.base_ref) } }
+                            td {
+                                @if let Some(setup) = &project.setup { code { (setup) } }
+                                @else { span.muted { "none" } }
+                            }
                             td {
                                 form.inline method="post" action="/settings/projects/delete" {
                                     input type="hidden" name="name" value=(project.name);
@@ -327,8 +331,18 @@ pub(crate) fn settings(
                 div.fields {
                     div { label { "Name" } input type="text" name="name" placeholder="phase" required; }
                     div { label { "Spec directory" } input type="text" name="spec_dir" placeholder="spec/phase" required; }
-                    div { label { "Repository" } input type="text" name="repo" placeholder="../phase" required; }
+                    div { label { "Repository" } input type="text" name="repo" placeholder="/home/me/dev/phase or ../phase" required; }
                     div { label { "Branch from" } input type="text" name="base_ref" placeholder="main"; }
+                }
+                label { "Worktree setup command (optional)" }
+                input type="text" name="setup" placeholder="e.g. cp \"$AIWC_REPO\"/data/*.json data/";
+                p.muted {
+                    "Each item gets a fresh git worktree on its own " code { "ai/<item>" } " branch, beside the repo in "
+                    code { "<repo>-worktrees/" } ". This command runs there with " code { "sh -c" } " before the agent "
+                    "starts, to supply gitignored or generated files the build needs; "
+                    code { "$AIWC_REPO" } " is your checkout and " code { "$AIWC_WORKTREE" } " the new worktree. "
+                    "Each worker keeps its own " code { "CARGO_TARGET_DIR" } " build cache there too. "
+                    "To change a project, add it again under the same name."
                 }
                 p { button { "Add project" } }
             }

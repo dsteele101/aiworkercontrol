@@ -115,16 +115,37 @@ impl Shared {
         let branch = Project::branch(item);
         git::prepare_worktree(&project.repo, &project.base_ref, &worktree, &branch).await?;
 
+        let log = project.log_path(item);
+        tokio::fs::write(&log, "")
+            .await
+            .map_err(PoolError::io("create", &log))?;
+        let build_cache = project.build_cache(id);
+        tokio::fs::create_dir_all(&build_cache)
+            .await
+            .map_err(PoolError::io("create", &build_cache))?;
+        let env = [
+            ("AIWC_REPO", project.repo.as_os_str()),
+            ("AIWC_WORKTREE", worktree.as_os_str()),
+            ("CARGO_TARGET_DIR", build_cache.as_os_str()),
+        ];
+        if let Some(setup) = project.setup.as_deref().filter(|s| !s.trim().is_empty()) {
+            agent::setup(setup, &worktree, &env, &log).await?;
+        }
+
         let spec_dir = std::path::absolute(&project.spec_dir)
             .map_err(PoolError::io("resolve", &project.spec_dir))?;
         let extra_dirs = [spec_dir];
+        let writable_dirs = [build_cache.clone()];
         let job = Job {
             prompt: &prompt,
             workdir: &worktree,
             extra_dirs: &extra_dirs,
+            writable_dirs: &writable_dirs,
         };
-        let invocation = config.provider.invocation(&job)?;
-        let log = project.log_path(item);
+        let mut invocation = config.provider.invocation(&job)?;
+        invocation
+            .env
+            .push(("CARGO_TARGET_DIR".into(), build_cache.display().to_string()));
         let outcome = agent::run(
             &invocation,
             config.provider.provider.cli(),

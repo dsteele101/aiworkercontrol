@@ -188,6 +188,8 @@ struct ProjectForm {
     repo: String,
     #[serde(default)]
     base_ref: String,
+    #[serde(default)]
+    setup: String,
 }
 
 async fn add_project(State(app): State<AppState>, Form(f): Form<ProjectForm>) -> Redirect {
@@ -208,6 +210,7 @@ async fn add_project(State(app): State<AppState>, Form(f): Form<ProjectForm>) ->
             if !f.base_ref.trim().is_empty() {
                 project.base_ref = f.base_ref.trim().to_string();
             }
+            project.setup = Some(f.setup.trim().to_string()).filter(|s| !s.is_empty());
             if !root.join(&project.spec_dir).is_dir() {
                 return Err(format!(
                     "Spec directory {} not found.",
