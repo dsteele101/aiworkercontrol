@@ -70,6 +70,23 @@ pub(crate) async fn delete_branch(repo: &Path, branch: &str) -> Result<(), PoolE
     git(repo, &["branch", "-D", branch]).await.map(drop)
 }
 
+/// The fetch URL of `remote` in `repo`.
+pub(crate) async fn remote_url(repo: &Path, remote: &str) -> Result<String, PoolError> {
+    Ok(git(repo, &["remote", "get-url", remote])
+        .await?
+        .trim()
+        .to_string())
+}
+
+/// Pushes `branch` from `worktree` to `remote`, replacing what is there:
+/// `ai/*` branches belong to the app, and a retry rewrites them.
+pub(crate) async fn push(worktree: &Path, remote: &str, branch: &str) -> Result<(), PoolError> {
+    let refspec = format!("{branch}:refs/heads/{branch}");
+    git(worktree, &["push", "--force", remote, &refspec])
+        .await
+        .map(drop)
+}
+
 /// The commits on the worktree's branch that `base` does not have, newest
 /// first, as `<short hash> <subject>`.
 pub(crate) async fn commits_since(worktree: &Path, base: &str) -> Result<Vec<String>, PoolError> {

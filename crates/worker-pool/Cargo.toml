@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 agent-backend = { path = "../agent-backend" }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["fs", "io-util", "macros", "process", "rt", "sync", "time"] }
 work-queue = { path = "../work-queue" }

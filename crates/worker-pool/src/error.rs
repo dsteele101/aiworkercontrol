@@ -19,6 +19,22 @@ pub enum PoolError {
         /// What git printed on stderr.
         stderr: String,
     },
+    /// A `gh` (GitHub CLI) command failed.
+    #[error("gh {args} failed: {stderr}")]
+    GitHub {
+        /// The gh arguments.
+        args: String,
+        /// What gh printed on stderr.
+        stderr: String,
+    },
+    /// The push remote's URL does not name a GitHub owner.
+    #[error("remote {remote} ({url}) is not a GitHub repository")]
+    NotGitHub {
+        /// The remote.
+        remote: String,
+        /// Its URL.
+        url: String,
+    },
     /// The agent CLI could not be started.
     #[error("could not start {program} (is it installed and on PATH?): {source}")]
     Spawn {

@@ -10,7 +10,10 @@ use work_queue::{State as ItemState, WorkItem};
 
 use super::{POLL_INTERVAL, PoolConfig, Shared};
 use crate::status::EVENT_TAIL;
-use crate::{ActiveJob, Activity, PoolError, Project, agent, git, prompt};
+
+/// How a result file records its pull request; read back by `pull_request`.
+pub(crate) const PR_LINE: &str = "- Pull request: ";
+use crate::{ActiveJob, Activity, PoolError, Project, PullRequests, agent, git, github, prompt};
 
 impl Shared {
     /// Whether worker `id` should exit. Decided under the state lock, together
@@ -119,6 +122,14 @@ impl Shared {
         tokio::fs::write(&log, "")
             .await
             .map_err(PoolError::io("create", &log))?;
+        // A draft left by an earlier attempt must not be mistaken for this one.
+        let pr_draft = project.pr_draft_path(item);
+        match tokio::fs::remove_file(&pr_draft).await {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                return Err(PoolError::io("remove", &pr_draft)(e));
+            }
+            _ => {}
+        }
         let build_cache = project.build_cache(id);
         tokio::fs::create_dir_all(&build_cache)
             .await
@@ -134,7 +145,14 @@ impl Shared {
 
         let spec_dir = std::path::absolute(&project.spec_dir)
             .map_err(PoolError::io("resolve", &project.spec_dir))?;
-        let extra_dirs = [spec_dir];
+        let mut extra_dirs = vec![spec_dir];
+        if project.pr.is_some() {
+            let dir = project.pr_draft_dir();
+            tokio::fs::create_dir_all(&dir)
+                .await
+                .map_err(PoolError::io("create", &dir))?;
+            extra_dirs.push(dir);
+        }
         let writable_dirs = [build_cache.clone()];
         let job = Job {
             prompt: &prompt,
@@ -189,7 +207,58 @@ impl Shared {
         if let Some(summary) = outcome.summary() {
             let _ = write!(report, "\n## Agent summary\n\n{}\n", summary.trim());
         }
+        if let Some(pr) = &project.pr {
+            // The work is committed either way, so a failure here is reported
+            // rather than failing the item and rerunning the agent.
+            let line = match self
+                .publish(
+                    project, pr, item, &worktree, &branch, &commits, &outcome, config,
+                )
+                .await
+            {
+                Ok(url) => format!("{PR_LINE}{url}"),
+                Err(e) => format!("- Pull request not opened: {e}"),
+            };
+            report = report.replacen("\n\n## Commits", &format!("\n{line}\n\n## Commits"), 1);
+        }
         Ok(report)
+    }
+
+    /// Pushes the item's branch and opens (or finds) its pull request,
+    /// titled and described by the agent's draft when it wrote one.
+    #[allow(clippy::too_many_arguments)] // One call site; a struct would only rename them.
+    async fn publish(
+        &self,
+        project: &Project,
+        pr: &PullRequests,
+        item: &WorkItem,
+        worktree: &std::path::Path,
+        branch: &str,
+        commits: &[String],
+        outcome: &agent::Outcome,
+        config: &PoolConfig,
+    ) -> Result<String, PoolError> {
+        let url = git::remote_url(&project.repo, &pr.push_remote).await?;
+        let owner = github::owner_from_url(&url).ok_or_else(|| PoolError::NotGitHub {
+            remote: pr.push_remote.clone(),
+            url: url.clone(),
+        })?;
+        git::push(worktree, &pr.push_remote, branch).await?;
+
+        let written = tokio::fs::read_to_string(project.pr_draft_path(item))
+            .await
+            .ok()
+            .and_then(|text| github::Draft::parse(&text));
+        let draft = written.unwrap_or_else(|| github::Draft {
+            // Newest commit's subject, without its hash.
+            title: commits
+                .first()
+                .and_then(|c| c.split_once(' '))
+                .map_or_else(|| item.to_string(), |(_, subject)| subject.to_string()),
+            body: outcome.summary().unwrap_or_default().trim().to_string(),
+        });
+        let gh = github::program(config.cli_dir.as_deref());
+        github::open_pr(&gh, &pr.repo, &pr.base, &owner, branch, &draft, pr.draft).await
     }
 
     fn set_activity(&self, id: usize, activity: Activity) {

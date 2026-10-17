@@ -19,6 +19,7 @@
 mod agent;
 mod error;
 mod git;
+mod github;
 mod pool;
 mod project;
 mod prompt;
@@ -26,5 +27,5 @@ mod status;
 
 pub use error::PoolError;
 pub use pool::{BranchOutcome, Cleanup, PoolConfig, Supervisor};
-pub use project::Project;
+pub use project::{Project, PullRequests};
 pub use status::{ActiveJob, Activity, PoolSnapshot, WorkerStatus};
