@@ -66,6 +66,19 @@ fn anthropic_key_and_model() {
 }
 
 #[test]
+fn effort_is_passed_to_claude_and_codex() {
+    let mut config = ProviderConfig::new(Provider::Anthropic, Auth::Plan);
+    config.effort = Some("xhigh".into());
+    assert!(has_pair(&run(&config), "--effort", "xhigh"));
+
+    config.provider = Provider::OpenAi;
+    config.effort = Some("high".into());
+    let codex = run(&config);
+    assert!(has_pair(&codex, "-c", "model_reasoning_effort=\"high\""));
+    assert!(!codex.args.contains(&"--effort".to_string()));
+}
+
+#[test]
 fn deepseek_uses_claude_against_anthropic_compatible_endpoint() {
     let run = run(&ProviderConfig::new(Provider::Deepseek, key()));
     assert_eq!(run.program, "claude");

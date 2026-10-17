@@ -122,7 +122,7 @@ async fn api_key_is_saved_but_never_shown() {
     let status = app
         .post(
             "/settings/provider",
-            "provider=open_ai&use_api_key=on&api_key=sk-very-secret&model=gpt-5",
+            "provider=open_ai&use_api_key=on&api_key=sk-very-secret&model=gpt-5&effort=high",
         )
         .await;
     assert_eq!(status, StatusCode::SEE_OTHER);
@@ -131,10 +131,13 @@ async fn api_key_is_saved_but_never_shown() {
     assert_eq!(openai.api_key, "sk-very-secret");
     assert!(openai.use_api_key);
     assert_eq!(openai.model, "gpt-5");
+    assert_eq!(openai.effort, "high");
+    assert_eq!(openai.config().effort.as_deref(), Some("high"));
 
     let (_, page) = app.get("/settings").await;
     assert!(!page.contains("sk-very-secret"));
     assert!(page.contains("saved — leave blank to keep"));
+    assert!(page.contains(r#"<option value="high" selected>high</option>"#));
 
     // A blank key field keeps the key.
     app.post(

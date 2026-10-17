@@ -215,6 +215,8 @@ struct ProviderForm {
     #[serde(default)]
     model: String,
     #[serde(default)]
+    effort: String,
+    #[serde(default)]
     base_url: String,
 }
 
@@ -230,6 +232,7 @@ async fn save_provider(State(app): State<AppState>, Form(f): Form<ProviderForm>)
             p.api_key = f.api_key.trim().to_string();
         }
         p.model = f.model.trim().to_string();
+        p.effort = f.effort.trim().to_string();
         p.base_url = f.base_url.trim().to_string();
         Ok(())
     });
