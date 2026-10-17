@@ -1,4 +1,0 @@
-Dragon's Eye Savants is not fully implemented. Let's implement it correctly. Right now, there is no option to cast it as a morph creature and the unmorph cost cannot be paid.
-
-Oracle Text: Morph—Reveal a blue card in your hand. (You may cast this card face down as a 2/2 creature for :mana3:. Turn it face up any time for its morph cost.)
-When this creature is turned face up, look at target opponent's hand.
