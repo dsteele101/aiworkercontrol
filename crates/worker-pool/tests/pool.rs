@@ -12,7 +12,7 @@ use agent_backend::{Auth, PlanUsage, Provider, ProviderConfig, UsageWindow};
 use work_queue::{Queue, State, WorkItem};
 use worker_pool::{
     Activity, BranchOutcome, Cleanup, PoolConfig, PoolError, PoolSnapshot, Project, ProviderUsage,
-    PullRequests, ReviewChange, Supervisor,
+    PullRequests, ReviewChange, Supervisor, UsageLimits,
 };
 
 /// Stands in for `gh`: records its arguments, and answers `pr list`,
@@ -152,6 +152,8 @@ fn fixture(items: &[(&str, &str)], workers: usize) -> Fixture {
         projects: vec![Project::new("demo", &spec, &repo)],
         cli_dir: Some(bin),
         max_turns: 1,
+        limits: UsageLimits::default(),
+        fallbacks: Vec::new(),
     };
     Fixture {
         _dir: dir,
@@ -283,6 +285,65 @@ async fn reported_plan_usage_is_kept_across_restarts() {
 
     let restarted = Supervisor::new(queue, fx.config.clone()).unwrap();
     assert_eq!(restarted.snapshot().usage, expected);
+}
+
+/// Records Claude's plan as `percent` used in a window that resets far in
+/// the future, as an earlier run would have.
+fn record_claude_usage(fx: &Fixture, percent: u8) {
+    fs::write(
+        fx.root.join("work/usage.json"),
+        format!(r#"{{"anthropic":{{"session":{{"percent":{percent},"resets_at":4000000000}}}}}}"#),
+    )
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_level_pauses_workers_until_overridden() {
+    let fx = fixture(&[("good.txt", "Fix the thing")], 1);
+    record_claude_usage(&fx, 86);
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+
+    let snapshot = wait_for(&pool, |s| s.limited.is_some()).await;
+    assert_eq!(
+        snapshot.limited.as_deref(),
+        Some("plan usage reached the 85% stop level: Anthropic (Claude) at 86%")
+    );
+    assert_eq!(queue.list(State::Open).unwrap().len(), 1);
+
+    pool.override_stop(Provider::Anthropic);
+    wait_for(&pool, |s| {
+        queue.list(State::Closed).unwrap().len() == 1 && idle(s)
+    })
+    .await;
+    pool.stop();
+    let snapshot = pool.snapshot();
+    assert_eq!(snapshot.limited, None);
+    assert_eq!(snapshot.overridden, vec![Provider::Anthropic]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stop_level_fails_over_to_the_next_provider() {
+    let mut fx = fixture(&[("good.txt", "Fix the thing")], 1);
+    record_claude_usage(&fx, 90);
+    // Deepseek runs through `claude` too, so the fake CLI serves it.
+    fx.config.fallbacks = vec![ProviderConfig::new(
+        Provider::Deepseek,
+        Auth::ApiKey { key: "k".into() },
+    )];
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+    wait_for(&pool, |s| {
+        queue.list(State::Closed).unwrap().len() == 1 && idle(s)
+    })
+    .await;
+    pool.stop();
+
+    let result = fs::read_to_string(fx.root.join("work/closed/demo/good.result.md")).unwrap();
+    assert!(result.contains("- Provider: Deepseek"), "{result}");
+    assert_eq!(pool.snapshot().limited, None);
 }
 
 #[tokio::test(flavor = "multi_thread")]

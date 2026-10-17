@@ -26,6 +26,12 @@ pub struct PoolSnapshot {
     /// Each provider's latest reported plan usage; providers that never
     /// reported any are left out.
     pub usage: Vec<ProviderUsage>,
+    /// Why workers are waiting instead of taking items: every provider they
+    /// may use has reached the stop level.
+    pub limited: Option<String>,
+    /// Providers whose stop level the user has overridden until their
+    /// usage drops back below it.
+    pub overridden: Vec<Provider>,
 }
 
 /// One worker.

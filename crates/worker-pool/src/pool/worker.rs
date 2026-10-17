@@ -4,14 +4,14 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use agent_backend::{AgentEvent, PlanUsage};
+use agent_backend::{AgentEvent, PlanUsage, ProviderConfig};
 use work_queue::{State as ItemState, WorkItem};
 
 use super::run::{Finish, Kind};
-use super::{POLL_INTERVAL, PoolConfig, Shared, State};
+use super::{POLL_INTERVAL, PoolConfig, Shared, State, unix_now};
 use crate::status::EVENT_TAIL;
-use crate::usage;
 use crate::{ActiveJob, Activity, ItemMeta, PoolError, Project};
+use crate::{limits, usage};
 
 /// How a result file records its pull request; read back by `pull_request`.
 pub(crate) const PR_LINE: &str = "- Pull request: ";
@@ -63,7 +63,11 @@ impl Shared {
     /// Claims the next item to run: first an in-review item whose feedback
     /// waits for a worker, then an open item.
     fn claim(&self) -> Result<Option<(WorkItem, Project, PoolConfig, Kind)>, PoolError> {
-        let config = self.config.borrow().clone();
+        let mut config = self.config.borrow().clone();
+        let Some(provider) = self.choose_provider(&config) else {
+            return Ok(None);
+        };
+        config.provider = provider;
         let projects = config.projects.clone();
         let project_of =
             |item: &WorkItem| projects.iter().find(|p| p.name == item.project).cloned();
@@ -91,6 +95,29 @@ impl Shared {
             let project = project_of(&item)?;
             Some((item, project, config, Kind::New))
         }))
+    }
+
+    /// The provider for the next run, per the plan-usage limits; `None`
+    /// when every allowed provider is stopped, which is recorded for the
+    /// dashboard.
+    fn choose_provider(&self, config: &PoolConfig) -> Option<ProviderConfig> {
+        let mut state = self.lock();
+        let state = &mut *state;
+        let chosen = limits::choose(
+            &config.provider,
+            &config.fallbacks,
+            &config.limits,
+            &state.usage,
+            &mut state.overrides,
+            unix_now(),
+        );
+        let limited = chosen.as_ref().err().cloned();
+        let changed = state.limited != limited;
+        state.limited = limited;
+        if changed {
+            self.changed();
+        }
+        chosen.ok()
     }
 
     async fn carry_out(

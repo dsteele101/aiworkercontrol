@@ -28,6 +28,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/workers", post(set_workers))
         .route("/resume", post(resume))
         .route("/settings/max-turns", post(set_max_turns))
+        .route("/settings/limits", post(set_limits))
+        .route("/usage/override", post(override_stop))
         .route("/cleanup", post(clean_up))
         .route("/settings/active", post(set_active))
         .route("/settings/provider", post(save_provider))
@@ -152,6 +154,78 @@ async fn set_max_turns(State(app): State<AppState>, Form(f): Form<MaxTurnsForm>)
         }),
     );
     Redirect::to("/settings")
+}
+
+#[derive(Deserialize)]
+struct LimitsForm {
+    warn: String,
+    stop: u8,
+    #[serde(default)]
+    failover: Option<String>,
+    // Blank when the select is left on "none".
+    #[serde(default)]
+    fallback1: String,
+    #[serde(default)]
+    fallback2: String,
+    #[serde(default)]
+    fallback3: String,
+    #[serde(default)]
+    fallback4: String,
+}
+
+async fn set_limits(State(app): State<AppState>, Form(f): Form<LimitsForm>) -> Redirect {
+    let saved = app.update_settings(|s| {
+        if !(1..=100).contains(&f.stop) {
+            return Err("the stop level must be between 1 and 100%".into());
+        }
+        let mut warn = Vec::new();
+        for level in f.warn.split(',').map(str::trim).filter(|l| !l.is_empty()) {
+            let level: u8 = level
+                .trim_end_matches('%')
+                .parse()
+                .map_err(|_| format!("{level:?} is not a warning level"))?;
+            if level == 0 || level >= f.stop {
+                return Err(format!(
+                    "warning levels must be above 0 and below the {}% stop level",
+                    f.stop
+                ));
+            }
+            warn.push(level);
+        }
+        warn.sort_unstable();
+        warn.dedup();
+        s.limits.warn = warn;
+        s.limits.stop = f.stop;
+        s.limits.failover = f.failover.is_some();
+        s.fallbacks = [&f.fallback1, &f.fallback2, &f.fallback3, &f.fallback4]
+            .into_iter()
+            .filter_map(|v| {
+                Provider::ALL
+                    .into_iter()
+                    .find(|p| pages::provider_value(*p) == v)
+            })
+            .collect();
+        Ok(())
+    });
+    if saved.is_ok() {
+        app.notify("Saved the plan usage limits.");
+    }
+    report(&app, saved);
+    Redirect::to("/settings")
+}
+
+#[derive(Deserialize)]
+struct OverrideForm {
+    provider: Provider,
+}
+
+async fn override_stop(State(app): State<AppState>, Form(f): Form<OverrideForm>) -> Redirect {
+    app.pool().override_stop(f.provider);
+    app.notify(format!(
+        "Runs may start on {} again until its usage window resets.",
+        f.provider.label()
+    ));
+    Redirect::to("/")
 }
 
 async fn clean_up(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use agent_backend::{Auth, ConfigError, Provider, ProviderConfig};
 use serde::{Deserialize, Serialize};
-use worker_pool::{PoolConfig, Project};
+use worker_pool::{PoolConfig, Project, UsageLimits};
 
 use crate::ServerError;
 
@@ -32,6 +32,12 @@ pub struct Settings {
     /// Agent runs an item may use before it goes on hold.
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
+    /// When plan usage warns, stops runs, and fails over.
+    #[serde(default)]
+    pub limits: UsageLimits,
+    /// Providers to fail over to at the stop level, in order.
+    #[serde(default)]
+    pub fallbacks: Vec<Provider>,
 }
 
 /// The default for [`Settings::max_turns`].
@@ -121,6 +127,8 @@ impl Default for Settings {
             projects: Vec::new(),
             cli_dir: None,
             max_turns: DEFAULT_MAX_TURNS,
+            limits: UsageLimits::default(),
+            fallbacks: Vec::new(),
         }
     }
 }
@@ -197,12 +205,26 @@ impl Settings {
     /// The pool configuration, with project paths resolved against `root`.
     /// An unrunnable active provider is passed through as is; check
     /// [`Settings::active_config`] before starting.
+    /// Fallbacks that are the active provider, repeated, or not runnable
+    /// (no API key, say) are left out.
     pub fn pool_config(&self, root: &Path) -> PoolConfig {
-        let provider = self
-            .provider(self.active)
-            .cloned()
-            .unwrap_or_else(|| ProviderSettings::new(self.active))
-            .config();
+        let config = |provider| {
+            self.provider(provider)
+                .cloned()
+                .unwrap_or_else(|| ProviderSettings::new(provider))
+                .config()
+        };
+        let provider = config(self.active);
+        let mut fallbacks: Vec<ProviderConfig> = Vec::new();
+        for &p in &self.fallbacks {
+            let fallback = config(p);
+            if p != self.active
+                && !fallbacks.iter().any(|f| f.provider == p)
+                && fallback.validate().is_ok()
+            {
+                fallbacks.push(fallback);
+            }
+        }
         let projects = self
             .projects
             .iter()
@@ -218,6 +240,8 @@ impl Settings {
             projects,
             cli_dir: self.cli_dir.clone(),
             max_turns: self.max_turns.max(1),
+            limits: self.limits.clone(),
+            fallbacks,
         }
     }
 }
@@ -286,6 +310,25 @@ mod tests {
         let config = settings.pool_config(Path::new("/root"));
         assert_eq!(config.projects[0].spec_dir, Path::new("/root/spec/phase"));
         assert_eq!(config.projects[0].repo, Path::new("/abs/phase"));
+    }
+
+    #[test]
+    fn pool_config_keeps_only_runnable_distinct_fallbacks() {
+        let mut settings = Settings::default();
+        settings.provider_mut(Provider::OpenAi).use_api_key = true; // no key
+        settings.fallbacks = vec![
+            Provider::Anthropic, // the active one
+            Provider::Gemini,
+            Provider::OpenAi,
+            Provider::Gemini,
+        ];
+        let fallbacks: Vec<_> = settings
+            .pool_config(Path::new("/root"))
+            .fallbacks
+            .iter()
+            .map(|f| f.provider)
+            .collect();
+        assert_eq!(fallbacks, vec![Provider::Gemini]);
     }
 
     #[test]

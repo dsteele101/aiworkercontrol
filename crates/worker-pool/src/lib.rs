@@ -16,6 +16,11 @@
 //! ([`ItemMeta`]). An item that uses up [`PoolConfig::max_turns`] goes to
 //! `hold` for manual review, and leaves only through [`Supervisor::resume`].
 //!
+//! Each provider's plan usage, as its CLI reports it, is checked against
+//! [`UsageLimits`] before every run: at the stop level a worker fails over
+//! to the next of [`PoolConfig::fallbacks`], or waits, until the window
+//! resets or the user calls [`Supervisor::override_stop`].
+//!
 //! Once a closed item's branch is merged, [`Supervisor::clean_up_merged`]
 //! removes its worktree and branch to free the space.
 
@@ -23,6 +28,7 @@ mod agent;
 mod error;
 mod git;
 mod github;
+mod limits;
 mod meta;
 mod pool;
 mod project;
@@ -31,6 +37,7 @@ mod status;
 mod usage;
 
 pub use error::PoolError;
+pub use limits::UsageLimits;
 pub use meta::ItemMeta;
 pub use pool::{BranchOutcome, Cleanup, PoolConfig, ReviewChange, Supervisor};
 pub use project::{Project, PullRequests};

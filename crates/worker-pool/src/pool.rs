@@ -8,18 +8,18 @@ mod worker;
 pub use cleanup::{BranchOutcome, Cleanup};
 pub use review::ReviewChange;
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use agent_backend::ProviderConfig;
+use agent_backend::{Provider, ProviderConfig};
 use tokio::sync::{Notify, watch};
 use work_queue::{Queue, State as ItemState, WorkItem};
 
 use crate::usage::{self, UsageMap};
-use crate::{Activity, ItemMeta, PoolError, PoolSnapshot, Project, WorkerStatus};
+use crate::{Activity, ItemMeta, PoolError, PoolSnapshot, Project, UsageLimits, WorkerStatus};
 
 /// How often idle workers look for new items when nothing wakes them.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -38,6 +38,11 @@ pub struct PoolConfig {
     pub cli_dir: Option<PathBuf>,
     /// Agent runs an item may use before it goes to `hold`; at least 1.
     pub max_turns: u32,
+    /// When plan usage warns and stops runs.
+    pub limits: UsageLimits,
+    /// Providers to fail over to, in order, when `provider` reaches the stop
+    /// level and [`UsageLimits::failover`] is on.
+    pub fallbacks: Vec<ProviderConfig>,
 }
 
 /// Owns the workers. Cheap to clone; every clone controls the same pool.
@@ -62,6 +67,8 @@ struct State {
     workers: BTreeMap<usize, Activity>,
     last_error: Option<String>,
     usage: UsageMap,
+    overrides: HashSet<Provider>,
+    limited: Option<String>,
 }
 
 impl Supervisor {
@@ -110,6 +117,13 @@ impl Supervisor {
         self.shared.changed();
     }
 
+    /// Lets runs start on `provider` again although its plan usage has
+    /// reached the stop level, until the usage drops below it.
+    pub fn override_stop(&self, provider: Provider) {
+        self.shared.lock().overrides.insert(provider);
+        self.shared.changed();
+    }
+
     /// The current settings.
     pub fn config(&self) -> PoolConfig {
         self.shared.config.borrow().clone()
@@ -143,6 +157,11 @@ impl Supervisor {
                 .collect(),
             last_error: state.last_error.clone(),
             usage: usage::listed(&state.usage),
+            limited: state.limited.clone(),
+            overridden: Provider::ALL
+                .into_iter()
+                .filter(|p| state.overrides.contains(p))
+                .collect(),
         }
     }
 
@@ -150,6 +169,13 @@ impl Supervisor {
     pub fn subscribe(&self) -> watch::Receiver<u64> {
         self.shared.version.subscribe()
     }
+}
+
+/// Seconds since the Unix epoch, as plan usage reports reset times.
+fn unix_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 impl Shared {

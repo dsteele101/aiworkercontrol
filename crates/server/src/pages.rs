@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use agent_backend::{AgentEvent, AuthStatus, Cli, Provider, UsageWindow};
 use maud::{DOCTYPE, Markup, html};
 use work_queue::{State as ItemState, WorkItem};
-use worker_pool::{Activity, ProviderUsage};
+use worker_pool::{Activity, PoolSnapshot, UsageLimits};
 
 use crate::routes::{MAX_TURNS, MAX_WORKERS};
 use crate::{AppState, Settings};
@@ -159,7 +159,7 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
         }
 
         h2 { "Plan usage" }
-        (usage_panel(&snapshot.usage))
+        (usage_panel(&snapshot, &settings.limits))
 
         h2 { "Workers" }
         @if snapshot.workers.is_empty() {
@@ -173,6 +173,8 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                             h3 { span { "Worker " (worker.id + 1) } span.muted { "idle" } }
                             @if worker.id >= snapshot.target_workers || !snapshot.running {
                                 p.muted { "Stopping." }
+                            } @else if snapshot.limited.is_some() {
+                                p.bad { "Waiting: plan usage reached the stop level." }
                             } @else {
                                 p.muted { "Waiting for open work." }
                             }
@@ -374,6 +376,47 @@ pub(crate) fn settings(
             }
         }
 
+        h2 { "Plan usage limits" }
+        form.panel method="post" action="/settings/limits" {
+            div.fields {
+                div {
+                    label for="warn" { "Warn at (%, comma-separated)" }
+                    input #warn type="text" name="warn" value=(settings.limits.warn.iter().map(u8::to_string).collect::<Vec<_>>().join(", "));
+                }
+                div {
+                    label for="stop" { "Stop at (%)" }
+                    input #stop type="number" name="stop" min="1" max="100" value=(settings.limits.stop);
+                }
+            }
+            label.check {
+                input type="checkbox" name="failover" checked[settings.limits.failover];
+                "At the stop level, fail over to the next provider below"
+            }
+            div.fields {
+                @for (i, name) in ["fallback1", "fallback2", "fallback3", "fallback4"].iter().enumerate() {
+                    @let chosen = settings.fallbacks.get(i).copied();
+                    div {
+                        label for=(name) { "Fallback " (i + 1) }
+                        select id=(name) name=(name) {
+                            option value="" selected[chosen.is_none()] { "none" }
+                            @for p in Provider::ALL {
+                                option value=(provider_value(p)) selected[chosen == Some(p)] { (p.label()) }
+                            }
+                        }
+                    }
+                }
+            }
+            p.bar {
+                button { "Save" }
+                span.muted {
+                    "Levels apply to each window a provider reports, the current one and the week. "
+                    "At the stop level no new run starts on that provider; running agents finish their item. "
+                    "Each fallback uses the model and effort on its card above, and is skipped unless it is set up. "
+                    "Only Claude reports its usage, so other providers are never stopped."
+                }
+            }
+        }
+
         h2 { "Projects" }
         div.panel.stack {
             p.muted {
@@ -509,22 +552,43 @@ fn clip(text: &str) -> String {
     }
 }
 
-fn usage_panel(usage: &[ProviderUsage]) -> Markup {
+fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     html! {
         div.panel {
-            @if usage.is_empty() {
+            @if let Some(limited) = &snapshot.limited {
+                p.bad { "Workers are waiting: " (limited) ". Override a provider below to let runs start on it again." }
+            }
+            @if snapshot.usage.is_empty() {
                 p.muted { "No usage reported yet. Claude reports its plan usage during each run; Codex and Gemini don't report theirs." }
             } @else {
                 table {
-                    tr { th { "Provider" } th { "Current window" } th { "Week" } }
-                    @for u in usage {
+                    tr { th { "Provider" } th { "Current window" } th { "Week" } th { "Status" } }
+                    @for u in &snapshot.usage {
+                        @let used = u.usage.highest_at(now);
                         tr {
                             td { (u.provider.label()) }
-                            td { (usage_window(u.usage.session, now)) }
-                            td { (usage_window(u.usage.weekly, now)) }
+                            td { (usage_window(u.usage.session, now, limits)) }
+                            td { (usage_window(u.usage.weekly, now, limits)) }
+                            td {
+                                @if limits.stopped(used) {
+                                    @if snapshot.overridden.contains(&u.provider) {
+                                        span.warn { "Past the " (limits.stop) "% stop level; overridden until the window resets" }
+                                    } @else {
+                                        span.bad { "Stopped at the " (limits.stop) "% level " }
+                                        form.inline method="post" action="/usage/override" {
+                                            input type="hidden" name="provider" value=(provider_value(u.provider));
+                                            button { "Override" }
+                                        }
+                                    }
+                                } @else if let Some(level) = limits.warning(used) {
+                                    span.warn { "Past the " (level) "% warning" }
+                                } @else {
+                                    span.muted { "OK" }
+                                }
+                            }
                         }
                     }
                 }
@@ -533,12 +597,18 @@ fn usage_panel(usage: &[ProviderUsage]) -> Markup {
     }
 }
 
-fn usage_window(window: Option<UsageWindow>, now: u64) -> Markup {
+fn usage_window(window: Option<UsageWindow>, now: u64, limits: &UsageLimits) -> Markup {
     html! {
         @match window {
             None => span.muted { "not reported" },
             Some(w) => {
-                strong { (w.percent_at(now)) "%" }
+                @let percent = w.percent_at(now);
+                @let class = if limits.stopped(percent) {
+                    Some("bad")
+                } else {
+                    limits.warning(percent).map(|_| "warn")
+                };
+                strong class=[class] { (percent) "%" }
                 @if let Some(reset) = w.resets_at.filter(|r| *r > now) {
                     " " span.muted { "· resets in " (duration(reset - now)) }
                 } @else if w.resets_at.is_some() {
@@ -567,7 +637,7 @@ fn elapsed(started: SystemTime) -> String {
 }
 
 /// The form value of a provider, matching its serde name.
-fn provider_value(provider: Provider) -> &'static str {
+pub(crate) fn provider_value(provider: Provider) -> &'static str {
     match provider {
         Provider::Anthropic => "anthropic",
         Provider::Gemini => "gemini",
