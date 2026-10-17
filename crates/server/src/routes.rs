@@ -9,7 +9,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use serde::Deserialize;
 use work_queue::{RESULT_SUFFIX, State as ItemState, WorkItem};
-use worker_pool::Project;
+use worker_pool::{BranchOutcome, Project};
 
 use crate::{AppState, login, pages};
 
@@ -25,6 +25,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/stop", post(stop))
         .route("/workers", post(set_workers))
         .route("/retry", post(retry))
+        .route("/cleanup", post(clean_up))
         .route("/settings/active", post(set_active))
         .route("/settings/provider", post(save_provider))
         .route("/settings/projects", post(add_project))
@@ -121,6 +122,35 @@ async fn retry(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect
     if let Some((project, file)) = f.item.split_once('/') {
         app.pool().retry(&WorkItem::new(project, file));
     }
+    Redirect::to("/")
+}
+
+async fn clean_up(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {
+    let Some((project, file)) = f.item.split_once('/') else {
+        return Redirect::to("/");
+    };
+    let item = WorkItem::new(project, file);
+    let branch = Project::branch(&item);
+    let message = match app.pool().clean_up(&item).await {
+        Ok(done) => {
+            let worktree = if done.worktree_removed {
+                "Removed the worktree"
+            } else {
+                "The worktree was already gone"
+            };
+            let branch = match done.branch {
+                BranchOutcome::Deleted => format!("deleted merged branch {branch}"),
+                BranchOutcome::KeptUnmerged => format!(
+                    "kept {branch} because its changes are not all in the base branch \
+                     (a squash merge looks like this); delete it yourself once merged"
+                ),
+                BranchOutcome::Missing => format!("{branch} was already deleted"),
+            };
+            format!("{worktree} of {item}; {branch}.")
+        }
+        Err(e) => format!("Could not clean up {item}: {e}"),
+    };
+    app.notify(message);
     Redirect::to("/")
 }
 

@@ -14,6 +14,8 @@ use std::path::PathBuf;
 use anyhow::{Context, bail};
 
 const DEFAULT_PORT: u16 = 8787;
+/// How often merged worktrees are looked for.
+const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -34,8 +36,26 @@ async fn main() -> anyhow::Result<()> {
         "AI Worker Control: http://{addr}/ (root {})",
         root.display()
     );
+    tokio::spawn(clean_up_merged(state.clone()));
     axum::serve(listener, server::router(state)).await?;
     Ok(())
+}
+
+/// Every few minutes, frees the worktrees of closed items whose branches
+/// have been merged.
+async fn clean_up_merged(state: server::AppState) {
+    let mut every = tokio::time::interval(CLEANUP_INTERVAL);
+    loop {
+        every.tick().await;
+        match state.pool().clean_up_merged().await {
+            Ok(items) => {
+                for item in items {
+                    println!("cleaned up merged {item}");
+                }
+            }
+            Err(e) => eprintln!("worktree cleanup: {e}"),
+        }
+    }
 }
 
 fn parse_args(mut args: impl Iterator<Item = String>) -> anyhow::Result<(PathBuf, u16)> {

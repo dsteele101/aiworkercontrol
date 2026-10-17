@@ -12,6 +12,9 @@
 //! 4. closes the item with a result file if the agent succeeded and left at
 //!    least one commit, and otherwise returns it to `open` and marks it failed
 //!    until [`Supervisor::retry`] is called.
+//!
+//! Once a closed item's branch is merged, [`Supervisor::clean_up_merged`]
+//! removes its worktree and branch to free the space.
 
 mod agent;
 mod error;
@@ -22,6 +25,6 @@ mod prompt;
 mod status;
 
 pub use error::PoolError;
-pub use pool::{PoolConfig, Supervisor};
+pub use pool::{BranchOutcome, Cleanup, PoolConfig, Supervisor};
 pub use project::Project;
 pub use status::{ActiveJob, Activity, PoolSnapshot, WorkerStatus};
