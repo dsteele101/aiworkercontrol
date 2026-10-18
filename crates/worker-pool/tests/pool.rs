@@ -11,8 +11,8 @@ use std::time::Duration;
 use agent_backend::{Auth, PlanUsage, Provider, ProviderConfig, UsageWindow};
 use work_queue::{Queue, State, WorkItem};
 use worker_pool::{
-    Activity, BranchOutcome, Cleanup, PoolConfig, PoolError, PoolSnapshot, Project, ProviderUsage,
-    PullRequests, ReviewChange, Supervisor, UsageLimits,
+    Activity, Balancing, BranchOutcome, Cleanup, PoolConfig, PoolError, PoolSnapshot, Project,
+    ProviderUsage, PullRequests, ReviewChange, Supervisor, UsageLimits,
 };
 
 /// Stands in for `gh`: records its arguments, and answers `pr list`,
@@ -154,6 +154,7 @@ fn fixture(items: &[(&str, &str)], workers: usize) -> Fixture {
         max_turns: 1,
         limits: UsageLimits::default(),
         fallbacks: Vec::new(),
+        balancing: Balancing::default(),
     };
     Fixture {
         _dir: dir,
@@ -928,6 +929,48 @@ async fn requested_changes_are_reworked_in_the_same_worktree() {
 
     // The same feedback on the same commit is not acted on twice.
     assert!(pool.check_reviews().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rework_kept_to_its_provider_waits_for_it() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    fx.config.max_turns = 3;
+    let (pool, item, _) = reviewed_item(&fx).await;
+    let mut meta = pool.meta(State::InReview, &item).unwrap();
+    assert_eq!(meta.provider, Some(Provider::Anthropic));
+    meta.needs_rework = Some("Please rename it.".into());
+    let meta_path = fx.root.join("work/inreview/demo/good.meta.json");
+    fs::write(&meta_path, serde_json::to_string(&meta).unwrap()).unwrap();
+    drop(pool);
+
+    // Claude is stopped; Deepseek could run, but the rework is Claude's.
+    record_claude_usage(&fx, 90);
+    let mut config = fx.config.clone();
+    config.fallbacks = vec![ProviderConfig::new(
+        Provider::Deepseek,
+        Auth::ApiKey { key: "k".into() },
+    )];
+    config.balancing.rework_any_provider = false;
+    let pool = Supervisor::new(Queue::new(fx.root.join("work")), config).unwrap();
+    pool.start();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let waiting = pool.meta(State::InReview, &item).unwrap();
+    assert_eq!(waiting.needs_rework.as_deref(), Some("Please rename it."));
+    assert_eq!(waiting.turns, 1);
+
+    pool.override_stop(Provider::Anthropic);
+    wait_for(&pool, |s| {
+        idle(s)
+            && pool
+                .meta(State::InReview, &item)
+                .is_ok_and(|m| m.needs_rework.is_none())
+    })
+    .await;
+    pool.stop();
+    let reworked = pool.meta(State::InReview, &item).unwrap();
+    assert_eq!(reworked.provider, Some(Provider::Anthropic));
+    assert_eq!(reworked.turns, 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]

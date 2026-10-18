@@ -6,9 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use agent_backend::{AgentEvent, AuthStatus, Cli, Provider, UsageWindow};
 use maud::{DOCTYPE, Markup, html};
 use work_queue::{State as ItemState, WorkItem};
-use worker_pool::{Activity, PoolSnapshot, UsageLimits};
+use worker_pool::{Activity, PoolSnapshot, Scheme, UsageLimits};
 
-use crate::routes::{MAX_TURNS, MAX_WORKERS};
+use crate::routes::{MAX_TURNS, MAX_WEIGHT, MAX_WORKERS};
 use crate::{AppState, Settings};
 
 /// Agent events shown per worker card.
@@ -160,6 +160,7 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
 
         h2 { "Plan usage" }
         (usage_panel(&snapshot, &settings.limits))
+        p.muted { "Balancing: " (settings.balancing.scheme.label()) }
 
         h2 { "Workers" }
         @if snapshot.workers.is_empty() {
@@ -390,7 +391,7 @@ pub(crate) fn settings(
             }
             label.check {
                 input type="checkbox" name="failover" checked[settings.limits.failover];
-                "At the stop level, fail over to the next provider below"
+                "At the stop level, fail over to the next provider below (priority failover; the other balancing schemes always share work across all of them)"
             }
             div.fields {
                 @for (i, name) in ["fallback1", "fallback2", "fallback3", "fallback4"].iter().enumerate() {
@@ -414,6 +415,43 @@ pub(crate) fn settings(
                     "Each fallback uses the model and effort on its card above, and is skipped unless it is set up. "
                     "Claude and Antigravity report their usage; Codex doesn't, so it is never stopped."
                 }
+            }
+        }
+
+        h2 { "Load balancing" }
+        form.panel method="post" action="/settings/balancing" {
+            p.muted style="margin-top:0" {
+                "Spreads items across " (settings.active.label()) " and the fallbacks above, among those under their stop level."
+            }
+            div.fields {
+                div {
+                    label for="scheme" { "Scheme" }
+                    select #scheme name="scheme" {
+                        @for scheme in Scheme::ALL {
+                            option value=(scheme_value(scheme)) selected[scheme == settings.balancing.scheme] { (scheme.label()) }
+                        }
+                    }
+                }
+                @for p in std::iter::once(settings.active).chain(settings.fallbacks.iter().copied().filter(|p| *p != settings.active)) {
+                    div {
+                        @let name = format!("weight_{}", provider_value(p));
+                        label for=(name) { (p.label()) " weight" }
+                        input id=(name) type="number" name=(name) min="1" max=(MAX_WEIGHT) value=(settings.balancing.weight(p));
+                    }
+                }
+            }
+            label.check {
+                input type="checkbox" name="rework_any_provider" checked[settings.balancing.rework_any_provider];
+                "Reworks may run on any provider (off: a rework waits for the provider that opened its pull request)"
+            }
+            p.bar {
+                button { "Save" }
+            }
+            ul.muted {
+                li { strong { "Priority failover" } ": the active provider, then each fallback in order once the ones before it reach the stop level." }
+                li { strong { "Round robin" } ": each provider in turn." }
+                li { strong { "Weighted" } ": in proportion to the weights, spread evenly; weights only matter here." }
+                li { strong { "Pace-based" } ": the provider furthest below its pace, i.e. least used for how much of its plan window has passed. Codex reports no usage, so it counts as exactly on pace." }
             }
         }
 
@@ -640,6 +678,16 @@ fn duration(secs: u64) -> String {
 fn elapsed(started: SystemTime) -> String {
     let secs = started.elapsed().map(|d| d.as_secs()).unwrap_or(0);
     format!("{}:{:02}", secs / 60, secs % 60)
+}
+
+/// The form value of a scheme, matching its serde name.
+fn scheme_value(scheme: Scheme) -> &'static str {
+    match scheme {
+        Scheme::Priority => "priority",
+        Scheme::RoundRobin => "round_robin",
+        Scheme::Weighted => "weighted",
+        Scheme::Pace => "pace",
+    }
 }
 
 /// The form value of a provider, matching its serde name.

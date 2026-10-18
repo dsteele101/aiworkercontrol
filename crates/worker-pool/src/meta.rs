@@ -1,6 +1,7 @@
 //! Per-item bookkeeping, kept in the item's `.meta.json` sidecar so it
 //! survives restarts and moves with the item between states.
 
+use agent_backend::Provider;
 use serde::{Deserialize, Serialize};
 use work_queue::{META_SUFFIX, Queue, State, WorkItem};
 
@@ -34,6 +35,9 @@ pub struct ItemMeta {
     /// same feedback is not acted on twice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered_head: Option<String>,
+    /// The provider whose run last pushed to the pull request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<Provider>,
 }
 
 impl ItemMeta {

@@ -4,14 +4,15 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use agent_backend::{AgentEvent, PlanUsage, Provider, ProviderConfig};
+use agent_backend::{AgentEvent, PlanUsage, Provider};
 use work_queue::{State as ItemState, WorkItem};
 
 use super::run::{Finish, Kind};
 use super::{POLL_INTERVAL, PoolConfig, Shared, State, unix_now};
+use crate::balance::{Pick, Suspension};
 use crate::status::EVENT_TAIL;
+use crate::usage;
 use crate::{ActiveJob, Activity, ItemMeta, PoolError, Project};
-use crate::{limits, usage};
 
 /// How a result file records its pull request; read back by `pull_request`.
 pub(crate) const PR_LINE: &str = "- Pull request: ";
@@ -72,11 +73,10 @@ impl Shared {
     /// Claims the next item to run: first an in-review item whose feedback
     /// waits for a worker, then an open item.
     fn claim(&self) -> Result<Option<Claim>, PoolError> {
-        let mut config = self.config.borrow().clone();
-        let Some((provider, fallback)) = self.choose_provider(&config) else {
+        let config = self.config.borrow().clone();
+        let Some(general) = self.pick(&config, None) else {
             return Ok(None);
         };
-        config.provider = provider;
         let projects = config.projects.clone();
         let project_of =
             |item: &WorkItem| projects.iter().find(|p| p.name == item.project).cloned();
@@ -90,56 +90,73 @@ impl Shared {
             else {
                 continue;
             };
+            // A rework kept to its provider waits while that one can't run.
+            let pick = match meta
+                .provider
+                .filter(|_| !config.balancing.rework_any_provider)
+            {
+                Some(provider) => match self.pick(&config, Some(provider)) {
+                    Some(pick) => pick,
+                    None => continue,
+                },
+                None => general.clone(),
+            };
             if self.queue.take(&item, ItemState::InReview)? {
                 let kind = Kind::Rework {
                     pr_url,
                     pushed_head,
                     feedback,
                 };
-                return Ok(Some(Claim {
-                    item,
-                    project,
-                    config,
-                    kind,
-                    fallback,
-                }));
+                return Ok(Some(self.claimed(item, project, &config, kind, pick)));
             }
         }
         let item = self.queue.claim_next(|item| project_of(item).is_none())?;
         Ok(item.and_then(|item| {
             let project = project_of(&item)?;
-            Some(Claim {
-                item,
-                project,
-                config,
-                kind: Kind::New,
-                fallback,
-            })
+            Some(self.claimed(item, project, &config, Kind::New, general))
         }))
     }
 
-    /// The provider for the next run, per the plan-usage limits, and whether
-    /// it is a fallback; `None` when every allowed provider is stopped or
-    /// suspended, which is recorded for the dashboard.
-    fn choose_provider(&self, config: &PoolConfig) -> Option<(ProviderConfig, bool)> {
+    /// Picks the provider for the next run per the plan-usage limits and
+    /// the balancing scheme, or checks that `want` can run. `None` when it
+    /// can't; without `want`, why is recorded for the dashboard.
+    fn pick(&self, config: &PoolConfig, want: Option<Provider>) -> Option<Pick> {
         let mut state = self.lock();
         let state = &mut *state;
-        let chosen = limits::choose(
-            &config.provider,
-            &config.fallbacks,
-            &config.limits,
-            &state.usage,
-            &mut state.overrides,
-            &mut state.suspended,
-            unix_now(),
-        );
-        let limited = chosen.as_ref().err().cloned();
-        let changed = state.limited != limited;
-        state.limited = limited;
-        if changed {
-            self.changed();
+        let chosen = state.picker.choose(config, &state.usage, unix_now(), want);
+        if want.is_none() {
+            let limited = chosen.as_ref().err().cloned();
+            if state.limited != limited {
+                state.limited = limited;
+                self.changed();
+            }
         }
         chosen.ok()
+    }
+
+    /// The claim of `item`, run by `pick`'s provider, which is counted as
+    /// used.
+    fn claimed(
+        &self,
+        item: WorkItem,
+        project: Project,
+        config: &PoolConfig,
+        kind: Kind,
+        pick: Pick,
+    ) -> Claim {
+        self.lock().picker.commit(&pick, &config.balancing);
+        let fallback = pick.fallback;
+        let config = PoolConfig {
+            provider: pick.config,
+            ..config.clone()
+        };
+        Claim {
+            item,
+            project,
+            config,
+            kind,
+            fallback,
+        }
     }
 
     async fn carry_out(&self, id: usize, claim: Claim) {
@@ -162,7 +179,9 @@ impl Shared {
 
         let outcome = match self.begin_turn(&item) {
             Ok(turn) => match self.run(id, &item, &project, &config, &kind).await {
-                Ok(finish) => self.finish(&item, finish).map_err(|e| (Some(turn), e)),
+                Ok(finish) => self
+                    .finish(&item, finish, config.provider.provider)
+                    .map_err(|e| (Some(turn), e)),
                 Err(e) => Err((Some(turn), e)),
             },
             Err(e) => Err((None, e)),
@@ -196,8 +215,9 @@ impl Shared {
     }
 
     /// Moves a successfully run item on: to `closed`, to review with its
-    /// pull request, or to hold when its work could not be published.
-    fn finish(&self, item: &WorkItem, finish: Finish) -> Result<(), PoolError> {
+    /// pull request (and `provider`, who pushed to it), or to hold when its
+    /// work could not be published.
+    fn finish(&self, item: &WorkItem, finish: Finish, provider: Provider) -> Result<(), PoolError> {
         let queue = &self.queue;
         let mut meta = ItemMeta::load(queue, ItemState::InProgress, item)?;
         meta.last_error = None;
@@ -211,6 +231,7 @@ impl Shared {
                 meta.pr_url = Some(pr_url);
                 meta.pushed_head = Some(head);
                 meta.needs_rework = None;
+                meta.provider = Some(provider);
                 (report, ItemState::InReview)
             }
             Finish::Hold { report, reason } => {
@@ -261,7 +282,11 @@ impl Shared {
     /// Stops using fallback `provider` after a failed run, until the active
     /// provider can run again.
     fn suspend(&self, provider: Provider, reason: &str) {
-        self.lock().suspended.insert(provider, reason.to_string());
+        let suspension = Suspension {
+            error: reason.to_string(),
+            since: unix_now(),
+        };
+        self.lock().picker.suspended.insert(provider, suspension);
         self.changed();
     }
 

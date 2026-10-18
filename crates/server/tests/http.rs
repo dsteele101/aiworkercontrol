@@ -9,6 +9,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use server::{AppState, SETTINGS_FILE, Settings};
 use tower::ServiceExt;
+use worker_pool::Scheme;
 
 const PORT: u16 = 8787;
 const HOST: &str = "127.0.0.1:8787";
@@ -164,6 +165,47 @@ async fn usage_limits_are_saved_and_checked() {
     let (_, page) = app.get("/settings").await;
     assert!(
         page.contains("Not saved: warning levels must be above 0 and below the 90% stop level")
+    );
+}
+
+#[tokio::test]
+async fn balancing_is_saved_with_weights() {
+    let app = app();
+    app.post(
+        "/settings/limits",
+        "warn=50&stop=85&failover=on&fallback1=gemini",
+    )
+    .await;
+    let (_, page) = app.get("/settings").await;
+    assert!(page.contains(r#"name="weight_gemini""#), "{page}");
+    assert!(!page.contains(r#"name="weight_open_ai""#));
+
+    let status = app
+        .post(
+            "/settings/balancing",
+            "scheme=weighted&weight_anthropic=3&weight_gemini=1",
+        )
+        .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let saved = app.saved().balancing;
+    assert_eq!(saved.scheme, Scheme::Weighted);
+    assert_eq!(saved.weight(Provider::Anthropic), 3);
+    assert_eq!(saved.weight(Provider::Gemini), 1);
+    assert!(
+        !saved.rework_any_provider,
+        "an unticked box keeps reworks on their provider"
+    );
+    assert_eq!(app.state.pool().config().balancing, saved);
+    let (_, page) = app.get("/").await;
+    assert!(page.contains("Balancing: Weighted"));
+
+    app.post("/settings/balancing", "scheme=pace&weight_anthropic=0")
+        .await;
+    assert_eq!(app.saved().balancing.scheme, Scheme::Weighted);
+    let (_, page) = app.get("/settings").await;
+    assert!(
+        page.contains("weight must be a whole number from 1 to 100"),
+        "{page}"
     );
 }
 
