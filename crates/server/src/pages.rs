@@ -18,15 +18,17 @@ const EVENT_CHARS: usize = 240;
 
 const STYLE: &str = r#"
 :root {
-  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #677085;
-  --border: #dde1e8; --accent: #2f5bd3; --ok: #1f7a4d; --bad: #b3261e;
-  --warn: #8a5a00; --code: #eef1f5;
+  color-scheme: light;
+  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5f6878;
+  --border: #dde1e8; --accent: #2f5bd3; --on-accent: #ffffff; --link: #2448b8;
+  --ok: #1f7a4d; --bad: #b3261e; --warn: #8a5a00; --code: #eef1f5;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #12151b; --panel: #1b1f27; --text: #e4e7ee; --muted: #9aa3b5;
-    --border: #2c323e; --accent: #7c9cf5; --ok: #5cc48f; --bad: #f2867d;
-    --warn: #e0b45c; --code: #232833;
+    color-scheme: dark;
+    --bg: #12151b; --panel: #1b1f27; --text: #e4e7ee; --muted: #a3acbd;
+    --border: #2c323e; --accent: #8fb0ff; --on-accent: #0d1220; --link: #9dbaff;
+    --ok: #5cc48f; --bad: #f2867d; --warn: #e8bd68; --code: #262b36;
   }
 }
 * { box-sizing: border-box; }
@@ -35,7 +37,9 @@ body { margin: 0; background: var(--bg); color: var(--text);
 header { display: flex; gap: 20px; align-items: baseline; padding: 14px 16px;
   border-bottom: 1px solid var(--border); background: var(--panel); }
 header h1 { font-size: 17px; margin: 0; }
-header a { color: var(--muted); text-decoration: none; }
+a, a:visited { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+header a, header a:visited { color: var(--muted); }
 header a.here { color: var(--text); font-weight: 600; }
 main { max-width: 1200px; margin: 0 auto; padding: 16px; }
 h2 { font-size: 15px; margin: 24px 0 10px; text-transform: uppercase;
@@ -65,7 +69,10 @@ form.inline { display: inline; }
 button, input, select { font: inherit; color: inherit; }
 button { background: var(--panel); border: 1px solid var(--border);
   border-radius: 6px; padding: 4px 12px; cursor: pointer; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent);
+  font-weight: 600; }
+button:hover { border-color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
 input[type=text], input[type=password], input[type=number], select {
   background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
   padding: 5px 8px; width: 100%; }
