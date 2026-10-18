@@ -32,7 +32,8 @@ pub(crate) fn build(project: &Project, item: &WorkItem, body: &str) -> Result<St
            file in place in the spec directory.\n\
          - Commit your work on `{branch}` using the repository's commit message \
            conventions. Do not push, and do not switch branches.\n\
-         - Finish with a short summary of what you changed and how you verified it.\n"
+         - Finish with a short summary of what you changed and how you verified it.\n\
+         {WAITING}"
     ));
     if let Some(pr) = &project.pr {
         prompt.push_str(&format!(
@@ -84,10 +85,18 @@ pub(crate) fn build_rework(
            commit message conventions; do not rewrite or squash the existing ones. \
            Do not push, and do not switch branches: the pull request is updated \
            for you once you finish.\n\
-         - Finish with a short summary of how you handled each point.\n"
+         - Finish with a short summary of how you handled each point.\n\
+         {WAITING}"
     ));
     Ok(prompt)
 }
+
+/// How to wait for long-running commands without hanging the run.
+const WAITING: &str = "- When you start a command in the background, rely on your tool's \
+     notification that it finished, or wait with a bounded loop (e.g. under \
+     `timeout`). Never poll with `pgrep -f` or `pkill -f` for text from your own \
+     command line: the pattern matches the polling shell itself, so the loop never \
+     ends. Nothing must still be running when you give your summary.\n";
 
 /// The list of the project's spec files, by absolute path.
 fn specs_section(project: &Project) -> Result<String, PoolError> {

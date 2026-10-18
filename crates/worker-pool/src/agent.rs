@@ -1,8 +1,10 @@
 //! Running an agent CLI and following its event stream.
 
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::OsStr;
 use std::path::Path;
 use std::process::Stdio;
+use std::time::{Duration, Instant};
 
 use agent_backend::{AgentEvent, Cli, Invocation};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -24,11 +26,18 @@ pub(crate) struct Outcome {
     pub last_text: Option<String>,
     /// The end of what the process wrote to stderr.
     pub stderr_tail: String,
+    /// Stopped by the watchdog: no output and next to no CPU use for the
+    /// stall time, e.g. a background wait that can never end.
+    pub stalled: bool,
 }
 
 impl Outcome {
-    /// Success: a clean exit and no failure reported by the agent.
+    /// Success: a clean exit and no failure reported by the agent. A stalled
+    /// run succeeds only if its last turn did, i.e. it hung after its work.
     pub fn succeeded(&self) -> bool {
+        if self.stalled {
+            return matches!(self.finished, Some((true, _)));
+        }
         self.exit_ok && self.finished.as_ref().is_none_or(|(ok, _)| *ok)
     }
 
@@ -118,11 +127,15 @@ pub(crate) async fn report(
     }
 }
 
+/// Runs `run`, logging its output to `log` and passing each event to
+/// `on_event`. A run that writes nothing for `stall_after` while its whole
+/// process tree uses under 1% of a CPU in that time is stopped as stalled.
 pub(crate) async fn run(
     run: &Invocation,
     cli: Cli,
     cli_dir: Option<&Path>,
     log: &Path,
+    stall_after: Duration,
     mut on_event: impl FnMut(AgentEvent),
 ) -> Result<Outcome, PoolError> {
     let program = match cli_dir {
@@ -150,7 +163,8 @@ pub(crate) async fn run(
         program: program.display().to_string(),
         source,
     })?;
-    let group = child.id().map(ProcessGroup);
+    let pid = child.id();
+    let group = pid.map(ProcessGroup);
 
     let mut log_file = tokio::fs::OpenOptions::new()
         .create(true)
@@ -179,16 +193,39 @@ pub(crate) async fn run(
     };
     let mut finished = None;
     let mut last_text = None;
+    let mut stalled = false;
     let read = async {
         let Some(stdout) = stdout else {
             return Ok(());
         };
         let mut lines = BufReader::new(stdout).lines();
-        while let Some(line) = lines
-            .next_line()
-            .await
-            .map_err(PoolError::io("read", log))?
-        {
+        let mut watchdog = Watchdog::new(stall_after);
+        let mut tick = tokio::time::interval(watchdog.every);
+        loop {
+            let line = tokio::select! {
+                line = lines.next_line() => line.map_err(PoolError::io("read", log))?,
+                _ = tick.tick() => {
+                    if !stalled && pid.is_some_and(|pid| watchdog.stalled(pid)) {
+                        stalled = true;
+                        let note = format!(
+                            "\n--- stopped: no output and next to no CPU use for {} minutes ---\n",
+                            stall_after.as_secs() / 60
+                        );
+                        log_file
+                            .write_all(note.as_bytes())
+                            .await
+                            .map_err(PoolError::io("write", log))?;
+                        if let Some(pid) = pid {
+                            kill_tree(pid);
+                        }
+                    }
+                    continue;
+                }
+            };
+            let Some(line) = line else {
+                break;
+            };
+            watchdog.output();
             log_file
                 .write_all(format!("{line}\n").as_bytes())
                 .await
@@ -225,7 +262,144 @@ pub(crate) async fn run(
         finished,
         last_text,
         stderr_tail: tail(&String::from_utf8_lossy(&stderr)),
+        stalled,
     })
+}
+
+/// Watches a run for stalling: no output for its stall time, while its
+/// process tree's CPU time hardly grew over that time.
+#[derive(Debug)]
+struct Watchdog {
+    stall_after: Duration,
+    every: Duration,
+    last_output: Instant,
+    /// CPU time samples of the process tree, oldest first.
+    samples: VecDeque<(Instant, u64)>,
+}
+
+impl Watchdog {
+    fn new(stall_after: Duration) -> Self {
+        Self {
+            stall_after,
+            // Often enough to act within a few percent of the stall time.
+            every: (stall_after / 20).clamp(Duration::from_millis(100), Duration::from_secs(60)),
+            last_output: Instant::now(),
+            samples: VecDeque::new(),
+        }
+    }
+
+    fn output(&mut self) {
+        self.last_output = Instant::now();
+    }
+
+    /// Takes a sample of `pid`'s tree and says whether the run has stalled.
+    /// Without a readable `/proc` nothing is known, so nothing stalls.
+    fn stalled(&mut self, pid: u32) -> bool {
+        let now = Instant::now();
+        let Some(cpu) = tree_cpu_ticks(pid) else {
+            return false;
+        };
+        self.samples.push_back((now, cpu));
+        while self
+            .samples
+            .front()
+            .is_some_and(|(t, _)| now.duration_since(*t) > self.stall_after + 2 * self.every)
+        {
+            self.samples.pop_front();
+        }
+        if now.duration_since(self.last_output) < self.stall_after {
+            return false;
+        }
+        // The CPU time at the start of the window, from the latest sample
+        // taken at least `stall_after` ago.
+        let Some(&(_, before)) = self
+            .samples
+            .iter()
+            .rev()
+            .find(|(t, _)| now.duration_since(*t) >= self.stall_after)
+        else {
+            return false;
+        };
+        // Clock ticks are 1/100 s on Linux; 1% of the window is a tick per
+        // second of it.
+        cpu.saturating_sub(before) < self.stall_after.as_secs().max(1)
+    }
+}
+
+/// One process, from `/proc/<pid>/stat`.
+#[derive(Debug, Clone, Copy)]
+struct ProcStat {
+    ppid: u32,
+    pgrp: u32,
+    /// User and system time, its own and its reaped children's, in ticks.
+    cpu: u64,
+}
+
+fn proc_stat(pid: u32) -> Option<ProcStat> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // The command name, in parentheses, may itself contain spaces.
+    let rest = &text[text.rfind(')')? + 2..];
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    let num = |i: usize| fields.get(i)?.parse::<u64>().ok();
+    Some(ProcStat {
+        ppid: u32::try_from(num(1)?).ok()?,
+        pgrp: u32::try_from(num(2)?).ok()?,
+        cpu: num(11)? + num(12)? + num(13)? + num(14)?,
+    })
+}
+
+/// `root` and its descendants, found by following parent links.
+fn tree(root: u32) -> Vec<(u32, ProcStat)> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let all: HashMap<u32, ProcStat> = entries
+        .flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .filter_map(|pid| Some((pid, proc_stat(pid)?)))
+        .collect();
+    let mut found = Vec::new();
+    let mut frontier = vec![root];
+    while let Some(pid) = frontier.pop() {
+        if let Some(stat) = all.get(&pid) {
+            found.push((pid, *stat));
+            frontier.extend(all.iter().filter(|(_, s)| s.ppid == pid).map(|(p, _)| *p));
+        }
+    }
+    found
+}
+
+/// The CPU time of `root`'s whole process tree, or `None` if `root` can't
+/// be read.
+fn tree_cpu_ticks(root: u32) -> Option<u64> {
+    proc_stat(root)?;
+    Some(tree(root).iter().map(|(_, s)| s.cpu).sum())
+}
+
+/// Kills `root`, its descendants and their process groups. Claude Code
+/// starts background commands in process groups of their own, which killing
+/// the agent's group alone would miss. The app's own group is spared.
+fn kill_tree(root: u32) {
+    let own = proc_stat(std::process::id()).map(|s| s.pgrp);
+    let procs = tree(root);
+    let groups: BTreeSet<u32> = procs
+        .iter()
+        .map(|(_, s)| s.pgrp)
+        .filter(|g| Some(*g) != own)
+        .collect();
+    let mut targets: Vec<String> = groups.iter().map(|g| format!("-{g}")).collect();
+    targets.extend(procs.iter().map(|(pid, _)| pid.to_string()));
+    if targets.is_empty() {
+        return;
+    }
+    // Errors are ignored: a process already gone needs no stopping.
+    let _ = std::process::Command::new("kill")
+        .arg("-KILL")
+        .arg("--")
+        .args(&targets)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
 }
 
 /// The last [`STDERR_TAIL`] bytes of `text`, cut on a char boundary.
@@ -246,6 +420,9 @@ struct ProcessGroup(u32);
 
 impl Drop for ProcessGroup {
     fn drop(&mut self) {
+        // While the agent still runs, its descendants are found through it,
+        // including those in process groups of their own.
+        kill_tree(self.0);
         // The group id is the agent's pid (`process_group(0)`). Errors are
         // ignored: an empty group means there is nothing left to stop.
         let _ = std::process::Command::new("kill")

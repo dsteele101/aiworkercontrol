@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use agent_backend::{Auth, ConfigError, Provider, ProviderConfig};
 use serde::{Deserialize, Serialize};
-use worker_pool::{Balancing, PoolConfig, Project, UsageLimits};
+use worker_pool::{Balancing, DEFAULT_STALL_AFTER, PoolConfig, Project, UsageLimits};
 
 use crate::ServerError;
 
@@ -248,6 +248,7 @@ impl Settings {
             limits: self.limits.clone(),
             fallbacks,
             balancing: self.balancing.clone(),
+            stall_after: DEFAULT_STALL_AFTER,
         }
     }
 }

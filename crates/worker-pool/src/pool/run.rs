@@ -75,13 +75,18 @@ impl Shared {
         let outcome = self
             .run_agent(id, item, project, config, &prompt, &worktree, fresh, &log)
             .await?;
+        let stall_minutes = config.stall_after.as_secs() / 60;
         if !outcome.succeeded() {
-            let reason = outcome
-                .finished
-                .as_ref()
-                .and_then(|(_, s)| s.clone())
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| outcome.stderr_tail.clone());
+            let reason = if outcome.stalled {
+                format!("stalled: no output and next to no CPU use for {stall_minutes} minutes")
+            } else {
+                outcome
+                    .finished
+                    .as_ref()
+                    .and_then(|(_, s)| s.clone())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| outcome.stderr_tail.clone())
+            };
             return Err(PoolError::AgentFailed(reason));
         }
         // A run must add commits: to the base on a first attempt, to the
@@ -104,6 +109,13 @@ impl Shared {
             worktree = worktree.display(),
             log = log.display(),
         );
+        if outcome.stalled {
+            let _ = writeln!(
+                report,
+                "- Note: the agent finished its last turn, then sat idle for {stall_minutes} \
+                 minutes waiting on something that never ended, and was stopped"
+            );
+        }
         let mut tail = String::from("\n## Commits\n\n");
         for commit in &commits {
             let _ = writeln!(tail, "- {commit}");
@@ -215,6 +227,7 @@ impl Shared {
             config.provider.provider.cli(),
             config.cli_dir.as_deref(),
             log,
+            config.stall_after,
             |event| self.push_event(id, event),
         )
         .await
