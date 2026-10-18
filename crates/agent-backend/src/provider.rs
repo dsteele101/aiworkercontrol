@@ -42,7 +42,7 @@ impl Provider {
     pub fn label(self) -> &'static str {
         match self {
             Provider::Anthropic => "Anthropic (Claude)",
-            Provider::Gemini => "Gemini",
+            Provider::Gemini => "Gemini (Antigravity)",
             Provider::OpenAi => "OpenAI",
             Provider::Deepseek => "Deepseek",
             Provider::OpenAiCompatible => "OpenAI-compatible",
@@ -54,7 +54,7 @@ impl Provider {
         match self {
             Provider::Anthropic | Provider::Deepseek => Cli::Claude,
             Provider::OpenAi | Provider::OpenAiCompatible => Cli::Codex,
-            Provider::Gemini => Cli::Gemini,
+            Provider::Gemini => Cli::Antigravity,
         }
     }
 
@@ -80,8 +80,9 @@ pub enum Cli {
     Claude,
     /// OpenAI Codex, `codex`.
     Codex,
-    /// Gemini CLI, `gemini`.
-    Gemini,
+    /// Antigravity CLI, `agy`, which replaced the Gemini CLI for Google
+    /// plan logins.
+    Antigravity,
 }
 
 impl Cli {
@@ -90,23 +91,23 @@ impl Cli {
         match self {
             Cli::Claude => "claude",
             Cli::Codex => "codex",
-            Cli::Gemini => "gemini",
+            Cli::Antigravity => "agy",
         }
     }
 
-    /// The effort levels the CLI accepts, lowest first; empty when it has no
-    /// effort setting.
+    /// The effort levels the CLI accepts, lowest first.
     ///
     /// ```
     /// use agent_backend::Cli;
     /// assert!(Cli::Claude.effort_levels().contains(&"max"));
-    /// assert!(Cli::Gemini.effort_levels().is_empty());
+    /// assert!(!Cli::Codex.effort_levels().contains(&"max"));
     /// ```
     pub fn effort_levels(self) -> &'static [&'static str] {
         match self {
             Cli::Claude => &["low", "medium", "high", "xhigh", "max"],
             Cli::Codex => &["minimal", "low", "medium", "high", "xhigh"],
-            Cli::Gemini => &[],
+            // From `agy --help` (1.4.2); its docs list only low to high.
+            Cli::Antigravity => &["low", "medium", "high", "xhigh", "max"],
         }
     }
 
@@ -116,7 +117,7 @@ impl Cli {
         match self {
             Cli::Claude => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
             Cli::Codex => &["CODEX_API_KEY", "OPENAI_API_KEY"],
-            Cli::Gemini => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+            Cli::Antigravity => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
         }
     }
 }
@@ -313,7 +314,7 @@ impl ProviderConfig {
         match cli {
             Cli::Claude => self.claude(&mut run, job),
             Cli::Codex => self.codex(&mut run, job),
-            Cli::Gemini => self.gemini(&mut run, job),
+            Cli::Antigravity => self.antigravity(&mut run, job),
         }
         Ok(run)
     }
@@ -403,21 +404,23 @@ impl ProviderConfig {
         run.arg(job.prompt);
     }
 
-    fn gemini(&self, run: &mut Invocation, job: &Job<'_>) {
+    /// `agy` works in its current directory, the worktree.
+    fn antigravity(&self, run: &mut Invocation, job: &Job<'_>) {
         run.arg("-p")
             .arg(job.prompt)
             .arg("--output-format")
             .arg("stream-json")
-            .arg("--approval-mode")
-            .arg("yolo")
-            // Worktrees are new directories the user has never trusted.
-            .arg("--skip-trust");
+            // Headless runs cannot ask; unapproved tools such as shell
+            // commands would be silently refused. Same as Gemini's yolo.
+            .arg("--dangerously-skip-permissions");
         for dir in job.extra_dirs {
-            run.arg("--include-directories")
-                .arg(dir.display().to_string());
+            run.arg("--add-dir").arg(dir.display().to_string());
         }
         if let Some(model) = non_empty(&self.model) {
             run.arg("--model").arg(model);
+        }
+        if let Some(effort) = non_empty(&self.effort) {
+            run.arg("--effort").arg(effort);
         }
         if let Some(key) = self.key() {
             run.set_env("GEMINI_API_KEY", key);
@@ -497,13 +500,13 @@ mod tests {
 
     #[test]
     fn effort_must_be_one_of_the_cli_levels() {
-        let mut config = ProviderConfig::new(Provider::Gemini, Auth::Plan);
-        config.effort = Some("high".into());
+        let mut config = ProviderConfig::new(Provider::OpenAi, Auth::Plan);
+        config.effort = Some("max".into());
         assert_eq!(
             config.validate(),
             Err(ConfigError::UnsupportedEffort(
-                Provider::Gemini,
-                "high".into()
+                Provider::OpenAi,
+                "max".into()
             ))
         );
         config.provider = Provider::Anthropic;

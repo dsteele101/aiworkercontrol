@@ -130,28 +130,21 @@ impl Logins {
 
 /// Whether `cli` has a stored plan login.
 pub(crate) async fn status(cli: Cli, cli_dir: Option<&Path>) -> AuthStatus {
-    match agent_backend::status_invocation(cli) {
-        Some(run) => match command(&run, cli_dir)
-            .stdin(Stdio::null())
-            .kill_on_drop(true)
-            .output()
-            .await
-        {
-            // `claude` reports on stdout; `codex` 0.163 on stderr.
-            Ok(out) => {
-                match agent_backend::parse_status(cli, &String::from_utf8_lossy(&out.stdout)) {
-                    AuthStatus::Unknown => {
-                        agent_backend::parse_status(cli, &String::from_utf8_lossy(&out.stderr))
-                    }
-                    known => known,
-                }
+    let run = agent_backend::status_invocation(cli);
+    match command(&run, cli_dir)
+        .stdin(Stdio::null())
+        .kill_on_drop(true)
+        .output()
+        .await
+    {
+        // `claude` reports on stdout; `codex` 0.163 on stderr.
+        Ok(out) => match agent_backend::parse_status(cli, &String::from_utf8_lossy(&out.stdout)) {
+            AuthStatus::Unknown => {
+                agent_backend::parse_status(cli, &String::from_utf8_lossy(&out.stderr))
             }
-            Err(_) => AuthStatus::Unknown,
+            known => known,
         },
-        None => match std::env::var_os("HOME") {
-            Some(home) => agent_backend::gemini_status(&PathBuf::from(home)),
-            None => AuthStatus::Unknown,
-        },
+        Err(_) => AuthStatus::Unknown,
     }
 }
 

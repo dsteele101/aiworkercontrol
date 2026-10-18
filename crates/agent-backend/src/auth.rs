@@ -1,7 +1,5 @@
 //! Plan logins: starting one, and checking whether one is in place.
 
-use std::path::Path;
-
 use crate::{Cli, Invocation};
 
 /// Whether a CLI has a stored plan login.
@@ -17,34 +15,35 @@ pub enum AuthStatus {
 
 /// The command that starts `cli`'s own plan login, printing the sign-in URL.
 ///
-/// `None` for Gemini: its CLI has no login subcommand, and signs in with
-/// Google the first time `gemini` runs interactively in a terminal.
+/// `None` for Antigravity: `agy` has no login subcommand, and signs in with
+/// Google the first time it runs interactively in a terminal.
 ///
 /// ```
 /// use agent_backend::{Cli, login_invocation};
 ///
 /// let run = login_invocation(Cli::Claude).expect("claude has a login command");
 /// assert_eq!(run.args, ["auth", "login", "--claudeai"]);
-/// assert!(login_invocation(Cli::Gemini).is_none());
+/// assert!(login_invocation(Cli::Antigravity).is_none());
 /// ```
 pub fn login_invocation(cli: Cli) -> Option<Invocation> {
     let args: &[&str] = match cli {
         Cli::Claude => &["auth", "login", "--claudeai"],
         Cli::Codex => &["login"],
-        Cli::Gemini => return None,
+        Cli::Antigravity => return None,
     };
     Some(simple(cli, args))
 }
 
 /// The command that reports `cli`'s login status; read its output with
-/// [`parse_status`]. `None` for Gemini; use [`gemini_status`] instead.
-pub fn status_invocation(cli: Cli) -> Option<Invocation> {
+/// [`parse_status`]. `agy` keeps its login in the system keyring and has no
+/// status command, so for it this lists the models, which needs a login.
+pub fn status_invocation(cli: Cli) -> Invocation {
     let args: &[&str] = match cli {
         Cli::Claude => &["auth", "status", "--json"],
         Cli::Codex => &["login", "status"],
-        Cli::Gemini => return None,
+        Cli::Antigravity => &["models"],
     };
-    Some(simple(cli, args))
+    simple(cli, args)
 }
 
 /// Reads the output of `cli`'s [`status_invocation`].
@@ -71,14 +70,10 @@ pub fn parse_status(cli: Cli, output: &str) -> AuthStatus {
                 AuthStatus::Unknown
             }
         }
-        Cli::Gemini => AuthStatus::Unknown,
+        // `agy models` prints one `slug<TAB>name` line per model.
+        Cli::Antigravity if output.lines().any(|l| l.contains('\t')) => AuthStatus::LoggedIn,
+        Cli::Antigravity => AuthStatus::Unknown,
     }
-}
-
-/// Gemini's login status, read from the Google credentials the CLI stores
-/// under `<home>/.gemini`.
-pub fn gemini_status(home: &Path) -> AuthStatus {
-    logged_in(home.join(".gemini/oauth_creds.json").is_file())
 }
 
 fn logged_in(yes: bool) -> AuthStatus {
@@ -131,11 +126,14 @@ mod tests {
     }
 
     #[test]
-    fn gemini_status_reads_credentials_file() {
-        let home = tempfile::tempdir().unwrap();
-        assert_eq!(gemini_status(home.path()), AuthStatus::LoggedOut);
-        std::fs::create_dir_all(home.path().join(".gemini")).unwrap();
-        std::fs::write(home.path().join(".gemini/oauth_creds.json"), "{}").unwrap();
-        assert_eq!(gemini_status(home.path()), AuthStatus::LoggedIn);
+    fn antigravity_status_from_model_list() {
+        // Captured from `agy models` (1.4.2) while signed in, shortened.
+        let listed =
+            "Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\n";
+        assert_eq!(parse_status(Cli::Antigravity, listed), AuthStatus::LoggedIn);
+        assert_eq!(
+            parse_status(Cli::Antigravity, "Fetching available models...\n"),
+            AuthStatus::Unknown
+        );
     }
 }

@@ -568,7 +568,7 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
                 }
             }
             @if snapshot.usage.is_empty() {
-                p.muted { "No usage reported yet. Claude reports its plan usage during each run; Codex and Gemini don't report theirs." }
+                p.muted { "No usage reported yet. Claude reports its plan usage during each run; Codex and Antigravity don't report theirs." }
             } @else {
                 table {
                     tr { th { "Provider" } th { "Current window" } th { "Week" } th { "Status" } }
