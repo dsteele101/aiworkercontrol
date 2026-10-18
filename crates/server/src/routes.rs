@@ -21,6 +21,8 @@ pub(crate) const MAX_WORKERS: usize = 32;
 pub(crate) const MAX_TURNS: u32 = 50;
 /// The highest provider weight the UI allows.
 pub(crate) const MAX_WEIGHT: u32 = 100;
+/// The most build jobs a project's agents may run at once.
+pub(crate) const MAX_BUILD_JOBS: u32 = 64;
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -404,6 +406,8 @@ struct ProjectForm {
     pr_base: String,
     #[serde(default)]
     pr_draft: Option<String>,
+    #[serde(default)]
+    build_jobs: String,
 }
 
 async fn add_project(State(app): State<AppState>, Form(f): Form<ProjectForm>) -> Redirect {
@@ -425,6 +429,17 @@ async fn add_project(State(app): State<AppState>, Form(f): Form<ProjectForm>) ->
                 project.base_ref = f.base_ref.trim().to_string();
             }
             project.setup = Some(f.setup.trim().to_string()).filter(|s| !s.is_empty());
+            if !f.build_jobs.trim().is_empty() {
+                project.build_jobs = f
+                    .build_jobs
+                    .trim()
+                    .parse()
+                    .ok()
+                    .filter(|j| (1..=MAX_BUILD_JOBS).contains(j))
+                    .ok_or(format!(
+                        "Build jobs must be a number from 1 to {MAX_BUILD_JOBS}."
+                    ))?;
+            }
             let (remote, repo) = (f.pr_remote.trim(), f.pr_repo.trim());
             project.pr = match (remote.is_empty(), repo.is_empty()) {
                 (true, true) => None,

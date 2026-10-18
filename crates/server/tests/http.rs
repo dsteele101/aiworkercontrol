@@ -359,6 +359,21 @@ async fn projects_are_validated() {
     assert_eq!(projects[0].base_ref, "develop");
     assert_eq!(projects[0].setup.as_deref(), Some("make data"));
     assert_eq!(projects[0].pr, None);
+    assert_eq!(projects[0].build_jobs, 4);
+
+    app.post(
+        "/settings/projects",
+        "name=demo&spec_dir=spec/demo&repo=repo&build_jobs=8",
+    )
+    .await;
+    assert_eq!(app.saved().projects[0].build_jobs, 8);
+    // Out of range is rejected, keeping the last settings.
+    app.post(
+        "/settings/projects",
+        "name=demo&spec_dir=spec/demo&repo=repo&build_jobs=0",
+    )
+    .await;
+    assert_eq!(app.saved().projects[0].build_jobs, 8);
 
     app.post(
         "/settings/projects",

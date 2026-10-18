@@ -26,6 +26,10 @@ pub struct Project {
     /// pushed when `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr: Option<PullRequests>,
+    /// How many jobs each of the agent's cargo builds runs in parallel,
+    /// passed as `CARGO_BUILD_JOBS`.
+    #[serde(default = "default_build_jobs")]
+    pub build_jobs: u32,
 }
 
 /// How finished work is published: pushed to a remote, then proposed in a
@@ -50,6 +54,13 @@ fn default_base_ref() -> String {
     "main".to_string()
 }
 
+/// Enough to keep a build moving without starving the other workers.
+pub const DEFAULT_BUILD_JOBS: u32 = 4;
+
+fn default_build_jobs() -> u32 {
+    DEFAULT_BUILD_JOBS
+}
+
 impl Project {
     /// A project whose branches are cut from `main`.
     pub fn new(
@@ -64,6 +75,7 @@ impl Project {
             base_ref: default_base_ref(),
             setup: None,
             pr: None,
+            build_jobs: DEFAULT_BUILD_JOBS,
         }
     }
 
