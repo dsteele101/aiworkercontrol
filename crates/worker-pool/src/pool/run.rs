@@ -192,10 +192,12 @@ impl Shared {
         tokio::fs::create_dir_all(&build_cache)
             .await
             .map_err(PoolError::io("create", &build_cache))?;
+        let build_jobs = project.build_jobs.max(1).to_string();
         let env = [
             ("AIWC_REPO", project.repo.as_os_str()),
             ("AIWC_WORKTREE", worktree.as_os_str()),
             ("CARGO_TARGET_DIR", build_cache.as_os_str()),
+            ("CARGO_BUILD_JOBS", build_jobs.as_ref()),
         ];
         if fresh && let Some(setup) = project.setup.as_deref().filter(|s| !s.trim().is_empty()) {
             agent::setup(setup, worktree, &env, log).await?;
@@ -222,6 +224,7 @@ impl Shared {
         invocation
             .env
             .push(("CARGO_TARGET_DIR".into(), build_cache.display().to_string()));
+        invocation.env.push(("CARGO_BUILD_JOBS".into(), build_jobs));
         agent::run(
             &invocation,
             config.provider.provider.cli(),

@@ -6,9 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use agent_backend::{AgentEvent, AuthStatus, Cli, Provider, UsageWindow};
 use maud::{DOCTYPE, Markup, html};
 use work_queue::{State as ItemState, WorkItem};
-use worker_pool::{ActiveJob, Activity, PoolSnapshot, Scheme, UsageLimits};
+use worker_pool::{ActiveJob, Activity, DEFAULT_BUILD_JOBS, PoolSnapshot, Scheme, UsageLimits};
 
-use crate::routes::{MAX_TURNS, MAX_WEIGHT, MAX_WORKERS};
+use crate::routes::{MAX_BUILD_JOBS, MAX_TURNS, MAX_WEIGHT, MAX_WORKERS};
 use crate::{AppState, Settings};
 
 /// Agent events shown per worker card.
@@ -519,7 +519,7 @@ pub(crate) fn settings(
             }
             @if !settings.projects.is_empty() {
                 table {
-                    tr { th { "Name" } th { "Spec directory" } th { "Repository" } th { "Branch from" } th { "Worktree setup" } th { "Pull requests" } th {} }
+                    tr { th { "Name" } th { "Spec directory" } th { "Repository" } th { "Branch from" } th { "Worktree setup" } th { "Build jobs" } th { "Pull requests" } th {} }
                     @for project in &settings.projects {
                         tr {
                             td { (project.name) }
@@ -530,6 +530,7 @@ pub(crate) fn settings(
                                 @if let Some(setup) = &project.setup { code { (setup) } }
                                 @else { span.muted { "none" } }
                             }
+                            td { (project.build_jobs) }
                             td {
                                 @if let Some(pr) = &project.pr {
                                     "push to " code { (pr.push_remote) } ", open against "
@@ -553,6 +554,7 @@ pub(crate) fn settings(
                     div { label { "Spec directory" } input type="text" name="spec_dir" placeholder="spec/phase" required; }
                     div { label { "Repository" } input type="text" name="repo" placeholder="/home/me/dev/phase or ../phase" required; }
                     div { label { "Branch from" } input type="text" name="base_ref" placeholder="main"; }
+                    div { label { "Build jobs" } input type="number" name="build_jobs" min="1" max=(MAX_BUILD_JOBS) placeholder=(DEFAULT_BUILD_JOBS); }
                 }
                 div.fields {
                     div { label { "Push to remote (optional)" } input type="text" name="pr_remote" placeholder="fork"; }
@@ -567,7 +569,8 @@ pub(crate) fn settings(
                     code { "<repo>-worktrees/" } ". This command runs there with " code { "sh -c" } " before the agent "
                     "starts, to supply gitignored or generated files the build needs; "
                     code { "$AIWC_REPO" } " is your checkout and " code { "$AIWC_WORKTREE" } " the new worktree. "
-                    "Each worker keeps its own " code { "CARGO_TARGET_DIR" } " build cache there too. "
+                    "Each worker keeps its own " code { "CARGO_TARGET_DIR" } " build cache there too, and builds with "
+                    code { "CARGO_BUILD_JOBS" } " set to the build jobs. "
                     "With a push remote set, finished work is pushed there and a pull request opened with "
                     code { "gh" } " (your GitHub login), titled and described by the agent following the repo's PR template. "
                     "To change a project, add it again under the same name."

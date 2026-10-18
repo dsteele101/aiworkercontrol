@@ -64,7 +64,7 @@ case "$prompt" in
       echo '{"type":"result","is_error":true,"result":"no data.json"}'
       exit 1
     fi
-    echo "$CARGO_TARGET_DIR" > cache.txt
+    echo "$CARGO_TARGET_DIR $CARGO_BUILD_JOBS" > cache.txt
     git add cache.txt
     git -c user.name=t -c user.email=t@example.com commit -qm "chore: record cache" >&2
     echo '{"type":"result","is_error":false,"result":"used the data"}'
@@ -659,7 +659,7 @@ async fn setup_runs_in_the_worktree_and_builds_share_a_cache() {
     let cache = fs::read_to_string(worktrees.join("data/cache.txt")).unwrap();
     assert_eq!(
         cache.trim(),
-        worktrees.join(".target-1").display().to_string()
+        format!("{} 4", worktrees.join(".target-1").display())
     );
     assert!(worktrees.join(".target-1").is_dir());
     let log = fs::read_to_string(worktrees.join("data.log")).unwrap();

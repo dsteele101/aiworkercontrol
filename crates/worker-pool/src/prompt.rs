@@ -27,7 +27,8 @@ pub(crate) fn build(project: &Project, item: &WorkItem, body: &str) -> Result<St
          You are in a dedicated git worktree on branch `{branch}`, cut from `{base}`.\n\
          - Implement the work item completely, with tests, in the repository's style.\n\
          - Run the repository's own checks for what you changed. `CARGO_TARGET_DIR` \
-           points at a build cache kept between your runs; leave it as it is.\n\
+           points at a build cache kept between your runs, and `CARGO_BUILD_JOBS` \
+           sets how many build jobs you may use; leave both as they are.\n\
          - When the spec files ask you to record notes in a spec file, edit that \
            file in place in the spec directory.\n\
          - Commit your work on `{branch}` using the repository's commit message \
@@ -80,7 +81,8 @@ pub(crate) fn build_rework(
            If you disagree with a point, leave the code as it is and say why in \
            your summary.\n\
          - Run the repository's own checks for what you changed. `CARGO_TARGET_DIR` \
-           points at a build cache kept between your runs; leave it as it is.\n\
+           points at a build cache kept between your runs, and `CARGO_BUILD_JOBS` \
+           sets how many build jobs you may use; leave both as they are.\n\
          - Commit the changes on `{branch}` as new commits, using the repository's \
            commit message conventions; do not rewrite or squash the existing ones. \
            Do not push, and do not switch branches: the pull request is updated \
