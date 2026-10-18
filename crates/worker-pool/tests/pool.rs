@@ -396,6 +396,38 @@ async fn a_failing_fallback_is_suspended_without_costing_a_turn() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn antigravity_usage_is_polled_between_runs() {
+    let mut fx = fixture(&[], 1);
+    fx.config.fallbacks = vec![ProviderConfig::new(Provider::Gemini, Auth::Plan)];
+    // Stands in for `agy -p /usage --output-format json`, trimmed.
+    let agy = fx.config.cli_dir.clone().unwrap().join("agy");
+    fs::write(
+        &agy,
+        r#"#!/bin/sh
+[ "$2" = "/usage" ] || exit 1
+echo '{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"window":"weekly","remaining_fraction":0.25,"reset_time":"2096-10-23T21:59:39Z"},{"window":"5h","remaining_fraction":0.9,"reset_time":"2096-10-18T17:44:13Z"}]}]}}}'
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&agy, fs::Permissions::from_mode(0o755)).unwrap();
+    let pool = Supervisor::new(Queue::new(fx.root.join("work")), fx.config.clone()).unwrap();
+
+    assert!(pool.refresh_usage().await.is_empty());
+    let usage = pool.snapshot().usage;
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[0].provider, Provider::Gemini);
+    assert_eq!(usage[0].usage.weekly.unwrap().percent, 75);
+    assert_eq!(usage[0].usage.session.unwrap().percent, 10);
+
+    fs::write(&agy, "#!/bin/sh\nexit 1\n").unwrap();
+    let errors = pool.refresh_usage().await;
+    assert_eq!(
+        errors.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        vec!["could not read Gemini (Antigravity)'s plan usage: the report failed or timed out"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn failures_are_retried_until_the_turns_run_out() {
     let mut fx = fixture(&[("bad.txt", "PLEASE-FAIL")], 1);
     fx.config.max_turns = 3;

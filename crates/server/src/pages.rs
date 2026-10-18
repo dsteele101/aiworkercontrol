@@ -412,7 +412,7 @@ pub(crate) fn settings(
                     "Levels apply to each window a provider reports, the current one and the week. "
                     "At the stop level no new run starts on that provider; running agents finish their item. "
                     "Each fallback uses the model and effort on its card above, and is skipped unless it is set up. "
-                    "Only Claude reports its usage, so other providers are never stopped."
+                    "Claude and Antigravity report their usage; Codex doesn't, so it is never stopped."
                 }
             }
         }
@@ -568,7 +568,7 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
                 }
             }
             @if snapshot.usage.is_empty() {
-                p.muted { "No usage reported yet. Claude reports its plan usage during each run; Codex and Antigravity don't report theirs." }
+                p.muted { "No usage reported yet. Claude reports its plan usage during each run, and Antigravity is asked for its usage every five minutes; Codex doesn't report its." }
             } @else {
                 table {
                     tr { th { "Provider" } th { "Current window" } th { "Week" } th { "Status" } }

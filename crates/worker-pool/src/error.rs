@@ -87,6 +87,14 @@ pub enum PoolError {
     /// The agent finished without committing anything on its branch.
     #[error("agent finished without committing to {0}")]
     NoCommits(String),
+    /// A provider's usage report could not be read.
+    #[error("could not read {provider}'s plan usage: {reason}")]
+    UsageReport {
+        /// The provider's label.
+        provider: &'static str,
+        /// What went wrong.
+        reason: String,
+    },
 }
 
 impl PoolError {
