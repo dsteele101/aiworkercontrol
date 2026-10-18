@@ -1,7 +1,7 @@
 //! Plan-usage levels: when to warn, when to stop starting runs on a
 //! provider, and which provider to fail over to.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use agent_backend::{Provider, ProviderConfig};
 use serde::{Deserialize, Serialize};
@@ -67,38 +67,49 @@ impl UsageLimits {
     }
 }
 
-/// The provider the next run should use: the active one, or with failover
-/// on, the first fallback, unless usage has reached the stop level on it
-/// and the user has not overridden that. An override lapses once the
-/// provider's usage drops back below the stop level, i.e. its window resets.
-/// `Err` says why no provider can run.
+/// The provider the next run should use, and whether it is a fallback: the
+/// active one, or with failover on, the first fallback not `suspended`,
+/// unless usage has reached the stop level on it and the user has not
+/// overridden that. An override lapses once the provider's usage drops back
+/// below the stop level, i.e. its window resets. Suspensions lapse as soon
+/// as the active provider can run again, so a fallback is retried the next
+/// time it is needed. `Err` says why no provider can run.
 pub(crate) fn choose(
     active: &ProviderConfig,
     fallbacks: &[ProviderConfig],
     limits: &UsageLimits,
     usage: &UsageMap,
     overrides: &mut HashSet<Provider>,
+    suspended: &mut HashMap<Provider, String>,
     now: u64,
-) -> Result<ProviderConfig, String> {
+) -> Result<(ProviderConfig, bool), String> {
     let fallbacks = if limits.failover { fallbacks } else { &[] };
-    let mut stopped = Vec::new();
-    for candidate in std::iter::once(active).chain(fallbacks) {
+    let mut unavailable = Vec::new();
+    for (i, candidate) in std::iter::once(active).chain(fallbacks).enumerate() {
         let provider = candidate.provider;
+        let is_fallback = i > 0;
+        if is_fallback && suspended.contains_key(&provider) {
+            unavailable.push(format!("{} failed its last run", provider.label()));
+            continue;
+        }
         let used = usage.get(&provider).map_or(0, |u| u.highest_at(now));
-        if !limits.stopped(used) {
+        let usable = !limits.stopped(used);
+        if usable {
             overrides.remove(&provider);
-            return Ok(candidate.clone());
         }
-        if overrides.contains(&provider) {
-            return Ok(candidate.clone());
+        if usable || overrides.contains(&provider) {
+            if !is_fallback {
+                suspended.clear();
+            }
+            return Ok((candidate.clone(), is_fallback));
         }
-        stopped.push(format!("{} at {used}%", provider.label()));
+        unavailable.push(format!(
+            "{} at {used}% of its plan, past the {}% stop level",
+            provider.label(),
+            limits.stop
+        ));
     }
-    Err(format!(
-        "plan usage reached the {}% stop level: {}",
-        limits.stop,
-        stopped.join(", ")
-    ))
+    Err(format!("no provider can run: {}", unavailable.join("; ")))
 }
 
 #[cfg(test)]
@@ -137,9 +148,10 @@ mod tests {
             limits,
             usage,
             overrides,
+            &mut HashMap::new(),
             now,
         )
-        .map(|c| c.provider)
+        .map(|(c, _)| c.provider)
     }
 
     #[test]
@@ -178,7 +190,10 @@ mod tests {
         let mut overrides = HashSet::new();
         assert_eq!(
             pick(&limits, &usage, &mut overrides, 0),
-            Err("plan usage reached the 85% stop level: Anthropic (Claude) at 87%".into())
+            Err(
+                "no provider can run: Anthropic (Claude) at 87% of its plan, past the 85% stop level"
+                    .into()
+            )
         );
         overrides.insert(Provider::Anthropic);
         assert_eq!(
@@ -191,6 +206,45 @@ mod tests {
             Ok(Provider::Anthropic)
         );
         assert!(overrides.is_empty());
+    }
+
+    #[test]
+    fn failed_fallbacks_are_skipped_until_the_active_provider_returns() {
+        let limits = UsageLimits::default();
+        let usage = UsageMap::from([(Provider::Anthropic, used(100))]);
+        let fallbacks = [config(Provider::Gemini), config(Provider::OpenAi)];
+        let mut overrides = HashSet::new();
+        let mut suspended = HashMap::from([(Provider::Gemini, "login failed".to_string())]);
+        let mut pick = |suspended: &mut HashMap<Provider, String>, now| {
+            choose(
+                &config(Provider::Anthropic),
+                &fallbacks,
+                &limits,
+                &usage,
+                &mut overrides,
+                suspended,
+                now,
+            )
+            .map(|(c, fallback)| (c.provider, fallback))
+        };
+        assert_eq!(pick(&mut suspended, 0), Ok((Provider::OpenAi, true)));
+
+        suspended.insert(Provider::OpenAi, "quota".into());
+        assert_eq!(
+            pick(&mut suspended, 0),
+            Err(
+                "no provider can run: Anthropic (Claude) at 100% of its plan, past the 85% \
+                 stop level; Gemini failed its last run; OpenAI failed its last run"
+                    .into()
+            )
+        );
+        // Once the active provider's window resets, it runs again and the
+        // fallbacks get another chance the next time they are needed.
+        assert_eq!(
+            pick(&mut suspended, 1_000),
+            Ok((Provider::Anthropic, false))
+        );
+        assert!(suspended.is_empty());
     }
 
     #[test]

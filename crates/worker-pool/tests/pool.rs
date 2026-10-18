@@ -308,7 +308,7 @@ async fn stop_level_pauses_workers_until_overridden() {
     let snapshot = wait_for(&pool, |s| s.limited.is_some()).await;
     assert_eq!(
         snapshot.limited.as_deref(),
-        Some("plan usage reached the 85% stop level: Anthropic (Claude) at 86%")
+        Some("no provider can run: Anthropic (Claude) at 86% of its plan, past the 85% stop level")
     );
     assert_eq!(queue.list(State::Open).unwrap().len(), 1);
 
@@ -344,6 +344,55 @@ async fn stop_level_fails_over_to_the_next_provider() {
     let result = fs::read_to_string(fx.root.join("work/closed/demo/good.result.md")).unwrap();
     assert!(result.contains("- Provider: Deepseek"), "{result}");
     assert_eq!(pool.snapshot().limited, None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failing_fallback_is_suspended_without_costing_a_turn() {
+    let mut fx = fixture(&[("bad.txt", "PLEASE-FAIL")], 1);
+    record_claude_usage(&fx, 100);
+    fx.config.fallbacks = vec![ProviderConfig::new(
+        Provider::Deepseek,
+        Auth::ApiKey { key: "k".into() },
+    )];
+    let queue = Queue::new(fx.root.join("work"));
+    let bad = WorkItem::new("demo", "bad.txt");
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+
+    // Deepseek fails the run: it is set aside, and the item waits in
+    // `open` with its turn given back instead of going on hold.
+    let snapshot = wait_for(&pool, |s| s.limited.is_some() && idle(s)).await;
+    assert_eq!(
+        snapshot.suspended,
+        vec![(Provider::Deepseek, "agent failed: could not do it".into())]
+    );
+    assert!(
+        snapshot
+            .limited
+            .as_deref()
+            .unwrap()
+            .ends_with("Deepseek failed its last run"),
+        "{:?}",
+        snapshot.limited
+    );
+    assert_eq!(queue.list(State::Open).unwrap(), vec![bad.clone()]);
+    let meta = pool.meta(State::Open, &bad).unwrap();
+    assert_eq!(meta.turns, 0);
+    assert_eq!(
+        meta.last_error.as_deref(),
+        Some("agent failed: could not do it")
+    );
+
+    // Claude runs again (here by override): the suspension lifts, and its
+    // own failure counts as usual.
+    pool.override_stop(Provider::Anthropic);
+    wait_for(&pool, |s| {
+        queue.list(State::Hold).unwrap().len() == 1 && idle(s)
+    })
+    .await;
+    pool.stop();
+    assert!(pool.snapshot().suspended.is_empty());
+    assert_eq!(pool.meta(State::Hold, &bad).unwrap().turns, 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
