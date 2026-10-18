@@ -18,6 +18,7 @@ use agent_backend::{Provider, ProviderConfig};
 use tokio::sync::{Notify, watch};
 use work_queue::{Queue, State as ItemState, WorkItem};
 
+use crate::agent;
 use crate::usage::{self, UsageMap};
 use crate::{Activity, ItemMeta, PoolError, PoolSnapshot, Project, UsageLimits, WorkerStatus};
 
@@ -124,6 +125,39 @@ impl Supervisor {
     pub fn override_stop(&self, provider: Provider) {
         self.shared.lock().overrides.insert(provider);
         self.shared.changed();
+    }
+
+    /// Asks each configured provider that can report its plan usage
+    /// between runs (Antigravity) for it, and records the answers. Other
+    /// providers report usage only while they run. Returns the reports that
+    /// could not be read.
+    pub async fn refresh_usage(&self) -> Vec<PoolError> {
+        let config = self.config();
+        let mut errors = Vec::new();
+        for provider in std::iter::once(&config.provider).chain(&config.fallbacks) {
+            let Some(run) = provider.usage_invocation() else {
+                continue;
+            };
+            let label = provider.provider.label();
+            let failed = |reason: &str| PoolError::UsageReport {
+                provider: label,
+                reason: reason.to_string(),
+            };
+            match agent::report(&run, config.cli_dir.as_deref()).await {
+                Ok(Some(out)) => match provider.parse_usage_report(&out) {
+                    Some(usage) => {
+                        let mut state = self.shared.lock();
+                        self.shared
+                            .record_usage(&mut state, provider.provider, usage);
+                    }
+                    None => errors.push(failed("unexpected output")),
+                },
+                Ok(None) => errors.push(failed("the report failed or timed out")),
+                Err(e) => errors.push(e),
+            }
+        }
+        self.shared.changed();
+        errors
     }
 
     /// The current settings.

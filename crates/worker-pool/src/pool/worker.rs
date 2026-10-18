@@ -274,7 +274,10 @@ impl Shared {
         {
             let mut state = self.lock();
             if let AgentEvent::Usage(usage) = event {
-                self.record_usage(&mut state, id, usage);
+                if let Some(Activity::Working(job)) = state.workers.get(&id) {
+                    let provider = job.provider;
+                    self.record_usage(&mut state, provider, usage);
+                }
             } else if let Some(Activity::Working(job)) = state.workers.get_mut(&id) {
                 if job.events.len() == EVENT_TAIL {
                     job.events.pop_front();
@@ -285,13 +288,8 @@ impl Shared {
         self.version.send_modify(|v| *v = v.wrapping_add(1));
     }
 
-    /// Records usage reported by worker `id`'s agent against its provider,
-    /// and saves it when it changed.
-    fn record_usage(&self, state: &mut State, id: usize, usage: PlanUsage) {
-        let Some(Activity::Working(job)) = state.workers.get(&id) else {
-            return;
-        };
-        let provider = job.provider;
+    /// Records `provider`'s reported usage, and saves it when it changed.
+    pub(super) fn record_usage(&self, state: &mut State, provider: Provider, usage: PlanUsage) {
         if state.usage.get(&provider) == Some(&usage) {
             return;
         }

@@ -83,6 +83,41 @@ pub(crate) async fn setup(
 
 /// Runs `run` (with the program looked up in `cli_dir` when given), feeding
 /// each parsed event to `on_event` and appending raw output to `log`.
+/// How long a usage report may take before it is given up on.
+const REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Runs a short command, such as a usage report, and returns its stdout.
+/// `Ok(None)` when it fails or takes too long; the caller says why.
+pub(crate) async fn report(
+    run: &Invocation,
+    cli_dir: Option<&Path>,
+) -> Result<Option<String>, PoolError> {
+    let program = match cli_dir {
+        Some(dir) => dir.join(&run.program),
+        None => run.program.clone().into(),
+    };
+    let mut command = Command::new(&program);
+    command
+        .args(&run.args)
+        .envs(run.env.iter().map(|(k, v)| (k, v)))
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
+    for key in &run.env_remove {
+        command.env_remove(key);
+    }
+    let output = tokio::time::timeout(REPORT_TIMEOUT, command.output()).await;
+    match output {
+        Ok(Ok(out)) if out.status.success() => {
+            Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
+        }
+        Ok(Ok(_)) | Err(_) => Ok(None),
+        Ok(Err(source)) => Err(PoolError::Spawn {
+            program: program.display().to_string(),
+            source,
+        }),
+    }
+}
+
 pub(crate) async fn run(
     run: &Invocation,
     cli: Cli,

@@ -214,7 +214,7 @@ pub struct Invocation {
 }
 
 impl Invocation {
-    fn new(cli: Cli) -> Self {
+    pub(crate) fn new(cli: Cli) -> Self {
         Self {
             program: cli.program().to_string(),
             args: Vec::new(),

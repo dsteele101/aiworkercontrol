@@ -18,6 +18,8 @@ const DEFAULT_PORT: u16 = 8787;
 const REVIEW_INTERVAL: std::time::Duration = std::time::Duration::from_secs(180);
 /// How often merged worktrees are looked for.
 const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+/// How often providers that can report plan usage between runs are asked.
+const USAGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -40,6 +42,7 @@ async fn main() -> anyhow::Result<()> {
     );
     tokio::spawn(clean_up_merged(state.clone()));
     tokio::spawn(watch_reviews(state.clone()));
+    tokio::spawn(refresh_usage(state.clone()));
     axum::serve(listener, server::router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -83,6 +86,18 @@ async fn watch_reviews(state: server::AppState) {
                 }
             }
             Err(e) => eprintln!("review watcher: {e}"),
+        }
+    }
+}
+
+/// Every few minutes, asks providers that report plan usage between runs
+/// (Antigravity) for it, so the limits see usage spent elsewhere too.
+async fn refresh_usage(state: server::AppState) {
+    let mut every = tokio::time::interval(USAGE_INTERVAL);
+    loop {
+        every.tick().await;
+        for e in state.pool().refresh_usage().await {
+            eprintln!("usage: {e}");
         }
     }
 }
