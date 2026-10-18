@@ -295,6 +295,7 @@ mod tests {
                 scheme,
                 ..Balancing::default()
             },
+            stall_after: crate::DEFAULT_STALL_AFTER,
         }
     }
 

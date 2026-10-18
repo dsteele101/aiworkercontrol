@@ -25,6 +25,9 @@ use crate::{
     Activity, Balancing, ItemMeta, PoolError, PoolSnapshot, Project, UsageLimits, WorkerStatus,
 };
 
+/// The default for [`PoolConfig::stall_after`].
+pub const DEFAULT_STALL_AFTER: Duration = Duration::from_secs(20 * 60);
+
 /// How often idle workers look for new items when nothing wakes them.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -50,6 +53,9 @@ pub struct PoolConfig {
     pub fallbacks: Vec<ProviderConfig>,
     /// How work is spread across `provider` and `fallbacks`.
     pub balancing: Balancing,
+    /// How long an agent may go without output while its processes use
+    /// next to no CPU before it is stopped as stalled.
+    pub stall_after: Duration,
 }
 
 /// Owns the workers. Cheap to clone; every clone controls the same pool.

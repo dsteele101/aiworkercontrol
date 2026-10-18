@@ -41,7 +41,7 @@ pub use balance::{Balancing, Scheme};
 pub use error::PoolError;
 pub use limits::UsageLimits;
 pub use meta::ItemMeta;
-pub use pool::{BranchOutcome, Cleanup, PoolConfig, ReviewChange, Supervisor};
+pub use pool::{BranchOutcome, Cleanup, DEFAULT_STALL_AFTER, PoolConfig, ReviewChange, Supervisor};
 pub use project::{Project, PullRequests};
 pub use status::{ActiveJob, Activity, PoolSnapshot, WorkerStatus};
 pub use usage::ProviderUsage;

@@ -11,8 +11,8 @@ use std::time::Duration;
 use agent_backend::{Auth, PlanUsage, Provider, ProviderConfig, UsageWindow};
 use work_queue::{Queue, State, WorkItem};
 use worker_pool::{
-    Activity, Balancing, BranchOutcome, Cleanup, PoolConfig, PoolError, PoolSnapshot, Project,
-    ProviderUsage, PullRequests, ReviewChange, Supervisor, UsageLimits,
+    Activity, Balancing, BranchOutcome, Cleanup, DEFAULT_STALL_AFTER, PoolConfig, PoolError,
+    PoolSnapshot, Project, ProviderUsage, PullRequests, ReviewChange, Supervisor, UsageLimits,
 };
 
 /// Stands in for `gh`: records its arguments, and answers `pr list`,
@@ -82,6 +82,21 @@ case "$prompt" in
     echo '{"type":"system","subtype":"post_turn_summary","status_detail":"Fix written; waiting on the suite"}'
     sleep 1
     echo '{"type":"system","subtype":"background_tasks_changed","tasks":[]}' ;;
+  *HANGS-AFTER-RESULT*)
+    echo hung > fixed.txt
+    git add fixed.txt
+    git -c user.name=t -c user.email=t@example.com commit -qm "fix: hung after" >&2
+    echo '{"type":"result","is_error":false,"result":"Done; waiting on the suite"}'
+    # A wait that never ends, in a process group of its own, as Claude
+    # Code runs background commands.
+    setsid sh -c 'echo $$ > "$AIWC_CHILD_PID_FILE"; while :; do sleep 1; done' &
+    wait
+    exit 0 ;;
+  *HANGS-BEFORE-RESULT*)
+    while :; do sleep 1; done ;;
+  *BUSY-SILENT*)
+    end=$(( $(date +%s) + 4 ))
+    while [ "$(date +%s)" -lt "$end" ]; do :; done ;;
   *REPORTS-USAGE*)
     echo '{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.5,"resetsAt":4000000000}}}}'
     echo '{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.64,"resetsAt":4000000000},"seven_day":{"utilization":0.09,"resetsAt":4100000000}}}}' ;;
@@ -160,6 +175,7 @@ fn fixture(items: &[(&str, &str)], workers: usize) -> Fixture {
         limits: UsageLimits::default(),
         fallbacks: Vec::new(),
         balancing: Balancing::default(),
+        stall_after: DEFAULT_STALL_AFTER,
     };
     Fixture {
         _dir: dir,
@@ -259,6 +275,70 @@ async fn closes_successful_items_and_holds_failed_ones() {
         Some("used 1 of 1 turns; the last one failed: agent failed: could not do it")
     );
     assert!(queue.list(State::Open).unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_that_hangs_after_its_work_is_stopped_and_kept() {
+    let mut fx = fixture(&[("hang.txt", "HANGS-AFTER-RESULT")], 1);
+    fx.config.stall_after = Duration::from_secs(2);
+    let pid_file = record_child_pid(&fx);
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+    wait_for(&pool, |s| {
+        queue.list(State::Closed).unwrap().len() == 1 && idle(s)
+    })
+    .await;
+    pool.stop();
+
+    let result = fs::read_to_string(fx.root.join("work/closed/demo/hang.result.md")).unwrap();
+    assert!(result.contains("was stopped"), "{result}");
+    assert!(result.contains("Done; waiting on the suite"), "{result}");
+    let log = fs::read_to_string(fx.root.join("repo-worktrees/hang.log")).unwrap();
+    assert!(log.contains("--- stopped: no output"), "{log}");
+    // The wait loop, in its own process group, was stopped too.
+    let child = fs::read_to_string(&pid_file).unwrap();
+    assert!(
+        !Path::new(&format!("/proc/{}", child.trim())).exists(),
+        "background wait {child} still running"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_that_hangs_before_finishing_fails_as_stalled() {
+    let mut fx = fixture(&[("hang.txt", "HANGS-BEFORE-RESULT")], 1);
+    fx.config.stall_after = Duration::from_secs(2);
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+    wait_for(&pool, |s| {
+        queue.list(State::Hold).unwrap().len() == 1 && idle(s)
+    })
+    .await;
+    pool.stop();
+    assert_eq!(
+        held(&pool),
+        vec![(
+            "hang.txt".into(),
+            "agent failed: stalled: no output and next to no CPU use for 0 minutes".into()
+        )]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_silent_but_busy_run_is_left_alone() {
+    let mut fx = fixture(&[("busy.txt", "BUSY-SILENT")], 1);
+    fx.config.stall_after = Duration::from_secs(2);
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+    wait_for(&pool, |s| {
+        queue.list(State::Closed).unwrap().len() == 1 && idle(s)
+    })
+    .await;
+    pool.stop();
+    let result = fs::read_to_string(fx.root.join("work/closed/demo/busy.result.md")).unwrap();
+    assert!(!result.contains("was stopped"), "{result}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -721,11 +801,10 @@ async fn only_closed_items_can_be_cleaned_up() {
     assert!(matches!(err, PoolError::NotClosed(_)), "{err}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn background_processes_of_an_agent_are_stopped_with_it() {
-    let fx = fixture(&[("child.txt", "LEAVES-CHILD")], 1);
+/// Wraps the fake agent to tell it where to record the pid of a child it
+/// leaves running, and returns that file.
+fn record_child_pid(fx: &Fixture) -> std::path::PathBuf {
     let pid_file = fx.root.join("child.pid");
-    // Wrap the fake agent to tell it where to record its child's pid.
     let bin = fx.root.join("bin");
     let real = bin.join("claude-real");
     fs::rename(bin.join("claude"), &real).unwrap();
@@ -739,6 +818,13 @@ async fn background_processes_of_an_agent_are_stopped_with_it() {
     )
     .unwrap();
     fs::set_permissions(bin.join("claude"), fs::Permissions::from_mode(0o755)).unwrap();
+    pid_file
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn background_processes_of_an_agent_are_stopped_with_it() {
+    let fx = fixture(&[("child.txt", "LEAVES-CHILD")], 1);
+    let pid_file = record_child_pid(&fx);
 
     let queue = Queue::new(fx.root.join("work"));
     let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
