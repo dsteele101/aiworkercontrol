@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use agent_backend::{Auth, ConfigError, Provider, ProviderConfig};
 use serde::{Deserialize, Serialize};
-use worker_pool::{PoolConfig, Project, UsageLimits};
+use worker_pool::{Balancing, PoolConfig, Project, UsageLimits};
 
 use crate::ServerError;
 
@@ -35,9 +35,13 @@ pub struct Settings {
     /// When plan usage warns, stops runs, and fails over.
     #[serde(default)]
     pub limits: UsageLimits,
-    /// Providers to fail over to at the stop level, in order.
+    /// Providers to fail over to at the stop level, in order, or under a
+    /// balancing scheme, to share the work with.
     #[serde(default)]
     pub fallbacks: Vec<Provider>,
+    /// How work is spread across the active provider and the fallbacks.
+    #[serde(default)]
+    pub balancing: Balancing,
 }
 
 /// The default for [`Settings::max_turns`].
@@ -129,6 +133,7 @@ impl Default for Settings {
             max_turns: DEFAULT_MAX_TURNS,
             limits: UsageLimits::default(),
             fallbacks: Vec::new(),
+            balancing: Balancing::default(),
         }
     }
 }
@@ -242,6 +247,7 @@ impl Settings {
             max_turns: self.max_turns.max(1),
             limits: self.limits.clone(),
             fallbacks,
+            balancing: self.balancing.clone(),
         }
     }
 }

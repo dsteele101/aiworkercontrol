@@ -8,8 +8,8 @@ mod worker;
 pub use cleanup::{BranchOutcome, Cleanup};
 pub use review::ReviewChange;
 
+use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,8 +19,11 @@ use tokio::sync::{Notify, watch};
 use work_queue::{Queue, State as ItemState, WorkItem};
 
 use crate::agent;
+use crate::balance::Picker;
 use crate::usage::{self, UsageMap};
-use crate::{Activity, ItemMeta, PoolError, PoolSnapshot, Project, UsageLimits, WorkerStatus};
+use crate::{
+    Activity, Balancing, ItemMeta, PoolError, PoolSnapshot, Project, UsageLimits, WorkerStatus,
+};
 
 /// How often idle workers look for new items when nothing wakes them.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -41,9 +44,12 @@ pub struct PoolConfig {
     pub max_turns: u32,
     /// When plan usage warns and stops runs.
     pub limits: UsageLimits,
-    /// Providers to fail over to, in order, when `provider` reaches the stop
-    /// level and [`UsageLimits::failover`] is on.
+    /// Further providers, in order: fallbacks under [`crate::Scheme::Priority`]
+    /// (when [`UsageLimits::failover`] is on), else peers of `provider` that
+    /// share the work.
     pub fallbacks: Vec<ProviderConfig>,
+    /// How work is spread across `provider` and `fallbacks`.
+    pub balancing: Balancing,
 }
 
 /// Owns the workers. Cheap to clone; every clone controls the same pool.
@@ -68,9 +74,7 @@ struct State {
     workers: BTreeMap<usize, Activity>,
     last_error: Option<String>,
     usage: UsageMap,
-    overrides: HashSet<Provider>,
-    /// Fallbacks set aside after a failed run, with its error.
-    suspended: HashMap<Provider, String>,
+    picker: Picker,
     limited: Option<String>,
 }
 
@@ -123,7 +127,7 @@ impl Supervisor {
     /// Lets runs start on `provider` again although its plan usage has
     /// reached the stop level, until the usage drops below it.
     pub fn override_stop(&self, provider: Provider) {
-        self.shared.lock().overrides.insert(provider);
+        self.shared.lock().picker.overrides.insert(provider);
         self.shared.changed();
     }
 
@@ -196,11 +200,14 @@ impl Supervisor {
             limited: state.limited.clone(),
             overridden: Provider::ALL
                 .into_iter()
-                .filter(|p| state.overrides.contains(p))
+                .filter(|p| state.picker.overrides.contains(p))
                 .collect(),
             suspended: Provider::ALL
                 .into_iter()
-                .filter_map(|p| state.suspended.get(&p).map(|e| (p, e.clone())))
+                .filter_map(|p| {
+                    let suspension = state.picker.suspended.get(&p)?;
+                    Some((p, suspension.error.clone()))
+                })
                 .collect(),
         }
     }

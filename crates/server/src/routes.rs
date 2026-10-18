@@ -1,6 +1,8 @@
 //! Request handlers. Every form posts, applies its change, sets a notice
 //! when there is something to say, and redirects back to a page.
 
+use std::collections::HashMap;
+
 use agent_backend::{Cli, Provider};
 use axum::Router;
 use axum::extract::{Form, Query, State};
@@ -9,7 +11,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use serde::Deserialize;
 use work_queue::{RESULT_SUFFIX, State as ItemState, WorkItem};
-use worker_pool::{BranchOutcome, Project, PullRequests};
+use worker_pool::{Balancing, BranchOutcome, Project, PullRequests, Scheme};
 
 use crate::{AppState, login, pages};
 
@@ -17,6 +19,8 @@ use crate::{AppState, login, pages};
 pub(crate) const MAX_WORKERS: usize = 32;
 /// The highest turn limit the UI allows.
 pub(crate) const MAX_TURNS: u32 = 50;
+/// The highest provider weight the UI allows.
+pub(crate) const MAX_WEIGHT: u32 = 100;
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -29,6 +33,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/resume", post(resume))
         .route("/settings/max-turns", post(set_max_turns))
         .route("/settings/limits", post(set_limits))
+        .route("/settings/balancing", post(set_balancing))
         .route("/usage/override", post(override_stop))
         .route("/cleanup", post(clean_up))
         .route("/settings/active", post(set_active))
@@ -209,6 +214,59 @@ async fn set_limits(State(app): State<AppState>, Form(f): Form<LimitsForm>) -> R
     });
     if saved.is_ok() {
         app.notify("Saved the plan usage limits.");
+    }
+    report(&app, saved);
+    Redirect::to("/settings")
+}
+
+/// Every field is text, so the per-provider `weight_<provider>` fields can
+/// be gathered by `flatten`.
+#[derive(Deserialize)]
+struct BalancingForm {
+    scheme: Scheme,
+    #[serde(default)]
+    rework_any_provider: Option<String>,
+    #[serde(flatten)]
+    weights: HashMap<String, String>,
+}
+
+async fn set_balancing(State(app): State<AppState>, Form(f): Form<BalancingForm>) -> Redirect {
+    let saved = app.update_settings(|s| {
+        // Only the listed providers have a field; others keep their weight.
+        let mut weights = s.balancing.weights.clone();
+        for p in Provider::ALL {
+            let Some(value) = f
+                .weights
+                .get(&format!("weight_{}", pages::provider_value(p)))
+            else {
+                continue;
+            };
+            let weight: u32 = value
+                .trim()
+                .parse()
+                .ok()
+                .filter(|w| (1..=MAX_WEIGHT).contains(w))
+                .ok_or_else(|| {
+                    format!(
+                        "{}'s weight must be a whole number from 1 to {MAX_WEIGHT}",
+                        p.label()
+                    )
+                })?;
+            if weight == 1 {
+                weights.remove(&p);
+            } else {
+                weights.insert(p, weight);
+            }
+        }
+        s.balancing = Balancing {
+            scheme: f.scheme,
+            weights,
+            rework_any_provider: f.rework_any_provider.is_some(),
+        };
+        Ok(())
+    });
+    if saved.is_ok() {
+        app.notify(format!("Workers now use {} balancing.", f.scheme.label()));
     }
     report(&app, saved);
     Redirect::to("/settings")

@@ -25,6 +25,7 @@
 //! removes its worktree and branch to free the space.
 
 mod agent;
+mod balance;
 mod error;
 mod git;
 mod github;
@@ -36,6 +37,7 @@ mod prompt;
 mod status;
 mod usage;
 
+pub use balance::{Balancing, Scheme};
 pub use error::PoolError;
 pub use limits::UsageLimits;
 pub use meta::ItemMeta;
