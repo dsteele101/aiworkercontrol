@@ -78,7 +78,32 @@ async fn dashboard_renders() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("Workers"));
     assert!(body.contains("Stopped"));
-    assert!(body.contains(r#"http-equiv="refresh""#));
+    assert!(
+        body.contains(r#"<noscript><meta http-equiv="refresh" content="2"></noscript>"#),
+        "{body}"
+    );
+    for id in ["status", "usage", "workers", "queue"] {
+        assert!(
+            body.contains(&format!(r#"<div id="{id}" data-live>"#)),
+            "{id}"
+        );
+    }
+    assert!(body.contains(r#"location.pathname + "?live=1""#));
+
+    // The settings page has nothing live.
+    let (_, settings) = app.get("/settings").await;
+    assert!(!settings.contains("data-live") && !settings.contains("<script>"));
+}
+
+#[tokio::test]
+async fn live_refresh_leaves_notices_for_the_next_page() {
+    let app = app();
+    app.post("/settings/active", "provider=anthropic").await;
+    let notice = "Workers now use Anthropic (Claude)";
+    let (_, live) = app.get("/?live=1").await;
+    assert!(!live.contains(notice));
+    let (_, page) = app.get("/").await;
+    assert!(page.contains(notice), "{page}");
 }
 
 #[tokio::test]
