@@ -199,7 +199,11 @@ pub(crate) async fn run(
                     AgentEvent::Finished { ok, summary } => {
                         finished = Some((*ok, summary.clone()));
                     }
-                    AgentEvent::ToolUse { .. } | AgentEvent::Notice(_) | AgentEvent::Usage(_) => {}
+                    AgentEvent::ToolUse { .. }
+                    | AgentEvent::Notice(_)
+                    | AgentEvent::Usage(_)
+                    | AgentEvent::Status(_)
+                    | AgentEvent::Background(_) => {}
                 }
                 on_event(event);
             }

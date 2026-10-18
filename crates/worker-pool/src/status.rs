@@ -66,4 +66,13 @@ pub struct ActiveJob {
     pub started: SystemTime,
     /// The agent's most recent events, oldest first.
     pub events: VecDeque<AgentEvent>,
+    /// When the newest of `events` arrived: the step it started (a command,
+    /// a reply) has been going since.
+    pub last_event: SystemTime,
+    /// The agent's latest account of where it stands.
+    pub status: Option<String>,
+    /// Commands the agent left running in the background, by description.
+    pub background: Vec<String>,
+    /// Since when some background command has been running.
+    pub background_since: Option<SystemTime>,
 }

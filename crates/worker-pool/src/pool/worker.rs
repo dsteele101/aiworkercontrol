@@ -174,6 +174,10 @@ impl Shared {
                 provider: config.provider.provider,
                 started: SystemTime::now(),
                 events: VecDeque::new(),
+                last_event: SystemTime::now(),
+                status: None,
+                background: Vec::new(),
+                background_since: None,
             }),
         );
 
@@ -304,10 +308,24 @@ impl Shared {
                     self.record_usage(&mut state, provider, usage);
                 }
             } else if let Some(Activity::Working(job)) = state.workers.get_mut(&id) {
-                if job.events.len() == EVENT_TAIL {
-                    job.events.pop_front();
+                match event {
+                    AgentEvent::Status(status) => job.status = Some(status),
+                    AgentEvent::Background(tasks) => {
+                        job.background_since = match (tasks.is_empty(), job.background_since) {
+                            (true, _) => None,
+                            (false, Some(since)) => Some(since),
+                            (false, None) => Some(SystemTime::now()),
+                        };
+                        job.background = tasks;
+                    }
+                    event => {
+                        if job.events.len() == EVENT_TAIL {
+                            job.events.pop_front();
+                        }
+                        job.events.push_back(event);
+                        job.last_event = SystemTime::now();
+                    }
                 }
-                job.events.push_back(event);
             }
         }
         self.version.send_modify(|v| *v = v.wrapping_add(1));
