@@ -78,6 +78,37 @@ label.check input { width: auto; }
 @media (max-width: 600px) { header { flex-wrap: wrap; gap: 10px 16px; } }
 "#;
 
+/// Keeps the page's `data-live` sections current: every two seconds while
+/// the tab is visible, fetches the page again and swaps in each section
+/// whose content changed. A section is left alone while a field in it has
+/// focus, so nothing is replaced under the user's hands.
+const LIVE_SCRIPT: &str = r#"
+(() => {
+  const url = location.pathname + "?live=1";
+  async function refresh() {
+    if (document.hidden) return;
+    let doc;
+    try {
+      const res = await fetch(url, { cache: "no-store" });
+      if (!res.ok) return;
+      doc = new DOMParser().parseFromString(await res.text(), "text/html");
+    } catch (_) {
+      return;
+    }
+    for (const section of document.querySelectorAll("[data-live]")) {
+      const next = doc.getElementById(section.id);
+      const busy = section.contains(document.activeElement) &&
+        document.activeElement.matches("input, select, textarea");
+      if (next && !busy && next.innerHTML !== section.innerHTML) {
+        section.innerHTML = next.innerHTML;
+      }
+    }
+  }
+  setInterval(refresh, 2000);
+  document.addEventListener("visibilitychange", refresh);
+})();
+"#;
+
 fn layout(title: &str, here: &str, refresh: bool, notice: Option<String>, body: Markup) -> Markup {
     html! {
         (DOCTYPE)
@@ -85,7 +116,10 @@ fn layout(title: &str, here: &str, refresh: bool, notice: Option<String>, body: 
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                @if refresh { meta http-equiv="refresh" content="2"; }
+                @if refresh {
+                    // Without scripts, the whole page reloads instead.
+                    noscript { meta http-equiv="refresh" content="2"; }
+                }
                 title { (title) " · AI Worker Control" }
                 style { (maud::PreEscaped(STYLE)) }
             }
@@ -99,6 +133,7 @@ fn layout(title: &str, here: &str, refresh: bool, notice: Option<String>, body: 
                     @if let Some(notice) = notice { div.notice { (notice) } }
                     (body)
                 }
+                @if refresh { script { (maud::PreEscaped(LIVE_SCRIPT)) } }
             }
         }
     }
@@ -129,147 +164,156 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
     };
 
     let body = html! {
-        div.panel.bar {
-            div {
-                @if snapshot.running { strong.ok { "● Running" } } @else { strong.muted { "○ Stopped" } }
-            }
-            div { (settings.active.label()) " " span.muted { "(" (auth) ")" } }
-            div.bar {
-                span { "Workers" }
-                form.inline method="post" action="/workers" {
-                    input type="hidden" name="count" value=(settings.workers.saturating_sub(1));
-                    button disabled[settings.workers == 0] aria-label="Fewer workers" { "−" }
+        div #status data-live {
+            div.panel.bar {
+                div {
+                    @if snapshot.running { strong.ok { "● Running" } } @else { strong.muted { "○ Stopped" } }
                 }
-                strong { (settings.workers) }
-                form.inline method="post" action="/workers" {
-                    input type="hidden" name="count" value=(settings.workers + 1);
-                    button disabled[settings.workers >= MAX_WORKERS] aria-label="More workers" { "+" }
+                div { (settings.active.label()) " " span.muted { "(" (auth) ")" } }
+                div.bar {
+                    span { "Workers" }
+                    form.inline method="post" action="/workers" {
+                        input type="hidden" name="count" value=(settings.workers.saturating_sub(1));
+                        button disabled[settings.workers == 0] aria-label="Fewer workers" { "−" }
+                    }
+                    strong { (settings.workers) }
+                    form.inline method="post" action="/workers" {
+                        input type="hidden" name="count" value=(settings.workers + 1);
+                        button disabled[settings.workers >= MAX_WORKERS] aria-label="More workers" { "+" }
+                    }
+                }
+                div {
+                    @if snapshot.running {
+                        form.inline method="post" action="/stop" { button { "Stop" } }
+                    } @else {
+                        form.inline method="post" action="/start" { button.primary { "Start" } }
+                    }
                 }
             }
-            div {
-                @if snapshot.running {
-                    form.inline method="post" action="/stop" { button { "Stop" } }
-                } @else {
-                    form.inline method="post" action="/start" { button.primary { "Start" } }
-                }
+            @if let Some(error) = &snapshot.last_error {
+                p.bad { "Could not read the work queue: " (error) }
             }
-        }
-        @if let Some(error) = &snapshot.last_error {
-            p.bad { "Could not read the work queue: " (error) }
         }
 
-        h2 { "Plan usage" }
-        (usage_panel(&snapshot, &settings.limits))
-        p.muted { "Balancing: " (settings.balancing.scheme.label()) }
-
-        h2 { "Workers" }
-        @if snapshot.workers.is_empty() {
-            p.muted { "No workers running. Press Start to begin." }
+        div #usage data-live {
+            h2 { "Plan usage" }
+            (usage_panel(&snapshot, &settings.limits))
+            p.muted { "Balancing: " (settings.balancing.scheme.label()) }
         }
-        div.grid {
-            @for worker in &snapshot.workers {
-                div.panel.card {
-                    @match &worker.activity {
-                        Activity::Idle => {
-                            h3 { span { "Worker " (worker.id + 1) } span.muted { "idle" } }
-                            @if worker.id >= snapshot.target_workers || !snapshot.running {
-                                p.muted { "Stopping." }
-                            } @else if snapshot.limited.is_some() {
-                                p.bad { "Waiting: plan usage reached the stop level." }
+
+        div #workers data-live {
+            h2 { "Workers" }
+            @if snapshot.workers.is_empty() {
+                p.muted { "No workers running. Press Start to begin." }
+            }
+            div.grid {
+                @for worker in &snapshot.workers {
+                    div.panel.card {
+                        @match &worker.activity {
+                            Activity::Idle => {
+                                h3 { span { "Worker " (worker.id + 1) } span.muted { "idle" } }
+                                @if worker.id >= snapshot.target_workers || !snapshot.running {
+                                    p.muted { "Stopping." }
+                                } @else if snapshot.limited.is_some() {
+                                    p.bad { "Waiting: plan usage reached the stop level." }
+                                } @else {
+                                    p.muted { "Waiting for open work." }
+                                }
+                            }
+                            Activity::Working(job) => {
+                                h3 { span { "Worker " (worker.id + 1) } span.muted { (elapsed(job.started)) } }
+                                div { strong { (job.item) } " " span.muted { "· " (job.provider.label()) } }
+                                ul.events {
+                                    @let skip = job.events.len().saturating_sub(CARD_EVENTS);
+                                    @for event in job.events.iter().skip(skip) { li { (event_line(event)) } }
+                                    @if job.events.is_empty() { li.muted { "Starting agent…" } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+        }
+
+        div #queue data-live {
+            h2 { "Queue" }
+            div.panel {
+                p.bar {
+                    @for (state, items) in &lists { span { (state) ": " strong { (items.len()) } } }
+                }
+                table {
+                    tr { th { "Item" } th { "State" } th { "" } }
+                    @for item in lists.get("inprogress").into_iter().flatten() {
+                        tr { td { (item) } td.warn { "in progress" } td {} }
+                    }
+                    @for item in lists.get("open").into_iter().flatten() {
+                        tr {
+                            td { (item) }
+                            @let m = meta(ItemState::Open, item);
+                            @if let Some(error) = &m.last_error {
+                                td.warn { "retrying (" (m.turns) " of " (max_turns) " turns used); last run: " (error) }
+                                td {}
+                            } @else if !known(item) {
+                                td.muted { "no project “" (item.project) "” configured" }
+                                td {}
                             } @else {
-                                p.muted { "Waiting for open work." }
-                            }
-                        }
-                        Activity::Working(job) => {
-                            h3 { span { "Worker " (worker.id + 1) } span.muted { (elapsed(job.started)) } }
-                            div { strong { (job.item) } " " span.muted { "· " (job.provider.label()) } }
-                            ul.events {
-                                @let skip = job.events.len().saturating_sub(CARD_EVENTS);
-                                @for event in job.events.iter().skip(skip) { li { (event_line(event)) } }
-                                @if job.events.is_empty() { li.muted { "Starting agent…" } }
+                                td { "open" } td {}
                             }
                         }
                     }
-                }
-            }
-        }
-
-        h2 { "Queue" }
-        div.panel {
-            p.bar {
-                @for (state, items) in &lists { span { (state) ": " strong { (items.len()) } } }
-            }
-            table {
-                tr { th { "Item" } th { "State" } th { "" } }
-                @for item in lists.get("inprogress").into_iter().flatten() {
-                    tr { td { (item) } td.warn { "in progress" } td {} }
-                }
-                @for item in lists.get("open").into_iter().flatten() {
-                    tr {
-                        td { (item) }
-                        @let m = meta(ItemState::Open, item);
-                        @if let Some(error) = &m.last_error {
-                            td.warn { "retrying (" (m.turns) " of " (max_turns) " turns used); last run: " (error) }
-                            td {}
-                        } @else if !known(item) {
-                            td.muted { "no project “" (item.project) "” configured" }
-                            td {}
-                        } @else {
-                            td { "open" } td {}
-                        }
-                    }
-                }
-                @for item in lists.get("hold").into_iter().flatten() {
-                    tr {
-                        td { (item) }
-                        td.bad {
-                            "on hold: "
-                            (meta(ItemState::Hold, item).hold_reason.unwrap_or_else(|| "set aside for manual review".into()))
-                        }
-                        td {
-                            form.inline method="post" action="/resume" {
-                                input type="hidden" name="item" value=(item);
-                                button title="Reset its turn count and give it back to the agents" { "Return to agent" }
+                    @for item in lists.get("hold").into_iter().flatten() {
+                        tr {
+                            td { (item) }
+                            td.bad {
+                                "on hold: "
+                                (meta(ItemState::Hold, item).hold_reason.unwrap_or_else(|| "set aside for manual review".into()))
                             }
-                        }
-                    }
-                }
-                @for item in lists.get("inreview").into_iter().flatten() {
-                    @let m = meta(ItemState::InReview, item);
-                    tr {
-                        td { (item) }
-                        @if m.needs_rework.is_some() {
-                            td.warn {
-                                "changes requested; waiting for a worker (" (m.turns) " of "
-                                (max_turns) " turns used)"
-                                @if let Some(error) = &m.last_error { "; last run: " (error) }
-                            }
-                        } @else {
-                            td.warn { "in review (" (m.turns) " of " (max_turns) " turns used)" }
-                        }
-                        td {
-                            @if let Some(url) = &m.pr_url {
-                                a href=(url) target="_blank" rel="noopener" { "Pull request" }
-                            }
-                            " "
-                            a href={ "/result?item=" (url_encode(&item.to_string())) } { "Result" }
-                        }
-                    }
-                }
-                @for item in lists.get("closed").into_iter().flatten() {
-                    tr {
-                        td { (item) }
-                        td.ok { "closed" }
-                        td {
-                            a href={ "/result?item=" (url_encode(&item.to_string())) } { "Result" }
-                            @if let Some(url) = app.pool().pull_request(ItemState::Closed, item) {
-                                " " a href=(url) target="_blank" rel="noopener" { "Pull request" }
-                            }
-                            @if has_worktree(item) {
-                                " "
-                                form.inline method="post" action="/cleanup" {
+                            td {
+                                form.inline method="post" action="/resume" {
                                     input type="hidden" name="item" value=(item);
-                                    button title="Remove the worktree; delete the branch too if it is merged" { "Clean up" }
+                                    button title="Reset its turn count and give it back to the agents" { "Return to agent" }
+                                }
+                            }
+                        }
+                    }
+                    @for item in lists.get("inreview").into_iter().flatten() {
+                        @let m = meta(ItemState::InReview, item);
+                        tr {
+                            td { (item) }
+                            @if m.needs_rework.is_some() {
+                                td.warn {
+                                    "changes requested; waiting for a worker (" (m.turns) " of "
+                                    (max_turns) " turns used)"
+                                    @if let Some(error) = &m.last_error { "; last run: " (error) }
+                                }
+                            } @else {
+                                td.warn { "in review (" (m.turns) " of " (max_turns) " turns used)" }
+                            }
+                            td {
+                                @if let Some(url) = &m.pr_url {
+                                    a href=(url) target="_blank" rel="noopener" { "Pull request" }
+                                }
+                                " "
+                                a href={ "/result?item=" (url_encode(&item.to_string())) } { "Result" }
+                            }
+                        }
+                    }
+                    @for item in lists.get("closed").into_iter().flatten() {
+                        tr {
+                            td { (item) }
+                            td.ok { "closed" }
+                            td {
+                                a href={ "/result?item=" (url_encode(&item.to_string())) } { "Result" }
+                                @if let Some(url) = app.pool().pull_request(ItemState::Closed, item) {
+                                    " " a href=(url) target="_blank" rel="noopener" { "Pull request" }
+                                }
+                                @if has_worktree(item) {
+                                    " "
+                                    form.inline method="post" action="/cleanup" {
+                                        input type="hidden" name="item" value=(item);
+                                        button title="Remove the worktree; delete the branch too if it is merged" { "Clean up" }
+                                    }
                                 }
                             }
                         }

@@ -44,8 +44,20 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/login/input", post(login_input))
 }
 
-async fn dashboard(State(app): State<AppState>) -> Html<String> {
-    let notice = app.take_notice();
+#[derive(Deserialize)]
+struct DashboardQuery {
+    /// Set by the page's own refresh, which must not use up a notice meant
+    /// for the next page the user opens.
+    #[serde(default)]
+    live: Option<String>,
+}
+
+async fn dashboard(State(app): State<AppState>, Query(q): Query<DashboardQuery>) -> Html<String> {
+    let notice = if q.live.is_some() {
+        None
+    } else {
+        app.take_notice()
+    };
     Html(pages::dashboard(&app, notice).into_string())
 }
 
