@@ -561,6 +561,12 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
             @if let Some(limited) = &snapshot.limited {
                 p.bad { "Workers are waiting: " (limited) ". Override a provider below to let runs start on it again." }
             }
+            @for (provider, error) in &snapshot.suspended {
+                p.warn {
+                    (provider.label()) " is set aside as a fallback until the active provider can run again. "
+                    "Its last run failed: " (clip(error))
+                }
+            }
             @if snapshot.usage.is_empty() {
                 p.muted { "No usage reported yet. Claude reports its plan usage during each run; Codex and Gemini don't report theirs." }
             } @else {

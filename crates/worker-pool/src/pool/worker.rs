@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use agent_backend::{AgentEvent, PlanUsage, ProviderConfig};
+use agent_backend::{AgentEvent, PlanUsage, Provider, ProviderConfig};
 use work_queue::{State as ItemState, WorkItem};
 
 use super::run::{Finish, Kind};
@@ -15,6 +15,17 @@ use crate::{limits, usage};
 
 /// How a result file records its pull request; read back by `pull_request`.
 pub(crate) const PR_LINE: &str = "- Pull request: ";
+
+/// An item a worker has claimed, and how to run it.
+struct Claim {
+    item: WorkItem,
+    project: Project,
+    /// The settings, with the provider chosen for this run.
+    config: PoolConfig,
+    kind: Kind,
+    /// Whether the provider is a fallback rather than the active one.
+    fallback: bool,
+}
 
 impl Shared {
     /// Whether worker `id` should exit. Decided under the state lock, together
@@ -40,9 +51,7 @@ impl Shared {
                 self.changed();
             }
             match claimed {
-                Ok(Some((item, project, config, kind))) => {
-                    self.carry_out(id, item, project, config, kind).await
-                }
+                Ok(Some(claim)) => self.carry_out(id, claim).await,
                 Ok(None) => self.idle().await,
                 Err(e) => {
                     self.lock().last_error = Some(e.to_string());
@@ -62,9 +71,9 @@ impl Shared {
 
     /// Claims the next item to run: first an in-review item whose feedback
     /// waits for a worker, then an open item.
-    fn claim(&self) -> Result<Option<(WorkItem, Project, PoolConfig, Kind)>, PoolError> {
+    fn claim(&self) -> Result<Option<Claim>, PoolError> {
         let mut config = self.config.borrow().clone();
-        let Some(provider) = self.choose_provider(&config) else {
+        let Some((provider, fallback)) = self.choose_provider(&config) else {
             return Ok(None);
         };
         config.provider = provider;
@@ -87,20 +96,32 @@ impl Shared {
                     pushed_head,
                     feedback,
                 };
-                return Ok(Some((item, project, config, kind)));
+                return Ok(Some(Claim {
+                    item,
+                    project,
+                    config,
+                    kind,
+                    fallback,
+                }));
             }
         }
         let item = self.queue.claim_next(|item| project_of(item).is_none())?;
         Ok(item.and_then(|item| {
             let project = project_of(&item)?;
-            Some((item, project, config, Kind::New))
+            Some(Claim {
+                item,
+                project,
+                config,
+                kind: Kind::New,
+                fallback,
+            })
         }))
     }
 
-    /// The provider for the next run, per the plan-usage limits; `None`
-    /// when every allowed provider is stopped, which is recorded for the
-    /// dashboard.
-    fn choose_provider(&self, config: &PoolConfig) -> Option<ProviderConfig> {
+    /// The provider for the next run, per the plan-usage limits, and whether
+    /// it is a fallback; `None` when every allowed provider is stopped or
+    /// suspended, which is recorded for the dashboard.
+    fn choose_provider(&self, config: &PoolConfig) -> Option<(ProviderConfig, bool)> {
         let mut state = self.lock();
         let state = &mut *state;
         let chosen = limits::choose(
@@ -109,6 +130,7 @@ impl Shared {
             &config.limits,
             &state.usage,
             &mut state.overrides,
+            &mut state.suspended,
             unix_now(),
         );
         let limited = chosen.as_ref().err().cloned();
@@ -120,14 +142,14 @@ impl Shared {
         chosen.ok()
     }
 
-    async fn carry_out(
-        &self,
-        id: usize,
-        item: WorkItem,
-        project: Project,
-        config: PoolConfig,
-        kind: Kind,
-    ) {
+    async fn carry_out(&self, id: usize, claim: Claim) {
+        let Claim {
+            item,
+            project,
+            config,
+            kind,
+            fallback,
+        } = claim;
         self.set_activity(
             id,
             Activity::Working(ActiveJob {
@@ -140,17 +162,27 @@ impl Shared {
 
         let outcome = match self.begin_turn(&item) {
             Ok(turn) => match self.run(id, &item, &project, &config, &kind).await {
-                Ok(finish) => self.finish(&item, finish).map_err(|e| (turn, e)),
-                Err(e) => Err((turn, e)),
+                Ok(finish) => self.finish(&item, finish).map_err(|e| (Some(turn), e)),
+                Err(e) => Err((Some(turn), e)),
             },
-            // Without a turn count the item cannot be tracked; hold it.
-            Err(e) => Err((config.max_turns, e)),
+            Err(e) => Err((None, e)),
         };
-        if let Err((turn, e)) = outcome
-            && let Err(bookkeeping) =
-                self.after_failure(&item, &e.to_string(), turn, config.max_turns)
-        {
-            self.lock().last_error = Some(format!("{item}: {e}; then {bookkeeping}"));
+        if let Err((turn, e)) = outcome {
+            let reason = e.to_string();
+            // A failing fallback is set aside, and its run is not held
+            // against the item: the item only ran there because the active
+            // provider was stopped.
+            let refund = fallback && turn.is_some();
+            if refund {
+                self.suspend(config.provider.provider, &reason);
+            }
+            // Without a turn count the item cannot be tracked; hold it.
+            let turn = turn.unwrap_or(config.max_turns);
+            if let Err(bookkeeping) =
+                self.after_failure(&item, &reason, turn, config.max_turns, refund)
+            {
+                self.lock().last_error = Some(format!("{item}: {e}; then {bookkeeping}"));
+            }
         }
         self.set_activity(id, Activity::Idle);
     }
@@ -193,17 +225,22 @@ impl Shared {
 
     /// Puts a failed item on hold once it has used its last turn; otherwise
     /// returns it to be tried again: to review, still waiting for its rework,
-    /// if it has a pull request, else to `open`.
+    /// if it has a pull request, else to `open`. A `refund`ed run gives its
+    /// turn back and never holds the item.
     fn after_failure(
         &self,
         item: &WorkItem,
         reason: &str,
         turn: u32,
         max_turns: u32,
+        refund: bool,
     ) -> Result<(), PoolError> {
         let mut meta = ItemMeta::load(&self.queue, ItemState::InProgress, item).unwrap_or_default();
         meta.last_error = Some(reason.to_string());
-        if turn >= max_turns {
+        if refund {
+            meta.turns = meta.turns.saturating_sub(1);
+        }
+        if !refund && turn >= max_turns {
             meta.hold_reason = Some(format!(
                 "used {turn} of {max_turns} turns; the last one failed: {reason}"
             ));
@@ -219,6 +256,13 @@ impl Shared {
             self.queue.release(item)?;
         }
         Ok(())
+    }
+
+    /// Stops using fallback `provider` after a failed run, until the active
+    /// provider can run again.
+    fn suspend(&self, provider: Provider, reason: &str) {
+        self.lock().suspended.insert(provider, reason.to_string());
+        self.changed();
     }
 
     fn set_activity(&self, id: usize, activity: Activity) {

@@ -32,6 +32,9 @@ pub struct PoolSnapshot {
     /// Providers whose stop level the user has overridden until their
     /// usage drops back below it.
     pub overridden: Vec<Provider>,
+    /// Fallbacks set aside after a failed run, with its error, until the
+    /// active provider can run again.
+    pub suspended: Vec<(Provider, String)>,
 }
 
 /// One worker.

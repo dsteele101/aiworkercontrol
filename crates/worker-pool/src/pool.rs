@@ -9,7 +9,7 @@ pub use cleanup::{BranchOutcome, Cleanup};
 pub use review::ReviewChange;
 
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -68,6 +68,8 @@ struct State {
     last_error: Option<String>,
     usage: UsageMap,
     overrides: HashSet<Provider>,
+    /// Fallbacks set aside after a failed run, with its error.
+    suspended: HashMap<Provider, String>,
     limited: Option<String>,
 }
 
@@ -161,6 +163,10 @@ impl Supervisor {
             overridden: Provider::ALL
                 .into_iter()
                 .filter(|p| state.overrides.contains(p))
+                .collect(),
+            suspended: Provider::ALL
+                .into_iter()
+                .filter_map(|p| state.suspended.get(&p).map(|e| (p, e.clone())))
                 .collect(),
         }
     }
