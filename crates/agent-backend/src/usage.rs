@@ -74,16 +74,10 @@ impl ProviderConfig {
     /// Reads the output of [`ProviderConfig::usage_invocation`].
     ///
     /// `agy` reports one weekly and one 5-hour bucket per group of models
-    /// that share a quota: Gemini models, and the Claude and GPT models it
-    /// also offers. The group is picked from the configured model; with
-    /// none set, `agy` runs Gemini.
+    /// that share a quota. Only the Gemini group is read: the Claude and GPT
+    /// models Antigravity also offers are being withdrawn.
     pub fn parse_usage_report(&self, output: &str) -> Option<PlanUsage> {
         let report: Value = serde_json::from_str(output).ok()?;
-        let third_party = self.model.as_deref().is_some_and(|m| {
-            let m = m.trim().to_ascii_lowercase();
-            m.starts_with("claude") || m.starts_with("gpt")
-        });
-        let wanted = if third_party { "claude" } else { "gemini" };
         let group = report
             .pointer("/command/data/groups")?
             .as_array()?
@@ -91,7 +85,7 @@ impl ProviderConfig {
             .find(|g| {
                 g.get("name")
                     .and_then(Value::as_str)
-                    .is_some_and(|n| n.to_ascii_lowercase().contains(wanted))
+                    .is_some_and(|n| n.to_ascii_lowercase().contains("gemini"))
             })?;
         let buckets = group.get("buckets")?.as_array()?;
         let window = |name: &str| {
@@ -152,16 +146,14 @@ mod tests {
     /// `agy -p /usage --output-format json` (1.4.2), descriptions shortened.
     const AGY_USAGE: &str = r#"{"conversation_id":"","status":"SUCCESS","response":"…","duration_seconds":0,"num_turns":0,"command":{"name":"usage","data":{"description":"Within each group, models share a weekly limit and a 5-hour limit.","groups":[{"name":"Gemini Models","description":"Models within this group: Gemini Flash, Gemini Pro","buckets":[{"id":"gemini-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.8343654870986938,"reset_time":"2026-10-23T21:59:39Z"},{"id":"gemini-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":0.9993641376495361,"reset_time":"2026-10-18T17:44:13Z"}]},{"name":"Claude and GPT models","description":"Models within this group: Claude Opus, Claude Sonnet, GPT-OSS","buckets":[{"id":"3p-weekly","name":"Weekly Limit Remaining","window":"weekly","remaining_fraction":0.5,"reset_time":"2026-10-25T12:52:59Z"},{"id":"3p-5h","name":"Five Hour Limit Remaining","window":"5h","remaining_fraction":1,"reset_time":"2026-10-18T17:52:59Z"}]}]}}}"#;
 
-    fn agy(model: Option<&str>) -> ProviderConfig {
-        let mut config = ProviderConfig::new(Provider::Gemini, Auth::Plan);
-        config.model = model.map(str::to_string);
-        config
+    fn agy() -> ProviderConfig {
+        ProviderConfig::new(Provider::Gemini, Auth::Plan)
     }
 
     #[test]
-    fn agy_report_picks_the_configured_models_group() {
+    fn agy_report_gives_the_gemini_group() {
         assert_eq!(
-            agy(None).parse_usage_report(AGY_USAGE),
+            agy().parse_usage_report(AGY_USAGE),
             Some(PlanUsage {
                 session: Some(UsageWindow {
                     percent: 0,
@@ -173,17 +165,12 @@ mod tests {
                 }),
             })
         );
-        let claude = agy(Some("claude-opus-4-6-thinking"))
-            .parse_usage_report(AGY_USAGE)
-            .unwrap();
-        assert_eq!(claude.weekly.unwrap().percent, 50);
-        assert_eq!(claude.session.unwrap().percent, 0);
-        assert_eq!(agy(None).parse_usage_report("not json"), None);
+        assert_eq!(agy().parse_usage_report("not json"), None);
     }
 
     #[test]
     fn only_agy_plans_are_polled() {
-        let run = agy(None).usage_invocation().unwrap();
+        let run = agy().usage_invocation().unwrap();
         assert_eq!(run.program, "agy");
         assert_eq!(run.args, ["-p", "/usage", "--output-format", "json"]);
         let keyed = ProviderConfig::new(Provider::Gemini, Auth::ApiKey { key: "k".into() });
