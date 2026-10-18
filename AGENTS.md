@@ -1,7 +1,7 @@
 # AGENTS.md
 
 AI Worker Control: a Rust app that picks up work items from `work/`, hands each
-one to an AI coding agent (the official `claude`, `codex` or `gemini` CLI), and
+one to an AI coding agent (the official `claude`, `codex` or `agy` (Antigravity) CLI), and
 lands the result on a branch in the project's target repo. A local web
 dashboard shows worker progress and holds the settings.
 

@@ -52,7 +52,7 @@ pub fn parse_line(cli: Cli, line: &str) -> Vec<AgentEvent> {
     match cli {
         Cli::Claude => claude(&value),
         Cli::Codex => codex(&value),
-        Cli::Gemini => gemini(&value),
+        Cli::Antigravity => antigravity(&value),
     }
 }
 
@@ -161,32 +161,58 @@ fn codex(v: &Value) -> Vec<AgentEvent> {
     event.into_iter().collect()
 }
 
-fn gemini(v: &Value) -> Vec<AgentEvent> {
-    let event = match str_at(v, "type") {
-        Some("message") if str_at(v, "role") == Some("assistant") => {
-            text_event(str_at(v, "content"))
+/// `agy` streams an `init`, then a `step_update` per step change (a tool
+/// starting or ending, or a slice of the reply), then a `result`. Reply
+/// text arrives in fragments, so it is taken whole from the `result`.
+fn antigravity(v: &Value) -> Vec<AgentEvent> {
+    match str_at(v, "event") {
+        Some("step_update") => {
+            let Some(step) = v.get("step_update") else {
+                return Vec::new();
+            };
+            let tool = step.get("tool_info");
+            let event = match (str_at(step, "step_type"), str_at(step, "state")) {
+                (Some("tool"), Some("ACTIVE")) => Some(AgentEvent::ToolUse {
+                    name: str_at(step, "tool_name").unwrap_or_default().to_string(),
+                    detail: tool_detail(tool.and_then(|t| t.get("parameters"))),
+                }),
+                (Some("tool"), Some("DONE")) => tool
+                    .and_then(|t| t.pointer("/error/message"))
+                    .and_then(Value::as_str)
+                    .map(|m| AgentEvent::Notice(m.to_string())),
+                _ => None,
+            };
+            event.into_iter().collect()
         }
-        Some("tool_use") => Some(AgentEvent::ToolUse {
-            name: str_at(v, "tool_name").unwrap_or_default().to_string(),
-            detail: tool_detail(v.get("parameters")),
-        }),
-        Some("tool_result") if str_at(v, "status") == Some("error") => Some(AgentEvent::Notice(
-            v.pointer("/error/message")
-                .and_then(Value::as_str)
-                .unwrap_or("tool failed")
-                .to_string(),
-        )),
-        Some("error") => str_at(v, "message").map(|m| AgentEvent::Notice(m.to_string())),
-        Some("result") => Some(AgentEvent::Finished {
-            ok: str_at(v, "status") == Some("success"),
-            summary: v
-                .pointer("/error/message")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        }),
-        _ => None,
-    };
-    event.into_iter().collect()
+        Some("result") => {
+            let Some(result) = v.get("result") else {
+                return Vec::new();
+            };
+            let response = str_at(result, "response")
+                .map(str::trim)
+                .filter(|r| !r.is_empty());
+            if str_at(result, "status") == Some("SUCCESS") {
+                text_event(response)
+                    .into_iter()
+                    .chain([AgentEvent::Finished {
+                        ok: true,
+                        summary: response.map(str::to_string),
+                    }])
+                    .collect()
+            } else {
+                let error = result
+                    .pointer("/error/message")
+                    .or_else(|| result.get("error"))
+                    .and_then(Value::as_str)
+                    .or(str_at(result, "status"));
+                vec![AgentEvent::Finished {
+                    ok: false,
+                    summary: error.map(str::to_string),
+                }]
+            }
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn str_at<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
@@ -198,7 +224,8 @@ fn text_event(text: Option<&str>) -> Option<AgentEvent> {
         .map(|t| AgentEvent::Text(t.to_string()))
 }
 
-/// The most telling argument of a tool call.
+/// The most telling argument of a tool call; failing a known one, the first
+/// text argument (`agy` names them in CamelCase, e.g. `AbsolutePath`).
 fn tool_detail(input: Option<&Value>) -> String {
     const KEYS: [&str; 8] = [
         "command",
@@ -211,7 +238,11 @@ fn tool_detail(input: Option<&Value>) -> String {
         "description",
     ];
     input
-        .and_then(|i| KEYS.iter().find_map(|k| str_at(i, k)))
+        .and_then(|i| {
+            KEYS.iter()
+                .find_map(|k| str_at(i, k))
+                .or_else(|| i.as_object()?.values().find_map(Value::as_str))
+        })
         .unwrap_or_default()
         .to_string()
 }
@@ -230,11 +261,16 @@ mod tests {
         r#"{"type":"result","subtype":"success","is_error":true,"result":"Invalid API key · Fix external API key"}"#,
     ];
 
-    /// `gemini -p` 0.64.0 with an invalid API key, error message shortened.
-    const GEMINI_FAILED_RUN: [&str; 3] = [
-        r#"{"type":"init","timestamp":"2026-10-17T04:20:47.209Z","session_id":"4c27","model":"auto"}"#,
-        r#"{"type":"message","timestamp":"2026-10-17T04:20:47.211Z","role":"user","content":"hi"}"#,
-        r#"{"type":"result","timestamp":"2026-10-17T04:20:47.430Z","status":"error","error":{"type":"unknown","message":"API key not valid."}}"#,
+    /// `agy -p … --output-format stream-json` (1.4.2) reading a file and
+    /// answering, with the paths shortened and the reply's middle fragments
+    /// left out.
+    const AGY_RUN: [&str; 6] = [
+        r#"{"event":"init","conversation_id":"dae7","init":{"cwd":"/wt","tools":["view_file"],"permission_mode":"request-review"}}"#,
+        r#"{"event":"step_update","step_update":{"conversation_id":"dae7","step_index":0,"state":"DONE","step_type":"user_input"}}"#,
+        r#"{"event":"step_update","step_update":{"conversation_id":"dae7","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"view_file","tool_info":{"name":"view_file","parameters":{"AbsolutePath":"/spec/NOTE.md"}}}}"#,
+        r#"{"event":"step_update","step_update":{"conversation_id":"dae7","step_index":2,"state":"DONE","step_type":"tool","tool_name":"view_file","duration_seconds":0.08,"tool_info":{"name":"view_file","parameters":{"AbsolutePath":"/spec/NOTE.md"},"output":"2 lines, 21 bytes"}}}"#,
+        r#"{"event":"step_update","step_update":{"conversation_id":"dae7","step_index":3,"state":"ACTIVE","step_type":"agent_response","text_delta":"The secret"}}"#,
+        r#"{"event":"result","result":{"conversation_id":"dae7","status":"SUCCESS","response":"The secret word is \"pelican\".\n","duration_seconds":3.4,"num_turns":1,"usage":{"input_tokens":24507,"output_tokens":186}}}"#,
     ];
 
     /// `codex exec --json` 0.163.0 against an unreachable endpoint.
@@ -299,34 +335,42 @@ mod tests {
     }
 
     #[test]
-    fn gemini_failed_result() {
+    fn antigravity_tool_then_reply() {
+        let reply = "The secret word is \"pelican\".".to_string();
         assert_eq!(
-            parse_all(Cli::Gemini, &GEMINI_FAILED_RUN),
-            vec![AgentEvent::Finished {
-                ok: false,
-                summary: Some("API key not valid.".into())
-            }]
+            parse_all(Cli::Antigravity, &AGY_RUN),
+            vec![
+                AgentEvent::ToolUse {
+                    name: "view_file".into(),
+                    detail: "/spec/NOTE.md".into()
+                },
+                AgentEvent::Text(reply.clone()),
+                AgentEvent::Finished {
+                    ok: true,
+                    summary: Some(reply)
+                },
+            ]
         );
     }
 
     #[test]
-    fn gemini_assistant_message_and_tool() {
+    fn antigravity_failures() {
         let lines = [
-            r#"{"type":"message","role":"assistant","content":"Looking","delta":true}"#,
-            r#"{"type":"tool_use","tool_name":"read_file","tool_id":"t1","parameters":{"absolute_path":"/wt/a.rs"}}"#,
-            r#"{"type":"result","status":"success","stats":{}}"#,
+            r#"{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","error":{"type":"denied","message":"permission denied"}}}}"#,
+            r#"{"event":"result","result":{"status":"ERROR","error":{"type":"auth","message":"not signed in"}}}"#,
+            r#"{"event":"result","result":{"status":"CANCELED"}}"#,
         ];
         assert_eq!(
-            parse_all(Cli::Gemini, &lines),
+            parse_all(Cli::Antigravity, &lines),
             vec![
-                AgentEvent::Text("Looking".into()),
-                AgentEvent::ToolUse {
-                    name: "read_file".into(),
-                    detail: "/wt/a.rs".into()
+                AgentEvent::Notice("permission denied".into()),
+                AgentEvent::Finished {
+                    ok: false,
+                    summary: Some("not signed in".into())
                 },
                 AgentEvent::Finished {
-                    ok: true,
-                    summary: None
+                    ok: false,
+                    summary: Some("CANCELED".into())
                 },
             ]
         );

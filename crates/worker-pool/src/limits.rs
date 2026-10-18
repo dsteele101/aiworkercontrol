@@ -234,7 +234,7 @@ mod tests {
             pick(&mut suspended, 0),
             Err(
                 "no provider can run: Anthropic (Claude) at 100% of its plan, past the 85% \
-                 stop level; Gemini failed its last run; OpenAI failed its last run"
+                 stop level; Gemini (Antigravity) failed its last run; OpenAI failed its last run"
                     .into()
             )
         );

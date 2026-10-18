@@ -158,14 +158,22 @@ fn openai_compatible_without_key_sets_no_env_key() {
 }
 
 #[test]
-fn gemini_plan_and_key() {
-    let plan = run(&ProviderConfig::new(Provider::Gemini, Auth::Plan));
-    assert_eq!(plan.program, "gemini");
+fn gemini_runs_through_antigravity() {
+    let mut config = ProviderConfig::new(Provider::Gemini, Auth::Plan);
+    config.model = Some("gemini-3.8-flash-high".into());
+    config.effort = Some("high".into());
+    let plan = run(&config);
+    assert_eq!(plan.program, "agy");
     assert!(has_pair(&plan, "-p", "PROMPT"));
     assert!(has_pair(&plan, "--output-format", "stream-json"));
-    assert!(has_pair(&plan, "--approval-mode", "yolo"));
-    assert!(has_pair(&plan, "--include-directories", "/spec/phase"));
-    assert!(plan.args.iter().any(|a| a == "--skip-trust"));
+    assert!(
+        plan.args
+            .iter()
+            .any(|a| a == "--dangerously-skip-permissions")
+    );
+    assert!(has_pair(&plan, "--add-dir", "/spec/phase"));
+    assert!(has_pair(&plan, "--model", "gemini-3.8-flash-high"));
+    assert!(has_pair(&plan, "--effort", "high"));
     assert!(plan.env_remove.contains(&"GEMINI_API_KEY".to_string()));
 
     let keyed = run(&ProviderConfig::new(Provider::Gemini, key()));

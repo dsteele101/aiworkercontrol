@@ -11,7 +11,7 @@
 //! | Deepseek | `claude` | no | Deepseek's Anthropic-compatible endpoint |
 //! | OpenAI | `codex` | yes | `CODEX_API_KEY` |
 //! | OpenAI-compatible | `codex` | no | custom provider (Responses API) |
-//! | Gemini | `gemini` | yes | `GEMINI_API_KEY` |
+//! | Gemini | `agy` (Antigravity) | yes | `GEMINI_API_KEY` |
 //!
 //! This crate only describes processes ([`Invocation`]) and parses their
 //! output ([`parse_line`]); running them is the caller's job.
@@ -33,7 +33,7 @@ mod events;
 mod provider;
 mod usage;
 
-pub use auth::{AuthStatus, gemini_status, login_invocation, parse_status, status_invocation};
+pub use auth::{AuthStatus, login_invocation, parse_status, status_invocation};
 pub use events::{AgentEvent, parse_line};
 pub use provider::{Auth, Cli, ConfigError, Invocation, Job, Provider, ProviderConfig};
 pub use usage::{PlanUsage, UsageWindow};
