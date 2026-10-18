@@ -20,6 +20,12 @@ pub enum AgentEvent {
     Notice(String),
     /// The plan's usage, as the CLI last reported it.
     Usage(PlanUsage),
+    /// The agent's own one-line account of where it stands, e.g.
+    /// "fix written; waiting on the test build".
+    Status(String),
+    /// The commands the agent has left running in the background, by
+    /// description; empty once none are.
+    Background(Vec<String>),
     /// The run ended.
     Finished {
         /// Whether the agent reported success.
@@ -73,6 +79,24 @@ fn claude(v: &Value) -> Vec<AgentEvent> {
             })
             .collect(),
         Some("rate_limit_event") => claude_usage(v).map(AgentEvent::Usage).into_iter().collect(),
+        Some("system") => match str_at(v, "subtype") {
+            Some("post_turn_summary") => str_at(v, "status_detail")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| AgentEvent::Status(s.to_string()))
+                .into_iter()
+                .collect(),
+            Some("background_tasks_changed") => vec![AgentEvent::Background(
+                v.get("tasks")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|t| str_at(t, "description"))
+                    .map(str::to_string)
+                    .collect(),
+            )],
+            _ => Vec::new(),
+        },
         Some("result") => vec![AgentEvent::Finished {
             // `subtype` can read "success" on a failed run; `is_error` is the truth.
             ok: !v.get("is_error").and_then(Value::as_bool).unwrap_or(true),
@@ -320,6 +344,31 @@ mod tests {
         );
         let bare = r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}"#;
         assert!(parse_line(Cli::Claude, bare).is_empty());
+    }
+
+    #[test]
+    fn claude_status_and_background_tasks() {
+        // From `claude -p` 2.1.302, ids and uuids left out.
+        let lines = [
+            r#"{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"bmd3","task_type":"local_bash","description":"Run the new Horobi integration tests"},{"task_id":"bsio","task_type":"local_bash","description":"Horobi integration test result"}]}"#,
+            r#"{"type":"system","subtype":"post_turn_summary","status_category":"review_ready","status_detail":"Horobi targeting fix written; waiting on engine test build","needs_action":""}"#,
+            r#"{"type":"system","subtype":"background_tasks_changed","tasks":[]}"#,
+            r#"{"type":"system","subtype":"thinking_tokens"}"#,
+            r#"{"type":"tool_progress","tool_name":"Bash","elapsed_time_seconds":30,"heartbeat":true}"#,
+        ];
+        assert_eq!(
+            parse_all(Cli::Claude, &lines),
+            vec![
+                AgentEvent::Background(vec![
+                    "Run the new Horobi integration tests".into(),
+                    "Horobi integration test result".into()
+                ]),
+                AgentEvent::Status(
+                    "Horobi targeting fix written; waiting on engine test build".into()
+                ),
+                AgentEvent::Background(Vec::new()),
+            ]
+        );
     }
 
     #[test]

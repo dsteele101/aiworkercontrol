@@ -77,6 +77,11 @@ case "$prompt" in
   *NO-COMMIT*)
     echo '{"type":"result","is_error":false,"result":"looked around"}'
     exit 0 ;;
+  *WAITS-IN-BACKGROUND*)
+    echo '{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"b1","description":"Run the engine suite"}]}'
+    echo '{"type":"system","subtype":"post_turn_summary","status_detail":"Fix written; waiting on the suite"}'
+    sleep 1
+    echo '{"type":"system","subtype":"background_tasks_changed","tasks":[]}' ;;
   *REPORTS-USAGE*)
     echo '{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.5,"resetsAt":4000000000}}}}'
     echo '{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.64,"resetsAt":4000000000},"seven_day":{"utilization":0.09,"resetsAt":4100000000}}}}' ;;
@@ -254,6 +259,38 @@ async fn closes_successful_items_and_holds_failed_ones() {
         Some("used 1 of 1 turns; the last one failed: agent failed: could not do it")
     );
     assert!(queue.list(State::Open).unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workers_show_status_and_background_commands() {
+    let fx = fixture(&[("wait.txt", "WAITS-IN-BACKGROUND")], 1);
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+    let job = |s: &PoolSnapshot| {
+        s.workers.iter().find_map(|w| match &w.activity {
+            Activity::Working(job) => Some(job.clone()),
+            Activity::Idle => None,
+        })
+    };
+    let snapshot = wait_for(&pool, |s| job(s).is_some_and(|j| j.status.is_some())).await;
+    let waiting = job(&snapshot).unwrap();
+    assert_eq!(waiting.background, vec!["Run the engine suite".to_string()]);
+    assert!(waiting.background_since.is_some());
+    assert_eq!(
+        waiting.status.as_deref(),
+        Some("Fix written; waiting on the suite")
+    );
+    // They describe the job rather than being steps of it.
+    assert!(waiting.events.is_empty(), "{:?}", waiting.events);
+
+    let snapshot = wait_for(&pool, |s| job(s).is_some_and(|j| j.background.is_empty())).await;
+    assert_eq!(job(&snapshot).unwrap().background_since, None);
+    wait_for(&pool, |s| {
+        queue.list(State::Closed).unwrap().len() == 1 && idle(s)
+    })
+    .await;
+    pool.stop();
 }
 
 #[tokio::test(flavor = "multi_thread")]

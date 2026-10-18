@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use agent_backend::{AgentEvent, AuthStatus, Cli, Provider, UsageWindow};
 use maud::{DOCTYPE, Markup, html};
 use work_queue::{State as ItemState, WorkItem};
-use worker_pool::{Activity, PoolSnapshot, Scheme, UsageLimits};
+use worker_pool::{ActiveJob, Activity, PoolSnapshot, Scheme, UsageLimits};
 
 use crate::routes::{MAX_TURNS, MAX_WEIGHT, MAX_WORKERS};
 use crate::{AppState, Settings};
@@ -54,6 +54,10 @@ h2 { font-size: 15px; margin: 24px 0 10px; text-transform: uppercase;
 .card h3 { margin: 0 0 6px; font-size: 15px; display: flex; justify-content: space-between; }
 .muted { color: var(--muted); }
 .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+.now { background: var(--code); border-radius: 6px; padding: 8px 10px; margin-top: 8px;
+  overflow-wrap: anywhere; }
+.now code { background: none; padding: 0; }
+.timer { font-variant-numeric: tabular-nums; color: var(--muted); }
 ul.events { list-style: none; margin: 8px 0 0; padding: 0; font-size: 13px; }
 ul.events li { padding: 3px 0; border-top: 1px solid var(--border);
   overflow-wrap: anywhere; }
@@ -230,6 +234,7 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                             Activity::Working(job) => {
                                 h3 { span { "Worker " (worker.id + 1) } span.muted { (elapsed(job.started)) } }
                                 div { strong { (job.item) } " " span.muted { "· " (job.provider.label()) } }
+                                (now_line(job))
                                 ul.events {
                                     @let skip = job.events.len().saturating_sub(CARD_EVENTS);
                                     @for event in job.events.iter().skip(skip) { li { (event_line(event)) } }
@@ -625,7 +630,13 @@ fn event_line(event: &AgentEvent) -> Markup {
             AgentEvent::ToolUse { name, detail } => { code { (name) } " " (clip(detail)) },
             AgentEvent::Notice(text) => span.muted { (clip(text)) },
             AgentEvent::Usage(_) => span.muted { "Plan usage updated" },
-            AgentEvent::Finished { ok: true, .. } => span.ok { "Agent finished" },
+            // Claude ends a turn while its background commands run, then
+            // carries on, so this is not necessarily the end of the run.
+            AgentEvent::Finished { ok: true, summary } => {
+                span.ok { "Turn ended" } @if let Some(s) = summary { ": " (clip(s)) }
+            },
+            AgentEvent::Status(text) => span.muted { (clip(text)) },
+            AgentEvent::Background(tasks) => span.muted { "Background: " (tasks.join("; ")) },
             AgentEvent::Finished { ok: false, summary } => {
                 span.bad { "Agent failed" @if let Some(s) = summary { ": " (clip(s)) } }
             },
@@ -634,8 +645,13 @@ fn event_line(event: &AgentEvent) -> Markup {
 }
 
 fn clip(text: &str) -> String {
+    clip_to(text, EVENT_CHARS)
+}
+
+/// `text`, trimmed and cut to `chars` characters.
+fn clip_to(text: &str, chars: usize) -> String {
     let text = text.trim();
-    match text.char_indices().nth(EVENT_CHARS) {
+    match text.char_indices().nth(chars) {
         Some((cut, _)) => format!("{}…", &text[..cut]),
         None => text.to_string(),
     }
@@ -726,9 +742,88 @@ fn duration(secs: u64) -> String {
     }
 }
 
+/// What the agent is doing right now, and for how long: waiting on
+/// background commands, running a step, or thinking; then its own latest
+/// account of where it stands.
+fn now_line(job: &ActiveJob) -> Markup {
+    html! {
+        div.now {
+            @if !job.background.is_empty() {
+                span.warn { "Waiting on " (job.background.join("; ")) }
+                " " span.timer { (elapsed(job.background_since.unwrap_or(job.last_event))) }
+            } @else {
+                @match job.events.back() {
+                    Some(AgentEvent::ToolUse { name, detail }) => {
+                        strong { (activity(name, detail)) }
+                        " " span.timer { (elapsed(job.last_event)) }
+                        @if !detail.is_empty() { div { code { (clip_to(detail, 120)) } } }
+                    }
+                    Some(AgentEvent::Finished { .. }) => {
+                        strong { "Wrapping up" } " " span.timer { (elapsed(job.last_event)) }
+                    }
+                    None => { strong { "Starting" } " " span.timer { (elapsed(job.started)) } }
+                    Some(_) => { strong { "Thinking" } " " span.timer { (elapsed(job.last_event)) } }
+                }
+            }
+            @if let Some(status) = &job.status {
+                div.muted { "Agent's status: " (status) }
+            }
+        }
+    }
+}
+
+/// A plain description of a tool call: for shell commands, what the
+/// command is for when it is a common one.
+fn activity(tool: &str, detail: &str) -> String {
+    let lower = tool.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "bash" | "shell" | "run_command" | "run_shell_command"
+    ) {
+        let command = detail.trim_start();
+        let label = if command.contains("clippy") {
+            "Linting (clippy)"
+        } else if command.contains("nextest") || command.contains("cargo test") {
+            "Running tests"
+        } else if command.contains("cargo build") || command.contains("cargo check") {
+            "Building"
+        } else if command.contains("cargo fmt") || command.contains("rustfmt") {
+            "Formatting"
+        } else if command.contains("check-parser-combinators") {
+            "Running Gate A"
+        } else if command.starts_with("git ") {
+            "Running git"
+        } else if command.starts_with("gh ") {
+            "Querying GitHub"
+        } else {
+            "Running a command"
+        };
+        return label.to_string();
+    }
+    let label = match lower.as_str() {
+        "read" | "view_file" | "read_file" => "Reading",
+        "edit" | "write" | "multiedit" | "write_file" | "replace" => "Editing",
+        "grep" | "glob" | "search" | "grep_search" | "find_by_name" => "Searching",
+        "webfetch" | "websearch" | "web_search" | "read_url_content" => "Looking it up",
+        "todowrite" => "Planning",
+        "task" | "agent" => "Delegating to a subagent",
+        _ => return format!("Using {tool}"),
+    };
+    label.to_string()
+}
+
 fn elapsed(started: SystemTime) -> String {
-    let secs = started.elapsed().map(|d| d.as_secs()).unwrap_or(0);
-    format!("{}:{:02}", secs / 60, secs % 60)
+    clock(started.elapsed().map(|d| d.as_secs()).unwrap_or(0))
+}
+
+/// `m:ss`, or `h:mm:ss` from an hour on.
+fn clock(secs: u64) -> String {
+    let (h, m, s) = (secs / 3_600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
 }
 
 /// The form value of a scheme, matching its serde name.
@@ -769,6 +864,32 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic_in_result_fn)]
 
     use super::*;
+
+    #[test]
+    fn clock_shows_hours_once_past_one() {
+        assert_eq!(clock(5), "0:05");
+        assert_eq!(clock(59 * 60 + 9), "59:09");
+        assert_eq!(clock(3_600 + 62), "1:01:02");
+    }
+
+    #[test]
+    fn common_commands_get_plain_names() {
+        assert_eq!(
+            activity(
+                "Bash",
+                "cargo clippy --workspace --all-targets -- -D warnings"
+            ),
+            "Linting (clippy)"
+        );
+        assert_eq!(
+            activity("Bash", "cargo nextest run -p engine"),
+            "Running tests"
+        );
+        assert_eq!(activity("shell", "git status"), "Running git");
+        assert_eq!(activity("Bash", "ls -la"), "Running a command");
+        assert_eq!(activity("view_file", "/a.rs"), "Reading");
+        assert_eq!(activity("Monitor", ""), "Using Monitor");
+    }
 
     #[test]
     fn clip_cuts_long_text_on_a_char_boundary() {
