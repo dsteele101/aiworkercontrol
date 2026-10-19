@@ -97,7 +97,8 @@ label.check input { width: auto; }
 /// Keeps the page's `data-live` sections current: every two seconds while
 /// the tab is visible, fetches the page again and swaps in each section
 /// whose content changed. A section is left alone while a field in it has
-/// focus or an open menu, so nothing is replaced under the user's hands.
+/// focus or an open menu, so nothing is replaced under the user's hands. It
+/// also closes an open menu when the user clicks outside it.
 const LIVE_SCRIPT: &str = r#"
 (() => {
   const url = location.pathname + "?live=1";
@@ -121,6 +122,12 @@ const LIVE_SCRIPT: &str = r#"
       }
     }
   }
+  // A click anywhere outside an open menu closes it, so only one is open.
+  document.addEventListener("click", (e) => {
+    for (const menu of document.querySelectorAll("details.menu[open]")) {
+      if (!menu.contains(e.target)) menu.removeAttribute("open");
+    }
+  });
   setInterval(refresh, 2000);
   document.addEventListener("visibilitychange", refresh);
 })();
