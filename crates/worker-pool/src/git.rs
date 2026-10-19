@@ -179,6 +179,29 @@ pub(crate) async fn commits_since(worktree: &Path, base: &str) -> Result<Vec<Str
     Ok(out.lines().map(str::to_string).collect())
 }
 
+/// What the worktree's `HEAD` changed since `base`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DiffStat {
+    pub added: u64,
+    pub removed: u64,
+    pub files: u64,
+}
+
+/// Lines added and removed, and files touched, between `base` and `HEAD`.
+/// Binary files count as touched, with no lines.
+pub(crate) async fn diff_stat(worktree: &Path, base: &str) -> Result<DiffStat, PoolError> {
+    let range = format!("{base}..HEAD");
+    let out = git(worktree, &["diff", "--numstat", &range]).await?;
+    let mut stat = DiffStat::default();
+    for line in out.lines() {
+        let mut cols = line.split('\t');
+        stat.added += cols.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+        stat.removed += cols.next().and_then(|n| n.parse::<u64>().ok()).unwrap_or(0);
+        stat.files += 1;
+    }
+    Ok(stat)
+}
+
 async fn git(dir: &Path, args: &[&str]) -> Result<String, PoolError> {
     let output = Command::new("git")
         .arg("-C")

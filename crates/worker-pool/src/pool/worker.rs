@@ -1,15 +1,17 @@
 //! The worker loop: claim an item, carry it out, record the outcome.
 
 use std::collections::VecDeque;
-use std::sync::Arc;
-use std::time::SystemTime;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use agent_backend::{AgentEvent, PlanUsage, Provider};
 use work_queue::{State as ItemState, WorkItem};
 
 use super::run::{Finish, Kind};
+use super::trace::Trace;
 use super::{POLL_INTERVAL, PoolConfig, Shared, State, unix_now};
 use crate::balance::{Pick, Suspension};
+use crate::history::{Entry, EventKind, TurnOutcome, TurnReason, TurnRecord, feedback_kinds};
 use crate::status::EVENT_TAIL;
 use crate::usage;
 use crate::{ActiveJob, Activity, ItemMeta, PoolError, Project};
@@ -182,23 +184,44 @@ impl Shared {
             }),
         );
 
+        let started_at = unix_now();
+        // Read now: the item leaves `inprogress` when the turn ends.
+        let queued_at = self.queued_at(&item);
+        let clock = Instant::now();
+        let provider = config.provider.provider;
+        let quota_before = self.lock().usage.get(&provider).cloned();
+        let trace = Mutex::new(Trace::default());
+        let mut context = None;
         let outcome = match self.begin_turn(&item) {
-            Ok(turn) => match self.run(id, &item, &project, &config, &kind).await {
-                Ok(finish) => self
-                    .finish(&item, finish, config.provider.provider)
-                    .map_err(|e| (Some(turn), e)),
-                Err(e) => Err((Some(turn), e)),
-            },
+            Ok((turn, retry)) => {
+                context = Some((turn, retry));
+                match self.run(id, &item, &project, &config, &kind, &trace).await {
+                    Ok(finish) => {
+                        let to = match &finish {
+                            Finish::Close { .. } => TurnOutcome::Closed,
+                            Finish::Review { .. } => TurnOutcome::Review,
+                            Finish::Hold { .. } => TurnOutcome::Hold,
+                        };
+                        self.finish(&item, finish, provider)
+                            .map(|()| to)
+                            .map_err(|e| (Some(turn), e))
+                    }
+                    Err(e) => Err((Some(turn), e)),
+                }
+            }
             Err(e) => Err((None, e)),
         };
-        if let Err((turn, e)) = outcome {
+        let mut failure = None;
+        let mut refunded = false;
+        if let Err((turn, e)) = &outcome {
             let reason = e.to_string();
             // A failing fallback is set aside, and its run is not held
             // against the item: the item only ran there because the active
             // provider was stopped.
             let refund = fallback && turn.is_some();
+            refunded = refund;
             if refund {
-                self.suspend(config.provider.provider, &reason);
+                self.suspend(provider, &reason);
             }
             // Without a turn count the item cannot be tracked; hold it.
             let turn = turn.unwrap_or(config.max_turns);
@@ -207,16 +230,67 @@ impl Shared {
             {
                 self.lock().last_error = Some(format!("{item}: {e}; then {bookkeeping}"));
             }
+            failure = Some((failure_kind(e, trace_stalled(&trace)), reason));
+        }
+        if let Some((turn, retry)) = context {
+            let quota_after = self.lock().usage.get(&provider).cloned();
+            let record = turn_record(
+                &item,
+                &config,
+                &kind,
+                TurnFacts {
+                    turn,
+                    retry,
+                    fallback,
+                    started_at,
+                    elapsed: clock.elapsed(),
+                    outcome: outcome.as_ref().map_or(TurnOutcome::Failed, |o| *o),
+                    failure,
+                    refunded,
+                    quota_before,
+                    quota_after,
+                },
+                trace.into_inner().unwrap_or_else(PoisonError::into_inner),
+                queued_at,
+            );
+            self.record_entry(&Entry::Turn(Box::new(record)));
         }
         self.set_activity(id, Activity::Idle);
     }
 
-    /// Counts a new turn for an in-progress item and returns its number.
-    fn begin_turn(&self, item: &WorkItem) -> Result<u32, PoolError> {
+    /// Counts a new turn for an in-progress item and returns its number,
+    /// and whether it follows a failed one.
+    fn begin_turn(&self, item: &WorkItem) -> Result<(u32, bool), PoolError> {
         let mut meta = ItemMeta::load(&self.queue, ItemState::InProgress, item)?;
+        let retry = meta.last_error.is_some();
         meta.turns += 1;
         meta.save(&self.queue, ItemState::InProgress, item)?;
-        Ok(meta.turns)
+        Ok((meta.turns, retry))
+    }
+
+    /// When the in-progress `item` was added to the queue, as far as its
+    /// file's age tells (it keeps its age as it moves between states).
+    fn queued_at(&self, item: &WorkItem) -> Option<u64> {
+        std::fs::metadata(self.queue.path(ItemState::InProgress, item))
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+    }
+
+    /// Adds `entry` to the work history. The history is a record, not part
+    /// of the work, so a failure to write it is shown but stops nothing.
+    fn record_entry(&self, entry: &Entry) {
+        if let Err(e) = self.ledger.append(entry) {
+            self.lock().last_error = Some(format!("work history: {e}"));
+        }
+    }
+
+    /// Records an `event` in `item`'s life in the work history.
+    pub(super) fn record(&self, item: &WorkItem, event: EventKind, detail: Option<String>) {
+        if let Err(e) = self.ledger.event(item, event, detail) {
+            self.lock().last_error = Some(format!("work history: {e}"));
+        }
     }
 
     /// Moves a successfully run item on: to `closed`, to review with its
@@ -311,6 +385,8 @@ impl Shared {
             } else if let Some(Activity::Working(job)) = state.workers.get_mut(&id) {
                 match event {
                     AgentEvent::Status(status) => job.status = Some(status),
+                    // For the work history only; not a step to show.
+                    AgentEvent::Model(_) | AgentEvent::Metrics(_) => {}
                     AgentEvent::Background(tasks) => {
                         job.background_since = match (tasks.is_empty(), job.background_since) {
                             (true, _) => None,
@@ -341,5 +417,91 @@ impl Shared {
         if let Err(e) = usage::save(&self.usage_file, &state.usage) {
             state.last_error = Some(e.to_string());
         }
+    }
+}
+
+/// What the worker knows about a turn once it is over.
+struct TurnFacts {
+    turn: u32,
+    retry: bool,
+    fallback: bool,
+    started_at: u64,
+    elapsed: std::time::Duration,
+    outcome: TurnOutcome,
+    failure: Option<(&'static str, String)>,
+    refunded: bool,
+    quota_before: Option<PlanUsage>,
+    quota_after: Option<PlanUsage>,
+}
+
+fn trace_stalled(trace: &Mutex<Trace>) -> bool {
+    trace.lock().unwrap_or_else(PoisonError::into_inner).stalled
+}
+
+/// A coarse category for a failed turn, for grouping in the history.
+fn failure_kind(error: &PoolError, stalled: bool) -> &'static str {
+    match error {
+        PoolError::AgentFailed(_) if stalled => "stalled",
+        PoolError::AgentFailed(_) => "agent",
+        PoolError::NoCommits(_) => "no_commits",
+        PoolError::Setup { .. } => "setup",
+        PoolError::Spawn { .. } => "spawn",
+        PoolError::Git { .. } => "git",
+        PoolError::GitHub { .. } => "github",
+        _ => "other",
+    }
+}
+
+fn turn_record(
+    item: &WorkItem,
+    config: &PoolConfig,
+    kind: &Kind,
+    facts: TurnFacts,
+    trace: Trace,
+    queued_at: Option<u64>,
+) -> TurnRecord {
+    let (reason, feedback) = match kind {
+        Kind::Rework { feedback, .. } => (TurnReason::Rework, feedback_kinds(feedback)),
+        Kind::New if facts.retry => (TurnReason::Retry, Vec::new()),
+        Kind::New => (TurnReason::First, Vec::new()),
+    };
+    let non_empty = |s: &Option<String>| s.as_deref().filter(|s| !s.is_empty()).map(str::to_string);
+    let (failure, error) = match facts.failure {
+        Some((kind, reason)) => (Some(kind.to_string()), Some(reason)),
+        None => (None, None),
+    };
+    let mut metrics = trace.metrics;
+    metrics.models.clear();
+    let diff = trace.diff;
+    let ended_at = facts.started_at + facts.elapsed.as_secs();
+    TurnRecord {
+        project: item.project.clone(),
+        item: item.file.clone(),
+        turn: facts.turn,
+        reason,
+        feedback,
+        provider: config.provider.provider,
+        fallback: facts.fallback,
+        model_requested: non_empty(&config.provider.model),
+        models: trace.models.into_iter().collect(),
+        effort: non_empty(&config.provider.effort),
+        queued_at: (reason == TurnReason::First).then_some(queued_at).flatten(),
+        started_at: facts.started_at,
+        ended_at,
+        duration_ms: u64::try_from(facts.elapsed.as_millis()).unwrap_or(u64::MAX),
+        agent_ms: trace.agent_ms,
+        outcome: facts.outcome,
+        failure,
+        error,
+        stalled: trace.stalled,
+        refunded: facts.refunded,
+        metrics,
+        tool_calls: trace.tool_calls,
+        commits: trace.commits,
+        lines_added: diff.map(|d| d.added),
+        lines_removed: diff.map(|d| d.removed),
+        files_changed: diff.map(|d| d.files),
+        quota_before: facts.quota_before,
+        quota_after: facts.quota_after,
     }
 }
