@@ -951,6 +951,7 @@ async fn published_work_waits_in_review_with_its_pull_request() {
         meta.pr_url.as_deref(),
         Some("https://github.com/up/repo/pull/7")
     );
+    assert_eq!(meta.pr_title.as_deref(), Some("feat: fix the thing"));
     assert_eq!(meta.turns, 1);
     assert_eq!(
         head,
@@ -1463,6 +1464,7 @@ async fn an_imported_pull_request_waits_in_review_and_is_reworked_on_its_own_bra
         Some("https://github.com/up/repo/pull/9")
     );
     assert_eq!(meta.pushed_head.as_deref(), Some(head.as_str()));
+    assert_eq!(meta.pr_title.as_deref(), Some("feat: the feature"));
     assert_eq!(meta.remote_branch.as_deref(), Some("feature/x"));
     assert_eq!(meta.turns, 0);
     assert_eq!(

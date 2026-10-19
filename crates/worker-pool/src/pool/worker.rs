@@ -305,9 +305,13 @@ impl Shared {
             Finish::Review {
                 report,
                 pr_url,
+                pr_title,
                 head,
             } => {
                 meta.pr_url = Some(pr_url);
+                if pr_title.is_some() {
+                    meta.pr_title = pr_title;
+                }
                 meta.pushed_head = Some(head);
                 meta.needs_rework = None;
                 meta.provider = Some(provider);

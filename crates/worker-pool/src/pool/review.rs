@@ -163,6 +163,7 @@ impl Supervisor {
         let (fresh, to) = if pr_open {
             let fresh = ItemMeta {
                 pr_url: meta.pr_url,
+                pr_title: meta.pr_title,
                 pushed_head: meta.pushed_head,
                 needs_rework: meta.needs_rework,
                 answered_head: meta.answered_head,

@@ -59,7 +59,7 @@ pub(crate) async fn open_pr(
     branch: &str,
     draft: &Draft,
     as_draft: bool,
-) -> Result<String, PoolError> {
+) -> Result<(String, String), PoolError> {
     let listed = run(
         gh,
         &[
@@ -72,7 +72,7 @@ pub(crate) async fn open_pr(
             "--state",
             "open",
             "--json",
-            "url,headRepositoryOwner",
+            "url,title,headRepositoryOwner",
         ],
     )
     .await?;
@@ -86,7 +86,8 @@ pub(crate) async fn open_pr(
         .and_then(|pr| pr.get("url"))
         .and_then(serde_json::Value::as_str)
     {
-        return Ok(url.to_string());
+        let title = ours.map_or("", |pr| str_at(pr, "title"));
+        return Ok((url.to_string(), title.to_string()));
     }
 
     let head = format!("{owner}:{branch}");
@@ -109,7 +110,8 @@ pub(crate) async fn open_pr(
     }
     let out = run(gh, &args).await?;
     // gh prints the new pull request's URL last.
-    Ok(out.lines().last().unwrap_or_default().trim().to_string())
+    let url = out.lines().last().unwrap_or_default().trim().to_string();
+    Ok((url, draft.title.clone()))
 }
 
 /// Whether the pull request at `url` has been merged.
