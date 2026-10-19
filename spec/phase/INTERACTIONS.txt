@@ -1,0 +1,91 @@
+
+"Whenever <this creature> deals [combat] damage to a creature, tap that
+creature [and it doesn't untap during its controller's next untap step]"
+(untargeted damage-recipient referent acted on by a resolver)
+--------------------------------------------------------------------------
+Cards: Kashi-Tribe Warriors, Kashi-Tribe Elite, Kashi-Tribe Reaver,
+Matsu-Tribe Birdstalker / Decoy / Sniper, Orochi Ranger, Frostwalk Bastion,
+Queen of Ice (tap + freeze); Mercurial Kite, Neko-Te (tap half). Same class as
+Toxin Sliver / Stinkweed Imp (destroy) and Obelisk Spider (counter).
+
+- "That creature" is the damage RECIPIENT, an untargeted referent of the
+  trigger event (CR 608.2k), parsed as TargetFilter::EventTarget. The trigger
+  has no chosen target, so ability.targets is EMPTY at resolution.
+- Main-path hydration (effects::hydrate_event_context_targets) fills targets
+  only for TriggeringSource, never EventTarget. Every resolver that reads only
+  ability.targets / live_object_targets therefore silently does nothing for an
+  EventTarget subject. Symptom: the trigger goes on the stack and resolves,
+  and nothing happens.
+- Fix pattern (resolver-local, gated on ability.targets.is_empty() so a chosen
+  or delayed-pinned target still wins, CR 603.7c):
+  targeting::resolve_event_referent_permanents(state, filter, source_id) -
+  incarnation-checked (CR 400.7, via the damage ledger's target_incarnation)
+  referents that are still phased-in battlefield permanents. Used by
+  tap_untap.rs (SetTapState), prepare.rs (BecomePrepared), and effect.rs
+  (GenericEffect with affected: EventTarget, e.g. the CantUntap rider).
+  Destroy uses the same idea via is_pure_event_context_filter.
+- When another effect kind has the same symptom with an EventTarget subject,
+  add the same gated arm in its resolver using this helper; don't add
+  EventTarget to hydration (shared by ~50 effect kinds, no incarnation check).
+- "doesn't untap during its controller's next untap step" expires on the
+  AFFECTED object's controller's untap step (CR 502.3,
+  layers::prune_controller_untap_step_effects), not the ability controller's.
+- Still open: Mercurial Kite / Neko-Te parse the rider's "that creature" as
+  ParentTarget, so the freeze installs nothing for them.
+- Test: tests/integration/kashi_tribe_damage_tap_freeze.rs (attacker and
+  blocker sides, dead recipient, blinked recipient, untap-step expiry).
+
+
+"Prevent the next N damage that would be dealt to any target this turn"
+(declared "any target" damage prevention shield minting a target slot)
+--------------------------------------------------------------------------
+Cards: Aven Redeemer, Healing Salve, Alabaster Wall, etc.
+
+- "Any target" means target creature, player, or planeswalker (CR 115.4).
+- Spells or abilities using "target" to identify an object or player choose it
+  as a target (CR 115.1d).
+- In phase-engine, `extract_target_filter_from_effect` suppresses `TargetFilter::Any`
+  by default to prevent spurious target selection prompts on broadcast / untargeted
+  effects (CR 115.1, issue #824).
+- Only specific effect kinds where `TargetFilter::Any` represents an actual player-chosen
+  target are exempted (`DealDamage`, `EachSourceDealsDamage`).
+- For `PreventDamage`, a target slot must be built when:
+  `recipient_scope == EffectScope::Single`, `damage_source_filter.is_none()`, and
+  `amount == PreventionAmount::Next(_)` or `amount_dynamic.is_some()`.
+- Untargeted mass prevention effects (Fog, Holy Day: `amount == PreventionAmount::All`)
+  and source-scoped prevention effects (Awe Strike, Maze of Ith: `damage_source_filter.is_some()`)
+  must NOT mint an "any target" recipient slot.
+- Untargeted prevention test fixtures and definitions must specify `recipient_scope: EffectScope::All`;
+  `EffectScope::Single` designates a declared recipient slot, which intentionally installs nothing
+  at resolution if no target was chosen (CR 115.6).
+- Tests: crates/engine/tests/integration/declared_prevent_recipient_scope.rs,
+  crates/engine/src/game/triggers.rs unit tests.
+
+
+"If no cards are in that graveyard, [effect]" / Self-flip with inherited target
+(graveyard referent tied to target card's owner; self-referential flip)
+--------------------------------------------------------------------------
+Cards: Nezumi Graverobber ("{1}{B}: Exile target card from an opponent's
+graveyard. If no cards are in that graveyard, flip this creature.")
+
+- CR 108.3 + CR 404.1: "that graveyard" refers to the graveyard from which the
+  targeted card was chosen (the owner of the targeted object), not the active
+  player's or controller's graveyard.
+- Evaluated via `PlayerScope::ParentObjectTargetOwner` in `QuantityExpr::PerZone {
+  zone: ZoneRef::Graveyard, player: PlayerScope::ParentObjectTargetOwner, filter: TargetFilter::All }`.
+  `parent_target_owner(ability, state)` looks up the owner of the targeted card
+  (`ability.targets.first()`).
+- In `FlipPermanent` (CR 710.4), when an activated ability chains into a sub-ability
+  (`FlipPermanent { target: TargetFilter::SelfRef }`), `ability.targets` contains
+  the parent's declared target (the exiled card). `effects/flip_permanent.rs` must
+  resolve targets via `super::resolved_effect_object_ids(state, ability, &target)`
+  and filter out the source ID when it only arose from declared targets that don't
+  target the permanent (mirroring `transform_effect.rs`).
+- Tests: crates/engine/tests/integration/kamigawa_flip_cards.rs
+  (nezumi_graverobber_flips_when_targeted_graveyard_is_emptied,
+  nezumi_graverobber_does_not_flip_when_cards_remain_in_targeted_graveyard,
+  nezumi_graverobber_flips_even_if_another_player_has_cards_in_graveyard),
+  crates/engine/src/game/effects/flip_permanent.rs unit test
+  (self_flip_ignores_inherited_foreign_object_target), and
+  crates/engine/src/parser/oracle_nom/condition.rs unit test
+  (test_parse_no_cards_in_that_graveyard).
