@@ -4,6 +4,7 @@ mod cleanup;
 mod import;
 mod review;
 mod run;
+mod trace;
 mod worker;
 
 pub use cleanup::{BranchOutcome, Cleanup};
@@ -21,6 +22,7 @@ use work_queue::{Queue, State as ItemState, WorkItem};
 
 use crate::agent;
 use crate::balance::Picker;
+use crate::history::{self, ItemSummary, Ledger};
 use crate::usage::{self, UsageMap};
 use crate::{
     Activity, Balancing, ItemMeta, PoolError, PoolSnapshot, Project, UsageLimits, WorkerStatus,
@@ -74,6 +76,7 @@ struct Shared {
     state: Mutex<State>,
     wake: Notify,
     usage_file: PathBuf,
+    ledger: Ledger,
 }
 
 #[derive(Debug, Default)]
@@ -91,6 +94,7 @@ impl Supervisor {
     pub fn new(queue: Queue, config: PoolConfig) -> Result<Self, PoolError> {
         review::recover_orphans(&queue)?;
         let usage_file = usage::path(&queue);
+        let ledger = Ledger::new(&queue);
         let state = State {
             usage: usage::load(&usage_file),
             ..State::default()
@@ -104,6 +108,7 @@ impl Supervisor {
                 state: Mutex::new(state),
                 wake: Notify::new(),
                 usage_file,
+                ledger,
             }),
         })
     }
@@ -181,6 +186,27 @@ impl Supervisor {
         ItemMeta::load(&self.shared.queue, state, item)
     }
 
+    /// Every item the pool has run, summarized from the work history, most
+    /// recently started first: its runs, providers, models, time, tokens and
+    /// plan usage. Items still in the queue also say where they are.
+    pub fn history(&self) -> Result<Vec<ItemSummary>, PoolError> {
+        let entries = self.shared.ledger.load()?;
+        let mut items = history::summarize(&entries, unix_now());
+        for summary in &mut items {
+            for state in ItemState::ALL {
+                let item = WorkItem::new(&summary.project, &summary.item);
+                if self.queue().path(state, &item).exists() {
+                    summary.state = Some(state.dir_name().to_string());
+                    summary.pr_url = ItemMeta::load(self.queue(), state, &item)
+                        .ok()
+                        .and_then(|m| m.pr_url);
+                    break;
+                }
+            }
+        }
+        Ok(items)
+    }
+
     /// The work queue the pool takes items from.
     pub fn queue(&self) -> &Queue {
         &self.shared.queue
@@ -226,7 +252,7 @@ impl Supervisor {
 }
 
 /// Seconds since the Unix epoch, as plan usage reports reset times.
-fn unix_now() -> u64 {
+pub(crate) fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())

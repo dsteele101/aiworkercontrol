@@ -3,10 +3,13 @@
 
 use std::fmt::Write as _;
 use std::path::Path;
+use std::sync::{Mutex, PoisonError};
+use std::time::Instant;
 
 use agent_backend::Job;
 use work_queue::{State as ItemState, WorkItem};
 
+use super::trace::Trace;
 use super::worker::PR_LINE;
 use super::{PoolConfig, Shared};
 use crate::{PoolError, Project, PullRequests, agent, git, github, prompt};
@@ -53,6 +56,7 @@ impl Shared {
         project: &Project,
         config: &PoolConfig,
         kind: &Kind,
+        trace: &Mutex<Trace>,
     ) -> Result<Finish, PoolError> {
         let body = self.queue.read(ItemState::InProgress, item)?;
         let worktree = project.worktree_path(item);
@@ -81,8 +85,11 @@ impl Shared {
 
         let log = project.log_path(item);
         let outcome = self
-            .run_agent(id, item, project, config, &prompt, &worktree, fresh, &log)
+            .run_agent(
+                id, item, project, config, &prompt, &worktree, fresh, &log, trace,
+            )
             .await?;
+        lock(trace).stalled = outcome.stalled;
         let stall_minutes = config.stall_after.as_secs() / 60;
         if !outcome.succeeded() {
             let reason = if outcome.stalled {
@@ -99,8 +106,17 @@ impl Shared {
         }
         // A run must add commits: to the base on a first attempt, to the
         // pushed head on a rework.
-        if git::commits_since(&worktree, &since).await?.is_empty() {
+        let added = git::commits_since(&worktree, &since).await?;
+        if added.is_empty() {
             return Err(PoolError::NoCommits(branch));
+        }
+        {
+            // The size of the change is a nicety; a failure to count it
+            // must not fail the turn.
+            let diff = git::diff_stat(&worktree, &since).await.ok();
+            let mut trace = lock(trace);
+            trace.commits = u32::try_from(added.len()).unwrap_or(u32::MAX);
+            trace.diff = diff;
         }
         let commits = git::commits_since(&worktree, &project.base_ref).await?;
 
@@ -194,6 +210,7 @@ impl Shared {
         worktree: &Path,
         fresh: bool,
         log: &Path,
+        trace: &Mutex<Trace>,
     ) -> Result<agent::Outcome, PoolError> {
         tokio::fs::write(log, "")
             .await
@@ -243,15 +260,21 @@ impl Shared {
             .env
             .push(("CARGO_TARGET_DIR".into(), build_cache.display().to_string()));
         invocation.env.push(("CARGO_BUILD_JOBS".into(), build_jobs));
-        agent::run(
+        let started = Instant::now();
+        let outcome = agent::run(
             &invocation,
             config.provider.provider.cli(),
             config.cli_dir.as_deref(),
             log,
             config.stall_after,
-            |event| self.push_event(id, event),
+            |event| {
+                lock(trace).observe(&event);
+                self.push_event(id, event);
+            },
         )
-        .await
+        .await;
+        lock(trace).agent_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        outcome
     }
 
     /// Pushes the item's branch and opens (or finds) its pull request,
@@ -290,4 +313,9 @@ impl Shared {
         let gh = github::program(config.cli_dir.as_deref());
         github::open_pr(&gh, &pr.repo, &pr.base, &owner, branch, &draft, pr.draft).await
     }
+}
+
+fn lock(trace: &Mutex<Trace>) -> std::sync::MutexGuard<'_, Trace> {
+    // A trace is only ever added to, so a panic elsewhere leaves it usable.
+    trace.lock().unwrap_or_else(PoisonError::into_inner)
 }

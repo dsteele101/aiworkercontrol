@@ -6,6 +6,7 @@ use work_queue::{Queue, State as ItemState, WorkItem};
 
 use super::Supervisor;
 use crate::github::{self, PrState};
+use crate::history::{EventKind, feedback_kinds};
 use crate::{ItemMeta, PoolError, Project, git};
 
 /// What a check of the pull requests in review did to an item.
@@ -110,6 +111,7 @@ impl Supervisor {
             PrState::Merged => {
                 meta.save(queue, ItemState::InReview, item)?;
                 queue.transition(item, ItemState::InReview, ItemState::Closed)?;
+                self.shared.record(item, EventKind::Merged, None);
                 ReviewChange::Merged
             }
             PrState::Closed => {
@@ -118,6 +120,7 @@ impl Supervisor {
                 ));
                 meta.save(queue, ItemState::InReview, item)?;
                 queue.transition(item, ItemState::InReview, ItemState::Hold)?;
+                self.shared.record(item, EventKind::ClosedUnmerged, None);
                 ReviewChange::ClosedUnmerged
             }
             PrState::Open => {
@@ -127,11 +130,14 @@ impl Supervisor {
                 if meta.answered_head.as_deref() == Some(status.head.as_str()) {
                     return Ok(None);
                 }
+                let kinds = feedback_kinds(&feedback);
                 meta.needs_rework = Some(feedback);
                 meta.answered_head = Some(status.head.clone());
                 // Rework builds on what is actually on the pull request.
                 meta.pushed_head = Some(status.head);
                 meta.save(queue, ItemState::InReview, item)?;
+                self.shared
+                    .record(item, EventKind::FeedbackQueued, Some(kinds.join(",")));
                 ReviewChange::ChangesRequested
             }
         };
@@ -169,6 +175,7 @@ impl Supervisor {
         };
         fresh.save(queue, ItemState::Hold, item)?;
         queue.transition(item, ItemState::Hold, to)?;
+        self.shared.record(item, EventKind::Resumed, None);
         self.shared.changed();
         Ok(())
     }

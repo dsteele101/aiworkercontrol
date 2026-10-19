@@ -12,7 +12,8 @@ use agent_backend::{Auth, PlanUsage, Provider, ProviderConfig, UsageWindow};
 use work_queue::{Queue, State, WorkItem};
 use worker_pool::{
     Activity, Balancing, BranchOutcome, Cleanup, DEFAULT_STALL_AFTER, PoolConfig, PoolError,
-    PoolSnapshot, Project, ProviderUsage, PullRequests, ReviewChange, Supervisor, UsageLimits,
+    PoolSnapshot, Project, ProviderUsage, PullRequests, ReviewChange, Supervisor, TurnOutcome,
+    TurnReason, UsageLimits,
 };
 
 /// Stands in for `gh`: records its arguments, and answers `pr list`,
@@ -42,7 +43,7 @@ esac
 /// directory and reports success, unless the prompt asks it to fail.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 prompt="$2"
-echo '{"type":"system","subtype":"init"}'
+echo '{"type":"system","subtype":"init","model":"claude-test-1"}'
 case "$prompt" in
   *"<review-feedback>"*)
     printf '%s' "$prompt" > "$(dirname "$0")/rework-prompt.txt"
@@ -107,7 +108,7 @@ echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash"
 echo fixed > fixed.txt
 git add fixed.txt
 git -c user.name=t -c user.email=t@example.com commit -qm "fix: the thing" >&2
-echo '{"type":"result","is_error":false,"result":"Fixed the thing"}'
+echo '{"type":"result","is_error":false,"result":"Fixed the thing","total_cost_usd":0.5,"usage":{"input_tokens":100,"output_tokens":20}}'
 "#;
 
 fn sh(dir: &Path, args: &[&str]) {
@@ -275,6 +276,37 @@ async fn closes_successful_items_and_holds_failed_ones() {
         Some("used 1 of 1 turns; the last one failed: agent failed: could not do it")
     );
     assert!(queue.list(State::Open).unwrap().is_empty());
+
+    let history = pool.history().unwrap();
+    let summary = |file: &str| history.iter().find(|s| s.item == file).unwrap();
+    let good = summary("good.txt");
+    assert_eq!((good.turns, good.finished), (1, Some("closed")));
+    assert_eq!(good.state.as_deref(), Some("closed"));
+    assert!(good.first_pass);
+    assert_eq!(good.models, vec!["claude-test-1"]);
+    assert_eq!(good.providers, vec![Provider::Anthropic]);
+    assert_eq!((good.input_tokens, good.output_tokens), (100, 20));
+    assert_eq!(good.cost_micro_usd, 500_000);
+    assert_eq!(
+        (good.commits, good.lines_added, good.files_changed),
+        (1, 1, 1)
+    );
+    assert_eq!(good.tool_calls["Bash"], 1);
+    assert!(good.queued_at.is_some());
+    let turn = &good.records[0];
+    assert_eq!(turn.reason, TurnReason::First);
+    assert_eq!(turn.outcome, TurnOutcome::Closed);
+    assert!(turn.ended_at >= turn.started_at);
+
+    let bad = summary("bad.txt");
+    assert_eq!((bad.turns, bad.failed_turns, bad.finished), (1, 1, None));
+    assert_eq!(bad.state.as_deref(), Some("hold"));
+    assert_eq!(bad.failures["agent"], 1);
+    assert_eq!(
+        bad.records[0].error.as_deref(),
+        Some("agent failed: could not do it")
+    );
+    assert_eq!(summary("idle.txt").failures["no_commits"], 1);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1052,6 +1084,27 @@ async fn requested_changes_are_reworked_in_the_same_worktree() {
 
     // The same feedback on the same commit is not acted on twice.
     assert!(pool.check_reviews().await.unwrap().is_empty());
+
+    let [summary] = pool.history().unwrap().try_into().unwrap();
+    assert_eq!((summary.turns, summary.rework_turns), (2, 1));
+    assert_eq!(summary.state.as_deref(), Some("inreview"));
+    assert_eq!(
+        summary.pr_url.as_deref(),
+        Some("https://github.com/up/repo/pull/7")
+    );
+    let [first, rework] = &summary.records[..] else {
+        panic!("expected two turns");
+    };
+    assert_eq!(
+        (first.reason, first.outcome),
+        (TurnReason::First, TurnOutcome::Review)
+    );
+    assert_eq!(
+        (rework.reason, rework.outcome),
+        (TurnReason::Rework, TurnOutcome::Review)
+    );
+    assert_eq!(rework.feedback, vec!["review", "comments"]);
+    assert_eq!(rework.turn, 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]

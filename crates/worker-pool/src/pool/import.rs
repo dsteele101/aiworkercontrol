@@ -5,6 +5,7 @@ use work_queue::{State as ItemState, WorkItem};
 
 use super::Supervisor;
 use crate::github::{self, PrState};
+use crate::history::EventKind;
 use crate::{ItemMeta, PoolError, Project, git};
 
 impl Supervisor {
@@ -84,6 +85,7 @@ impl Supervisor {
             let _ = std::fs::remove_file(queue.path(ItemState::InReview, &item));
             return Err(e);
         }
+        self.shared.record(&item, EventKind::Imported, None);
         self.shared.changed();
         Ok(item)
     }

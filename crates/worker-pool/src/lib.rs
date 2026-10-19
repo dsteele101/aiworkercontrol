@@ -21,6 +21,10 @@
 //! to the next of [`PoolConfig::fallbacks`], or waits, until the window
 //! resets or the user calls [`Supervisor::override_stop`].
 //!
+//! Every run is also recorded in the work history (`history.jsonl`): who
+//! ran it, with which model and effort, how long it took, what it used and
+//! how it ended. [`Supervisor::history`] summarizes it per item.
+//!
 //! Once a closed item's branch is merged, [`Supervisor::clean_up_merged`]
 //! removes its worktree and branch to free the space.
 
@@ -29,6 +33,7 @@ mod balance;
 mod error;
 mod git;
 mod github;
+mod history;
 mod limits;
 mod meta;
 mod pool;
@@ -39,6 +44,10 @@ mod usage;
 
 pub use balance::{Balancing, Scheme};
 pub use error::PoolError;
+pub use history::{
+    Entry, EventKind, ItemEvent, ItemSummary, QuotaSpend, TurnOutcome, TurnReason, TurnRecord,
+    summarize,
+};
 pub use limits::UsageLimits;
 pub use meta::ItemMeta;
 pub use pool::{BranchOutcome, Cleanup, DEFAULT_STALL_AFTER, PoolConfig, ReviewChange, Supervisor};
