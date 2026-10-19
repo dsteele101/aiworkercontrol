@@ -239,6 +239,8 @@ pub(crate) async fn run(
                     AgentEvent::ToolUse { .. }
                     | AgentEvent::Notice(_)
                     | AgentEvent::Usage(_)
+                    | AgentEvent::Model(_)
+                    | AgentEvent::Metrics(_)
                     | AgentEvent::Status(_)
                     | AgentEvent::Background(_) => {}
                 }

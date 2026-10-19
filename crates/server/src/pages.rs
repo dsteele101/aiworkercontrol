@@ -662,6 +662,8 @@ fn event_line(event: &AgentEvent) -> Markup {
             AgentEvent::ToolUse { name, detail } => { code { (name) } " " (clip(detail)) },
             AgentEvent::Notice(text) => span.muted { (clip(text)) },
             AgentEvent::Usage(_) => span.muted { "Plan usage updated" },
+            AgentEvent::Model(model) => span.muted { "Model: " (model) },
+            AgentEvent::Metrics(_) => span.muted { "Token usage reported" },
             // Claude ends a turn while its background commands run, then
             // carries on, so this is not necessarily the end of the run.
             AgentEvent::Finished { ok: true, summary } => {
