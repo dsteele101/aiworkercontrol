@@ -24,6 +24,9 @@ pub(super) enum Kind {
         pushed_head: String,
         /// What reviewers or CI asked for.
         feedback: String,
+        /// The pull request's branch on the push remote, if it is not the
+        /// item's own: then the rework starts from it and adds to it.
+        remote_branch: Option<String>,
     },
 }
 
@@ -64,8 +67,13 @@ impl Shared {
                 pr_url,
                 pushed_head,
                 feedback,
+                remote_branch,
             } => {
                 let fresh = git::ensure_worktree(&project.repo, &worktree, &branch).await?;
+                if let (Some(remote_branch), Some(pr)) = (remote_branch, &project.pr) {
+                    let source = git::push_url(&project.repo, &pr.push_remote).await?;
+                    git::fast_forward(&worktree, &source, remote_branch).await?;
+                }
                 let prompt = prompt::build_rework(project, item, &body, pr_url, feedback)?;
                 (prompt, fresh, pushed_head.clone())
             }
@@ -139,9 +147,19 @@ impl Shared {
                 )
                 .await
             }
-            Kind::Rework { pr_url, .. } => git::push(&worktree, &pr.push_remote, &branch)
-                .await
-                .map(|()| pr_url.clone()),
+            Kind::Rework {
+                pr_url,
+                remote_branch,
+                ..
+            } => {
+                let pushed = match remote_branch {
+                    Some(remote_branch) => {
+                        git::push_ahead(&worktree, &pr.push_remote, &branch, remote_branch).await
+                    }
+                    None => git::push(&worktree, &pr.push_remote, &branch).await,
+                };
+                pushed.map(|()| pr_url.clone())
+            }
         };
         Ok(match published {
             Ok(pr_url) => {

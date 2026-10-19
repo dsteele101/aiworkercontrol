@@ -87,15 +87,52 @@ pub(crate) async fn push(worktree: &Path, remote: &str, branch: &str) -> Result<
         .map(drop)
 }
 
-/// Pushes `branch` from `worktree` to `remote` without replacing anything:
-/// it is refused if the remote branch has commits the worktree lacks.
+/// Pushes `branch` from `worktree` to `remote_branch` on `remote` without
+/// replacing anything: it is refused if the remote branch has commits the
+/// worktree lacks.
 pub(crate) async fn push_ahead(
     worktree: &Path,
     remote: &str,
     branch: &str,
+    remote_branch: &str,
 ) -> Result<(), PoolError> {
-    let refspec = format!("{branch}:refs/heads/{branch}");
+    let refspec = format!("{branch}:refs/heads/{remote_branch}");
     git(worktree, &["push", remote, &refspec]).await.map(drop)
+}
+
+/// The URL `remote` is pushed to, which is also where an imported pull
+/// request's branch is read from: the place it will be pushed back to.
+pub(crate) async fn push_url(repo: &Path, remote: &str) -> Result<String, PoolError> {
+    Ok(git(repo, &["remote", "get-url", "--push", remote])
+        .await?
+        .trim()
+        .to_string())
+}
+
+/// Fetches `remote_branch` from `source` (a remote or URL) into the local
+/// `branch`, replacing it. `branch` must not be checked out.
+pub(crate) async fn fetch_into(
+    repo: &Path,
+    source: &str,
+    remote_branch: &str,
+    branch: &str,
+) -> Result<(), PoolError> {
+    let refspec = format!("+refs/heads/{remote_branch}:refs/heads/{branch}");
+    git(repo, &["fetch", source, &refspec]).await.map(drop)
+}
+
+/// Brings the worktree's branch up to `remote_branch` at `source` (a remote
+/// or URL), which must contain it: the remote may have moved on since the
+/// branch was last fetched.
+pub(crate) async fn fast_forward(
+    worktree: &Path,
+    source: &str,
+    remote_branch: &str,
+) -> Result<(), PoolError> {
+    git(worktree, &["fetch", source, remote_branch]).await?;
+    git(worktree, &["merge", "--ff-only", "FETCH_HEAD"])
+        .await
+        .map(drop)
 }
 
 /// Commits nothing on the worktree's branch, to give it a new head.

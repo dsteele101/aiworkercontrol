@@ -1347,3 +1347,229 @@ async fn orphans_with_a_pull_request_return_to_review() {
         vec![WorkItem::new("demo", "b.txt")]
     );
 }
+
+/// Puts a branch with one commit on the fixture's fork, as a contributor
+/// would have before opening a pull request, and returns its head.
+fn fork_branch(fx: &Fixture, bare: &Path, branch: &str) -> String {
+    let repo = fx.root.join("repo");
+    sh(&repo, &["switch", "-q", "-c", branch]);
+    fs::write(repo.join("feature.txt"), "feature").unwrap();
+    sh(&repo, &["add", "feature.txt"]);
+    sh(
+        &repo,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.com",
+            "commit",
+            "-qm",
+            "feat: the feature",
+        ],
+    );
+    sh(&repo, &["push", "-q", &bare.display().to_string(), branch]);
+    sh(&repo, &["switch", "-q", "main"]);
+    sh(&repo, &["branch", "-q", "-D", branch]);
+    git_out(bare, &["rev-parse", branch])
+}
+
+fn pull_request_view(fx: &Fixture, state: &str, owner: &str, head: &str, reviews: &str) {
+    fs::write(
+        fx.root.join("bin/gh.view.json"),
+        format!(
+            r#"{{"state":"{state}","title":"feat: the feature","headRefName":"feature/x",
+                "headRepositoryOwner":{{"login":"{owner}"}},"headRefOid":"{head}","reviews":[{reviews}]}}"#
+        ),
+    )
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_imported_pull_request_waits_in_review_and_is_reworked_on_its_own_branch() {
+    let mut fx = fixture(&[], 1);
+    let bare = with_pull_requests(&mut fx);
+    let head = fork_branch(&fx, &bare, "feature/x");
+    pull_request_view(&fx, "OPEN", "me", &head, "");
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+
+    let item = pool
+        .import_pull_request(" https://github.com/up/repo/pull/9/files ")
+        .await
+        .unwrap();
+    assert_eq!(item, WorkItem::new("demo", "pr-9.txt"));
+    assert_eq!(queue.list(State::InReview).unwrap(), vec![item.clone()]);
+    let text = queue.read(State::InReview, &item).unwrap();
+    assert!(
+        text.contains("feat: the feature") && text.contains("pull/9"),
+        "{text}"
+    );
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert_eq!(
+        meta.pr_url.as_deref(),
+        Some("https://github.com/up/repo/pull/9")
+    );
+    assert_eq!(meta.pushed_head.as_deref(), Some(head.as_str()));
+    assert_eq!(meta.remote_branch.as_deref(), Some("feature/x"));
+    assert_eq!(meta.turns, 0);
+    assert_eq!(
+        git_out(&fx.root.join("repo"), &["rev-parse", "ai/pr-9"]),
+        head
+    );
+
+    // The same pull request, by any link to it, is not imported twice.
+    let err = pool
+        .import_pull_request("https://github.com/up/repo/pull/9")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::AlreadyImported { .. }), "{err}");
+
+    // A reviewer asks for changes; a worker adds to the contributor's branch.
+    pull_request_view(
+        &fx,
+        "OPEN",
+        "me",
+        &head,
+        &format!(
+            r#"{{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"Please rename it.","commit":{{"oid":"{head}"}}}}"#
+        ),
+    );
+    assert_eq!(
+        pool.check_reviews().await.unwrap(),
+        vec![(item.clone(), ReviewChange::ChangesRequested)]
+    );
+    pool.start();
+    wait_for(&pool, |s| {
+        idle(s)
+            && queue.list(State::InReview).unwrap().len() == 1
+            && pool.meta(State::InReview, &item).unwrap().turns == 1
+    })
+    .await;
+    pool.stop();
+
+    let worktree = fx.root.join("repo-worktrees/pr-9");
+    let log = git_out(&worktree, &["log", "--format=%s", "main..HEAD"]);
+    assert_eq!(log, "fix: address review\nfeat: the feature");
+    let new_head = git_out(&worktree, &["rev-parse", "HEAD"]);
+    assert_eq!(git_out(&bare, &["rev-parse", "feature/x"]), new_head);
+    let ours = Command::new("git")
+        .arg("--git-dir")
+        .arg(&bare)
+        .args(["show-ref", "--verify", "--quiet", "refs/heads/ai/pr-9"])
+        .status()
+        .unwrap();
+    assert!(
+        !ours.success(),
+        "the contributor's branch is pushed to, not an ai/ copy"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rework_starts_from_what_the_contributor_pushed_since() {
+    let mut fx = fixture(&[], 1);
+    let bare = with_pull_requests(&mut fx);
+    let head = fork_branch(&fx, &bare, "feature/x");
+    pull_request_view(&fx, "OPEN", "me", &head, "");
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    let item = pool
+        .import_pull_request("https://github.com/up/repo/pull/9")
+        .await
+        .unwrap();
+    // The branch moves on after the import.
+    let newer = {
+        let repo = fx.root.join("repo");
+        sh(
+            &repo,
+            &["fetch", "-q", &bare.display().to_string(), "feature/x"],
+        );
+        sh(&repo, &["switch", "-q", "--detach", "FETCH_HEAD"]);
+        sh(
+            &repo,
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.com",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "chore: contributor follow-up",
+            ],
+        );
+        let newer = git_out(&repo, &["rev-parse", "HEAD"]);
+        sh(
+            &repo,
+            &[
+                "push",
+                "-q",
+                &bare.display().to_string(),
+                "HEAD:refs/heads/feature/x",
+            ],
+        );
+        sh(&repo, &["switch", "-q", "main"]);
+        newer
+    };
+    pull_request_view(
+        &fx,
+        "OPEN",
+        "me",
+        &newer,
+        &format!(
+            r#"{{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"Rename.","commit":{{"oid":"{newer}"}}}}"#
+        ),
+    );
+    pool.check_reviews().await.unwrap();
+    pool.start();
+    wait_for(&pool, |s| {
+        idle(s) && pool.meta(State::InReview, &item).unwrap().turns == 1
+    })
+    .await;
+    pool.stop();
+
+    let log = git_out(
+        &fx.root.join("repo-worktrees/pr-9"),
+        &["log", "--format=%s", "main..HEAD"],
+    );
+    assert_eq!(
+        log,
+        "fix: address review\nchore: contributor follow-up\nfeat: the feature"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pull_requests_that_cannot_be_reworked_are_not_imported() {
+    let mut fx = fixture(&[], 1);
+    let bare = with_pull_requests(&mut fx);
+    let head = fork_branch(&fx, &bare, "feature/x");
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    let pr = "https://github.com/up/repo/pull/9";
+
+    let err = pool.import_pull_request("not a link").await.unwrap_err();
+    assert!(matches!(err, PoolError::NotPullRequestLink(_)), "{err}");
+    let err = pool
+        .import_pull_request("https://github.com/other/repo/pull/9")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::NoProjectForRepo(_)), "{err}");
+
+    pull_request_view(&fx, "MERGED", "me", &head, "");
+    let err = pool.import_pull_request(pr).await.unwrap_err();
+    assert!(matches!(err, PoolError::PullRequestNotOpen(_)), "{err}");
+
+    // From someone's fork: the push remote cannot take a push to it.
+    pull_request_view(&fx, "OPEN", "stranger", &head, "");
+    let err = pool.import_pull_request(pr).await.unwrap_err();
+    assert!(matches!(err, PoolError::ForeignBranch { .. }), "{err}");
+
+    // A branch that is gone fails the fetch and leaves nothing queued.
+    pull_request_view(&fx, "OPEN", "me", &head, "");
+    sh(&bare, &["update-ref", "-d", "refs/heads/feature/x"]);
+    pool.import_pull_request(pr).await.unwrap_err();
+
+    for state in State::ALL {
+        assert!(queue.list(state).unwrap().is_empty(), "{state:?}");
+    }
+}

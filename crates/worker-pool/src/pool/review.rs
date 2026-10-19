@@ -78,8 +78,13 @@ impl Supervisor {
         let worktree = project.worktree_path(item);
         let branch = Project::branch(item);
         git::ensure_worktree(&project.repo, &worktree, &branch).await?;
+        let remote_branch = meta.remote_branch.clone().unwrap_or_else(|| branch.clone());
+        if meta.remote_branch.is_some() {
+            let source = git::push_url(&project.repo, &pr.push_remote).await?;
+            git::fast_forward(&worktree, &source, &remote_branch).await?;
+        }
         git::commit_empty(&worktree, "chore: re-run checks").await?;
-        git::push_ahead(&worktree, &pr.push_remote, &branch).await?;
+        git::push_ahead(&worktree, &pr.push_remote, &branch, &remote_branch).await?;
         meta.pushed_head = Some(git::head(&worktree).await?);
         meta.save(queue, ItemState::InReview, item)?;
         self.shared.changed();
@@ -155,6 +160,7 @@ impl Supervisor {
                 pushed_head: meta.pushed_head,
                 needs_rework: meta.needs_rework,
                 answered_head: meta.answered_head,
+                remote_branch: meta.remote_branch,
                 ..ItemMeta::default()
             };
             (fresh, ItemState::InReview)
