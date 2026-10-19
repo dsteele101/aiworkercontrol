@@ -1085,6 +1085,40 @@ async fn one_item_can_be_checked_on_demand() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn an_on_demand_check_acts_on_inline_comments_but_the_watcher_does_not() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    // A bot's comment on the latest commit; the review that brought it is
+    // only COMMENTED, and the earlier request for changes was on an old commit.
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(
+            r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[
+                {{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"Old.","commit":{{"oid":"0000"}}}},
+                {{"state":"COMMENTED","author":{{"login":"bot"}},"body":"","commit":{{"oid":"{head}"}}}}]}}"#
+        ),
+    )
+    .unwrap();
+    fs::write(
+        bin.join("gh.comments.json"),
+        format!(
+            r#"[{{"commit_id":"{head}","path":"fixed.txt","line":1,"body":"Handle the empty case","user":{{"login":"bot"}}}}]"#
+        ),
+    )
+    .unwrap();
+
+    assert!(pool.check_reviews().await.unwrap().is_empty());
+    assert_eq!(
+        pool.check_review(&item).await.unwrap(),
+        Some(ReviewChange::ChangesRequested)
+    );
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert!(meta.needs_rework.unwrap().contains("Handle the empty case"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn bumping_pushes_an_empty_commit_to_the_pull_request() {
     let mut fx = fixture(&[("good.txt", "Fix it")], 1);
     let bare = with_pull_requests(&mut fx);

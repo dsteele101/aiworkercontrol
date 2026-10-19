@@ -171,7 +171,10 @@ async fn check_review(State(app): State<AppState>, Form(f): Form<ItemForm>) -> R
             Ok(Some(ReviewChange::ChangesRequested)) => {
                 format!("Feedback found on {item}; it waits for a worker to rework it.")
             }
-            Ok(None) => format!("Nothing new to act on for {item}."),
+            Ok(None) => format!(
+                "Nothing new to act on for {item}: no changes requested, failing checks or \
+                 inline comments on the latest commit."
+            ),
             Err(e) => format!("Could not check {item}: {e}"),
         };
         app.notify(message);
