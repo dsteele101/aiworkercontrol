@@ -2,7 +2,7 @@
 
 use serde_json::Value;
 
-use crate::{Cli, PlanUsage, UsageWindow};
+use crate::{Cli, PlanUsage, RunMetrics, UsageWindow};
 
 /// Something an agent did, in a form common to every CLI.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +20,10 @@ pub enum AgentEvent {
     Notice(String),
     /// The plan's usage, as the CLI last reported it.
     Usage(PlanUsage),
+    /// The model the CLI says it is running, as soon as it says so.
+    Model(String),
+    /// Tokens and cost, as reported when a turn ends.
+    Metrics(RunMetrics),
     /// The agent's own one-line account of where it stands, e.g.
     /// "fix written; waiting on the test build".
     Status(String),
@@ -80,6 +84,10 @@ fn claude(v: &Value) -> Vec<AgentEvent> {
             .collect(),
         Some("rate_limit_event") => claude_usage(v).map(AgentEvent::Usage).into_iter().collect(),
         Some("system") => match str_at(v, "subtype") {
+            Some("init") => str_at(v, "model")
+                .map(|m| AgentEvent::Model(m.to_string()))
+                .into_iter()
+                .collect(),
             Some("post_turn_summary") => str_at(v, "status_detail")
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
@@ -97,13 +105,44 @@ fn claude(v: &Value) -> Vec<AgentEvent> {
             )],
             _ => Vec::new(),
         },
-        Some("result") => vec![AgentEvent::Finished {
-            // `subtype` can read "success" on a failed run; `is_error` is the truth.
-            ok: !v.get("is_error").and_then(Value::as_bool).unwrap_or(true),
-            summary: str_at(v, "result").map(str::to_string),
-        }],
+        Some("result") => claude_metrics(v)
+            .map(AgentEvent::Metrics)
+            .into_iter()
+            .chain([AgentEvent::Finished {
+                // `subtype` can read "success" on a failed run; `is_error` is the truth.
+                ok: !v.get("is_error").and_then(Value::as_bool).unwrap_or(true),
+                summary: str_at(v, "result").map(str::to_string),
+            }])
+            .collect(),
         _ => Vec::new(),
     }
+}
+
+/// The tokens, cost and models in a `result` line.
+fn claude_metrics(v: &Value) -> Option<RunMetrics> {
+    let usage = v.get("usage");
+    let count = |key: &str| usage.and_then(|u| u.get(key)).and_then(Value::as_u64);
+    let metrics = RunMetrics {
+        input_tokens: count("input_tokens"),
+        output_tokens: count("output_tokens"),
+        cache_read_tokens: count("cache_read_input_tokens"),
+        cache_write_tokens: count("cache_creation_input_tokens"),
+        cost_micro_usd: v.get("total_cost_usd").and_then(micro_usd),
+        duration_ms: v.get("duration_ms").and_then(Value::as_u64),
+        models: v
+            .get("modelUsage")
+            .and_then(Value::as_object)
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default(),
+    };
+    (!metrics.is_empty()).then_some(metrics)
+}
+
+/// A dollar amount in millionths of a dollar.
+fn micro_usd(dollars: &Value) -> Option<u64> {
+    let dollars = dollars.as_f64().filter(|d| d.is_finite() && *d >= 0.0)?;
+    // Non-negative and finite, and no real cost nears u64::MAX millionths.
+    Some((dollars * 1_000_000.0).round() as u64)
 }
 
 /// The plan usage in a `rate_limit_event`: its `unifiedWindows` give each
@@ -169,10 +208,25 @@ fn codex(v: &Value) -> Vec<AgentEvent> {
             .and_then(|i| str_at(i, "message"))
             .map(|m| AgentEvent::Notice(m.to_string())),
         (Some("error"), _) => str_at(v, "message").map(|m| AgentEvent::Notice(m.to_string())),
-        (Some("turn.completed"), _) => Some(AgentEvent::Finished {
-            ok: true,
-            summary: None,
-        }),
+        (Some("turn.completed"), _) => {
+            let usage = v.get("usage");
+            let count = |key: &str| usage.and_then(|u| u.get(key)).and_then(Value::as_u64);
+            let metrics = RunMetrics {
+                input_tokens: count("input_tokens"),
+                output_tokens: count("output_tokens"),
+                cache_read_tokens: count("cached_input_tokens"),
+                ..RunMetrics::default()
+            };
+            let finished = AgentEvent::Finished {
+                ok: true,
+                summary: None,
+            };
+            return if metrics.is_empty() {
+                vec![finished]
+            } else {
+                vec![AgentEvent::Metrics(metrics), finished]
+            };
+        }
         (Some("turn.failed"), _) => Some(AgentEvent::Finished {
             ok: false,
             summary: v
@@ -215,9 +269,24 @@ fn antigravity(v: &Value) -> Vec<AgentEvent> {
             let response = str_at(result, "response")
                 .map(str::trim)
                 .filter(|r| !r.is_empty());
+            let usage = result.get("usage");
+            let count = |key: &str| usage.and_then(|u| u.get(key)).and_then(Value::as_u64);
+            let metrics = RunMetrics {
+                input_tokens: count("input_tokens"),
+                output_tokens: count("output_tokens"),
+                duration_ms: result
+                    .get("duration_seconds")
+                    .and_then(Value::as_f64)
+                    .filter(|s| s.is_finite() && *s >= 0.0)
+                    // Non-negative and finite, so the cast cannot wrap.
+                    .map(|s| (s * 1000.0).round() as u64),
+                ..RunMetrics::default()
+            };
+            let metrics = (!metrics.is_empty()).then_some(AgentEvent::Metrics(metrics));
             if str_at(result, "status") == Some("SUCCESS") {
-                text_event(response)
+                metrics
                     .into_iter()
+                    .chain(text_event(response))
                     .chain([AgentEvent::Finished {
                         ok: true,
                         summary: response.map(str::to_string),
@@ -229,10 +298,13 @@ fn antigravity(v: &Value) -> Vec<AgentEvent> {
                     .or_else(|| result.get("error"))
                     .and_then(Value::as_str)
                     .or(str_at(result, "status"));
-                vec![AgentEvent::Finished {
-                    ok: false,
-                    summary: error.map(str::to_string),
-                }]
+                metrics
+                    .into_iter()
+                    .chain([AgentEvent::Finished {
+                        ok: false,
+                        summary: error.map(str::to_string),
+                    }])
+                    .collect()
             }
         }
         _ => Vec::new(),
@@ -393,6 +465,12 @@ mod tests {
                     name: "view_file".into(),
                     detail: "/spec/NOTE.md".into()
                 },
+                AgentEvent::Metrics(RunMetrics {
+                    input_tokens: Some(24_507),
+                    output_tokens: Some(186),
+                    duration_ms: Some(3400),
+                    ..RunMetrics::default()
+                }),
                 AgentEvent::Text(reply.clone()),
                 AgentEvent::Finished {
                     ok: true,
@@ -461,6 +539,68 @@ mod tests {
                     summary: Some("quota".into())
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn claude_init_names_the_model_and_result_reports_metrics() {
+        let init = r#"{"type":"system","subtype":"init","model":"claude-opus-4-7","tools":[]}"#;
+        assert_eq!(
+            parse_line(Cli::Claude, init),
+            vec![AgentEvent::Model("claude-opus-4-7".into())]
+        );
+        let result = r#"{"type":"result","is_error":false,"result":"ok","duration_ms":4200,"total_cost_usd":0.0123456,"usage":{"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":300,"cache_creation_input_tokens":40},"modelUsage":{"claude-opus-4-7":{},"claude-haiku-4-5":{}}}"#;
+        assert_eq!(
+            parse_line(Cli::Claude, result),
+            vec![
+                AgentEvent::Metrics(RunMetrics {
+                    input_tokens: Some(10),
+                    output_tokens: Some(20),
+                    cache_read_tokens: Some(300),
+                    cache_write_tokens: Some(40),
+                    cost_micro_usd: Some(12_346),
+                    duration_ms: Some(4200),
+                    models: vec!["claude-haiku-4-5".into(), "claude-opus-4-7".into()],
+                }),
+                AgentEvent::Finished {
+                    ok: true,
+                    summary: Some("ok".into())
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_turn_completed_reports_tokens() {
+        let line = r#"{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":60,"output_tokens":7}}"#;
+        assert_eq!(
+            parse_line(Cli::Codex, line),
+            vec![
+                AgentEvent::Metrics(RunMetrics {
+                    input_tokens: Some(100),
+                    output_tokens: Some(7),
+                    cache_read_tokens: Some(60),
+                    ..RunMetrics::default()
+                }),
+                AgentEvent::Finished {
+                    ok: true,
+                    summary: None
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn antigravity_result_reports_tokens_and_duration() {
+        let events = parse_line(Cli::Antigravity, AGY_RUN[5]);
+        assert_eq!(
+            events[0],
+            AgentEvent::Metrics(RunMetrics {
+                input_tokens: Some(24_507),
+                output_tokens: Some(186),
+                duration_ms: Some(3400),
+                ..RunMetrics::default()
+            })
         );
     }
 
