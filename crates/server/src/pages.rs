@@ -97,7 +97,7 @@ label.check input { width: auto; }
 /// Keeps the page's `data-live` sections current: every two seconds while
 /// the tab is visible, fetches the page again and swaps in each section
 /// whose content changed. A section is left alone while a field in it has
-/// focus, so nothing is replaced under the user's hands.
+/// focus or an open menu, so nothing is replaced under the user's hands.
 const LIVE_SCRIPT: &str = r#"
 (() => {
   const url = location.pathname + "?live=1";
@@ -113,8 +113,9 @@ const LIVE_SCRIPT: &str = r#"
     }
     for (const section of document.querySelectorAll("[data-live]")) {
       const next = doc.getElementById(section.id);
-      const busy = section.contains(document.activeElement) &&
-        document.activeElement.matches("input, select, textarea");
+      const busy = section.querySelector("details[open]") ||
+        (section.contains(document.activeElement) &&
+          document.activeElement.matches("input, select, textarea"));
       if (next && !busy && next.innerHTML !== section.innerHTML) {
         section.innerHTML = next.innerHTML;
       }
