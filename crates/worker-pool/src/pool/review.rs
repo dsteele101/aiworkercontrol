@@ -1,10 +1,12 @@
 //! Items in review: watching their pull requests, and returning held items.
 
+use std::path::Path;
+
 use work_queue::{Queue, State as ItemState, WorkItem};
 
 use super::Supervisor;
 use crate::github::{self, PrState};
-use crate::{ItemMeta, PoolError};
+use crate::{ItemMeta, PoolError, Project, git};
 
 /// What a check of the pull requests in review did to an item.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,53 +26,108 @@ impl Supervisor {
     /// the next free worker. Feedback on a commit already reworked is not
     /// acted on again.
     pub async fn check_reviews(&self) -> Result<Vec<(WorkItem, ReviewChange)>, PoolError> {
-        let queue = self.queue();
         let gh = github::program(self.config().cli_dir.as_deref());
         let mut changes = Vec::new();
-        for item in queue.list(ItemState::InReview)? {
-            let mut meta = ItemMeta::load(queue, ItemState::InReview, &item)?;
-            let Some(url) = meta.pr_url.clone() else {
-                continue;
-            };
-            if meta.needs_rework.is_some() {
-                continue;
+        for item in self.queue().list(ItemState::InReview)? {
+            if let Some(change) = self.check_item(&gh, &item).await? {
+                changes.push((item, change));
             }
-            let status = github::review_status(&gh, &url).await?;
-            let change = match status.state {
-                PrState::Merged => {
-                    meta.save(queue, ItemState::InReview, &item)?;
-                    queue.transition(&item, ItemState::InReview, ItemState::Closed)?;
-                    ReviewChange::Merged
-                }
-                PrState::Closed => {
-                    meta.hold_reason = Some(format!(
-                        "its pull request was closed without merging: {url}"
-                    ));
-                    meta.save(queue, ItemState::InReview, &item)?;
-                    queue.transition(&item, ItemState::InReview, ItemState::Hold)?;
-                    ReviewChange::ClosedUnmerged
-                }
-                PrState::Open => {
-                    let Some(feedback) = status.feedback else {
-                        continue;
-                    };
-                    if meta.answered_head.as_deref() == Some(status.head.as_str()) {
-                        continue;
-                    }
-                    meta.needs_rework = Some(feedback);
-                    meta.answered_head = Some(status.head.clone());
-                    // Rework builds on what is actually on the pull request.
-                    meta.pushed_head = Some(status.head);
-                    meta.save(queue, ItemState::InReview, &item)?;
-                    ReviewChange::ChangesRequested
-                }
-            };
-            changes.push((item, change));
         }
         if !changes.is_empty() {
             self.shared.changed();
         }
         Ok(changes)
+    }
+
+    /// Checks the pull request of one item in review now, as
+    /// [`check_reviews`](Self::check_reviews) does for all of them. `None`
+    /// means there is nothing new to act on.
+    pub async fn check_review(&self, item: &WorkItem) -> Result<Option<ReviewChange>, PoolError> {
+        if !self.queue().list(ItemState::InReview)?.contains(item) {
+            return Err(PoolError::NotInReview(item.clone()));
+        }
+        let gh = github::program(self.config().cli_dir.as_deref());
+        let change = self.check_item(&gh, item).await?;
+        if change.is_some() {
+            self.shared.changed();
+        }
+        Ok(change)
+    }
+
+    /// Pushes an empty commit to the pull request of an item in review, so
+    /// the remote checks run again on it.
+    pub async fn bump(&self, item: &WorkItem) -> Result<(), PoolError> {
+        let queue = self.queue();
+        if !queue.list(ItemState::InReview)?.contains(item) {
+            return Err(PoolError::NotInReview(item.clone()));
+        }
+        let mut meta = ItemMeta::load(queue, ItemState::InReview, item)?;
+        if meta.pr_url.is_none() {
+            return Err(PoolError::NoPullRequest(item.clone()));
+        }
+        // A worker is about to rework the item in its worktree.
+        if meta.needs_rework.is_some() {
+            return Err(PoolError::ReworkQueued(item.clone()));
+        }
+        let project = self.project(item)?;
+        let Some(pr) = &project.pr else {
+            return Err(PoolError::NoPullRequest(item.clone()));
+        };
+        let worktree = project.worktree_path(item);
+        let branch = Project::branch(item);
+        git::ensure_worktree(&project.repo, &worktree, &branch).await?;
+        git::commit_empty(&worktree, "chore: re-run checks").await?;
+        git::push_ahead(&worktree, &pr.push_remote, &branch).await?;
+        meta.pushed_head = Some(git::head(&worktree).await?);
+        meta.save(queue, ItemState::InReview, item)?;
+        self.shared.changed();
+        Ok(())
+    }
+
+    async fn check_item(
+        &self,
+        gh: &Path,
+        item: &WorkItem,
+    ) -> Result<Option<ReviewChange>, PoolError> {
+        let queue = self.queue();
+        let mut meta = ItemMeta::load(queue, ItemState::InReview, item)?;
+        let Some(url) = meta.pr_url.clone() else {
+            return Ok(None);
+        };
+        if meta.needs_rework.is_some() {
+            return Ok(None);
+        }
+        let status = github::review_status(gh, &url).await?;
+        let change = match status.state {
+            PrState::Merged => {
+                meta.save(queue, ItemState::InReview, item)?;
+                queue.transition(item, ItemState::InReview, ItemState::Closed)?;
+                ReviewChange::Merged
+            }
+            PrState::Closed => {
+                meta.hold_reason = Some(format!(
+                    "its pull request was closed without merging: {url}"
+                ));
+                meta.save(queue, ItemState::InReview, item)?;
+                queue.transition(item, ItemState::InReview, ItemState::Hold)?;
+                ReviewChange::ClosedUnmerged
+            }
+            PrState::Open => {
+                let Some(feedback) = status.feedback else {
+                    return Ok(None);
+                };
+                if meta.answered_head.as_deref() == Some(status.head.as_str()) {
+                    return Ok(None);
+                }
+                meta.needs_rework = Some(feedback);
+                meta.answered_head = Some(status.head.clone());
+                // Rework builds on what is actually on the pull request.
+                meta.pushed_head = Some(status.head);
+                meta.save(queue, ItemState::InReview, item)?;
+                ReviewChange::ChangesRequested
+            }
+        };
+        Ok(Some(change))
     }
 
     /// Returns an item on hold to the agents with a fresh turn count. If its

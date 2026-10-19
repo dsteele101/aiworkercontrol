@@ -11,7 +11,7 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use serde::Deserialize;
 use work_queue::{RESULT_SUFFIX, State as ItemState, WorkItem};
-use worker_pool::{Balancing, BranchOutcome, Project, PullRequests, Scheme};
+use worker_pool::{Balancing, BranchOutcome, Project, PullRequests, ReviewChange, Scheme};
 
 use crate::{AppState, login, pages};
 
@@ -33,6 +33,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/stop", post(stop))
         .route("/workers", post(set_workers))
         .route("/resume", post(resume))
+        .route("/review/check", post(check_review))
+        .route("/review/bump", post(bump_review))
         .route("/settings/max-turns", post(set_max_turns))
         .route("/settings/limits", post(set_limits))
         .route("/settings/balancing", post(set_balancing))
@@ -152,6 +154,37 @@ async fn resume(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirec
         let message = match app.pool().resume(&item).await {
             Ok(()) => format!("Returned {item} to the agents with a fresh turn count."),
             Err(e) => format!("Could not return {item}: {e}"),
+        };
+        app.notify(message);
+    }
+    Redirect::to("/")
+}
+
+async fn check_review(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {
+    if let Some((project, file)) = f.item.split_once('/') {
+        let item = WorkItem::new(project, file);
+        let message = match app.pool().check_review(&item).await {
+            Ok(Some(ReviewChange::Merged)) => format!("The pull request of {item} was merged."),
+            Ok(Some(ReviewChange::ClosedUnmerged)) => {
+                format!("The pull request of {item} was closed without merging; it is on hold.")
+            }
+            Ok(Some(ReviewChange::ChangesRequested)) => {
+                format!("Feedback found on {item}; it waits for a worker to rework it.")
+            }
+            Ok(None) => format!("Nothing new to act on for {item}."),
+            Err(e) => format!("Could not check {item}: {e}"),
+        };
+        app.notify(message);
+    }
+    Redirect::to("/")
+}
+
+async fn bump_review(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {
+    if let Some((project, file)) = f.item.split_once('/') {
+        let item = WorkItem::new(project, file);
+        let message = match app.pool().bump(&item).await {
+            Ok(()) => format!("Pushed an empty commit to the pull request of {item}."),
+            Err(e) => format!("Could not bump {item}: {e}"),
         };
         app.notify(message);
     }

@@ -81,6 +81,15 @@ pub enum PoolError {
     /// Only items on hold can be returned to an agent.
     #[error("{0} is not on hold")]
     NotOnHold(work_queue::WorkItem),
+    /// Only items in review have a pull request to check or bump.
+    #[error("{0} is not in review")]
+    NotInReview(work_queue::WorkItem),
+    /// The item has no pull request, or its project opens none.
+    #[error("{0} has no pull request")]
+    NoPullRequest(work_queue::WorkItem),
+    /// Feedback is waiting for a worker; a new commit would go under it.
+    #[error("{0} has feedback waiting for a worker")]
+    ReworkQueued(work_queue::WorkItem),
     /// The agent reported failure or exited unsuccessfully.
     #[error("agent failed: {0}")]
     AgentFailed(String),

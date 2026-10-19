@@ -70,6 +70,11 @@ td, th { text-align: left; padding: 6px 8px; border-top: 1px solid var(--border)
   vertical-align: top; overflow-wrap: anywhere; }
 th { color: var(--muted); font-weight: 500; border-top: 0; }
 form.inline { display: inline; }
+details.menu { display: inline-block; position: relative; }
+details.menu summary { cursor: pointer; color: var(--link); list-style: none; }
+details.menu[open] > div { position: absolute; right: 0; z-index: 1; display: flex;
+  flex-direction: column; gap: 6px; margin-top: 4px; padding: 8px; white-space: nowrap;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
 button, input, select { font: inherit; color: inherit; }
 button { background: var(--panel); border: 1px solid var(--border);
   border-radius: 6px; padding: 4px 12px; cursor: pointer; }
@@ -308,6 +313,22 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                                 }
                                 " "
                                 a href={ "/result?item=" (url_encode(&item.to_string())) } { "Result" }
+                                @if m.pr_url.is_some() {
+                                    " "
+                                    details.menu {
+                                        summary { "Next action" }
+                                        div {
+                                            form.inline method="post" action="/review/check" {
+                                                input type="hidden" name="item" value=(item);
+                                                button title="Read the latest reviews, comments and CI results now, and queue a rework if they ask for changes" { "Check latest" }
+                                            }
+                                            form.inline method="post" action="/review/bump" {
+                                                input type="hidden" name="item" value=(item);
+                                                button title="Push an empty commit to the pull request so the remote checks run again" { "Bump PR" }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
