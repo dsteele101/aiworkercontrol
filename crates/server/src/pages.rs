@@ -91,6 +91,35 @@ label.check input { width: auto; }
 .fields { display: grid; gap: 4px 12px;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
 .stack > * + * { margin-top: 12px; }
+
+.filters { display: grid; gap: 8px 12px; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  align-items: end; }
+.filters label { margin: 0 0 2px; }
+.filters .wide { grid-column: span 2; }
+.stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.stat strong { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+.small { font-size: 12px; }
+.charts { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
+.chart { position: relative; }
+.chart h3 { margin: 0 0 8px; font-size: 14px; }
+.chart > div { position: relative; height: 240px; }
+.chart.empty > div::after { content: "No data for these filters"; position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center; color: var(--muted);
+  background: var(--panel); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.items { min-width: 1150px; }
+table.items td, table.items th { overflow-wrap: normal; }
+table.items td:first-child { overflow-wrap: anywhere; min-width: 150px; }
+table.items th.sortable { cursor: pointer; white-space: nowrap; }
+table.items tr.row { cursor: pointer; }
+table.items tr.row:hover, table.items tr.row:focus-visible { background: var(--code); outline: none; }
+table.items tr.detail > td { background: var(--bg); padding: 10px 8px 14px; }
+table.turns th, table.turns td { font-size: 12px; }
+.tag { margin-left: 6px; padding: 0 5px; border: 1px solid var(--border); border-radius: 4px;
+  font-size: 11px; color: var(--muted); }
+a.pr { margin-left: 8px; font-size: 12px; }
+.err { max-width: 40ch; }
+.scroll { overflow-x: auto; }
 @media (max-width: 600px) { header { flex-wrap: wrap; gap: 10px 16px; } }
 "#;
 
@@ -151,6 +180,7 @@ fn layout(title: &str, here: &str, refresh: bool, notice: Option<String>, body: 
                 header {
                     h1 { "AI Worker Control" }
                     a href="/" class=[(here == "dashboard").then_some("here")] { "Dashboard" }
+                    a href="/history" class=[(here == "history").then_some("here")] { "History" }
                     a href="/settings" class=[(here == "settings").then_some("here")] { "Settings" }
                 }
                 main {
@@ -161,6 +191,65 @@ fn layout(title: &str, here: &str, refresh: bool, notice: Option<String>, body: 
             }
         }
     }
+}
+
+/// The history dashboard's page. Its filters, figures and charts are drawn
+/// in the browser from `/history.json`.
+pub(crate) fn history(notice: Option<String>) -> Markup {
+    let chart = |id: &str, title: &str| {
+        html! { div.panel.chart { h3 { (title) } div { canvas #(id) {} } } }
+    };
+    let field = |id: &str, label: &str| {
+        html! { div { label for=(id) { (label) } select #(id) {} } }
+    };
+    let body = html! {
+        h2 { "History" }
+        p #error.bad hidden {}
+        noscript { p.bad { "The history dashboard needs JavaScript." } }
+        div.panel {
+            div.filters {
+                div.wide { label for="f-q" { "Search" }
+                    input #f-q type="text" placeholder="Item, model, error, pull request…"; }
+                (field("f-project", "Project"))
+                (field("f-provider", "Provider"))
+                (field("f-model", "Model"))
+                (field("f-effort", "Effort"))
+                (field("f-state", "State"))
+                div { label for="f-from" { "From" } input #f-from type="date"; }
+                div { label for="f-to" { "To" } input #f-to type="date"; }
+                div { button #f-clear type="button" { "Clear filters" } }
+            }
+        }
+        h2 { "Summary" }
+        div.stats #stats {}
+        h2 { "Charts" }
+        div.charts {
+            (chart("c-turns", "Runs per day, by provider"))
+            (chart("c-tokens", "Tokens per day (as the CLIs count them)"))
+            (chart("c-cost", "Cost per day, as the CLIs estimate it"))
+            (chart("c-models", "Agent hours by model and effort"))
+            (chart("c-quota", "Plan usage spent, by provider"))
+            (chart("c-outcomes", "How runs ended"))
+            (chart("c-failures", "Why runs failed"))
+            (chart("c-turns-per-item", "Runs needed per finished item"))
+        }
+        h2 { "Breakdown" }
+        div.panel {
+            label for="group-by" { "Group runs by" }
+            select #group-by {}
+            div.scroll #breakdown {}
+        }
+        h2 { "Bodies of work " span.muted #count {} }
+        div.panel.scroll #items {}
+        p.muted.small {
+            "Plan usage is the change in the provider's reported session and weekly allowance across \
+             a run; providers report it for the whole plan, not per model, so with several workers \
+             on one provider the figures overlap."
+        }
+        script src="/static/chart.umd.js" {}
+        script src="/static/history.js" {}
+    };
+    layout("History", "history", false, notice, body)
 }
 
 pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {

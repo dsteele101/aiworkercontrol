@@ -1,8 +1,10 @@
 //! The AI Worker Control web app: a dashboard of the worker pool and the
 //! settings page, served on the loopback interface only.
 //!
-//! Pages are rendered on the server; the dashboard reloads itself every two
-//! seconds, so there is no client-side code.
+//! Pages are rendered on the server, and the dashboard refreshes its live
+//! sections every two seconds. The history page is the exception: it draws
+//! its filters and charts in the browser from `/history.json`, with a
+//! charting library compiled into the binary so it works offline.
 //!
 //! ```
 //! let root = tempfile::tempdir()?;
