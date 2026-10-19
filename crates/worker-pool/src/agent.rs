@@ -114,17 +114,57 @@ pub(crate) async fn report(
     for key in &run.env_remove {
         command.env_remove(key);
     }
+    let spawn_error = |source| PoolError::Spawn {
+        program: program.display().to_string(),
+        source,
+    };
+    if let (Some(input), Some(marker)) = (&run.stdin, &run.answer_marker) {
+        let answered = tokio::time::timeout(REPORT_TIMEOUT, converse(command, input, marker));
+        return match answered.await {
+            Ok(Ok(out)) => Ok(out),
+            Ok(Err(source)) => Err(spawn_error(source)),
+            Err(_) => Ok(None),
+        };
+    }
     let output = tokio::time::timeout(REPORT_TIMEOUT, command.output()).await;
     match output {
         Ok(Ok(out)) if out.status.success() => {
             Ok(Some(String::from_utf8_lossy(&out.stdout).into_owned()))
         }
         Ok(Ok(_)) | Err(_) => Ok(None),
-        Ok(Err(source)) => Err(PoolError::Spawn {
-            program: program.display().to_string(),
-            source,
-        }),
+        Ok(Err(source)) => Err(spawn_error(source)),
     }
+}
+
+/// Writes `input` to `command`'s stdin and collects its stdout up to the
+/// line containing `marker`, then stops it. Closing stdin early would end a
+/// server like `codex app-server` before it answered. `None` if the output
+/// ends without the marker.
+async fn converse(
+    mut command: Command,
+    input: &str,
+    marker: &str,
+) -> std::io::Result<Option<String>> {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+        return Ok(None);
+    };
+    stdin.write_all(input.as_bytes()).await?;
+    let mut lines = BufReader::new(stdout).lines();
+    let mut seen = String::new();
+    while let Some(line) = lines.next_line().await? {
+        seen.push_str(&line);
+        seen.push('\n');
+        if line.contains(marker) {
+            // Killed on drop with `child`, once the answer is in hand.
+            return Ok(Some(seen));
+        }
+    }
+    Ok(None)
 }
 
 /// Runs `run`, logging its output to `log` and passing each event to
