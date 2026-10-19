@@ -64,6 +64,7 @@ impl Supervisor {
         queue.add(ItemState::InReview, &item, &body)?;
         let meta = ItemMeta {
             pr_url: Some(url),
+            pr_title: Some(info.title.clone()),
             pushed_head: Some(info.head),
             remote_branch: Some(info.head_branch.clone()),
             ..ItemMeta::default()

@@ -42,6 +42,9 @@ pub(super) enum Finish {
     Review {
         report: String,
         pr_url: String,
+        /// The pull request's title when this run opened it; `None` for a
+        /// rework, which leaves the recorded one as is.
+        pr_title: Option<String>,
         head: String,
     },
     /// Committed but not published: needs a person.
@@ -174,17 +177,18 @@ impl Shared {
                     }
                     None => git::push(&worktree, &pr.push_remote, &branch).await,
                 };
-                pushed.map(|()| pr_url.clone())
+                pushed.map(|()| (pr_url.clone(), None))
             }
         };
         Ok(match published {
-            Ok(pr_url) => {
+            Ok((pr_url, pr_title)) => {
                 let _ = writeln!(report, "{PR_LINE}{pr_url}");
                 report.push_str(&tail);
                 let head = git::head(&worktree).await?;
                 Finish::Review {
                     report,
                     pr_url,
+                    pr_title,
                     head,
                 }
             }
@@ -290,7 +294,7 @@ impl Shared {
         commits: &[String],
         outcome: &agent::Outcome,
         config: &PoolConfig,
-    ) -> Result<String, PoolError> {
+    ) -> Result<(String, Option<String>), PoolError> {
         let url = git::remote_url(&project.repo, &pr.push_remote).await?;
         let owner = github::owner_from_url(&url).ok_or_else(|| PoolError::NotGitHub {
             remote: pr.push_remote.clone(),
@@ -311,7 +315,9 @@ impl Shared {
             body: outcome.summary().unwrap_or_default().trim().to_string(),
         });
         let gh = github::program(config.cli_dir.as_deref());
-        github::open_pr(&gh, &pr.repo, &pr.base, &owner, branch, &draft, pr.draft).await
+        let (url, title) =
+            github::open_pr(&gh, &pr.repo, &pr.base, &owner, branch, &draft, pr.draft).await?;
+        Ok((url, Some(title)))
     }
 }
 

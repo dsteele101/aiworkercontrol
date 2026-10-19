@@ -23,6 +23,9 @@ pub struct ItemMeta {
     /// The pull request proposing the item's work, once opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
+    /// The pull request's title, as of when it was opened or imported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_title: Option<String>,
     /// The commit last pushed to the pull request. Feedback counts only when
     /// it is on this commit, i.e. given since the last push.
     #[serde(default, skip_serializing_if = "Option::is_none")]
