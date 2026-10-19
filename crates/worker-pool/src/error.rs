@@ -90,6 +90,34 @@ pub enum PoolError {
     /// Feedback is waiting for a worker; a new commit would go under it.
     #[error("{0} has feedback waiting for a worker")]
     ReworkQueued(work_queue::WorkItem),
+    /// The link is not a GitHub pull request.
+    #[error("{0:?} is not a GitHub pull request link (https://github.com/OWNER/REPO/pull/N)")]
+    NotPullRequestLink(String),
+    /// No project opens pull requests against the link's repository.
+    #[error("no project opens pull requests against {0}")]
+    NoProjectForRepo(String),
+    /// Only a pull request that is still open can be imported.
+    #[error("{0} is not open")]
+    PullRequestNotOpen(String),
+    /// The pull request's branch is not on the project's push remote, so a
+    /// rework could not push to it.
+    #[error("{url} comes from {head}, not from the push remote {remote}")]
+    ForeignBranch {
+        /// The pull request.
+        url: String,
+        /// Where its branch lives, as `owner:branch`.
+        head: String,
+        /// The project's push remote.
+        remote: String,
+    },
+    /// The pull request is already in the queue.
+    #[error("{url} is already in the queue as {item}")]
+    AlreadyImported {
+        /// The pull request.
+        url: String,
+        /// The item that has it.
+        item: work_queue::WorkItem,
+    },
     /// The agent reported failure or exited unsuccessfully.
     #[error("agent failed: {0}")]
     AgentFailed(String),

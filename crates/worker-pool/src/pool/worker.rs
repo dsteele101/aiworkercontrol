@@ -106,6 +106,7 @@ impl Shared {
                     pr_url,
                     pushed_head,
                     feedback,
+                    remote_branch: meta.remote_branch,
                 };
                 return Ok(Some(self.claimed(item, project, &config, kind, pick)));
             }

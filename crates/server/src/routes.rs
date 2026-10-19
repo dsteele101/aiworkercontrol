@@ -33,6 +33,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/stop", post(stop))
         .route("/workers", post(set_workers))
         .route("/resume", post(resume))
+        .route("/import", post(import_pull_request))
         .route("/review/check", post(check_review))
         .route("/review/bump", post(bump_review))
         .route("/settings/max-turns", post(set_max_turns))
@@ -157,6 +158,20 @@ async fn resume(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirec
         };
         app.notify(message);
     }
+    Redirect::to("/")
+}
+
+#[derive(Deserialize)]
+struct ImportForm {
+    url: String,
+}
+
+async fn import_pull_request(State(app): State<AppState>, Form(f): Form<ImportForm>) -> Redirect {
+    let message = match app.pool().import_pull_request(&f.url).await {
+        Ok(item) => format!("Imported the pull request as {item}; it is in review."),
+        Err(e) => format!("Could not import the pull request: {e}"),
+    };
+    app.notify(message);
     Redirect::to("/")
 }
 

@@ -96,6 +96,29 @@ async fn dashboard_renders() {
 }
 
 #[tokio::test]
+async fn importing_a_pull_request_reports_why_it_cannot() {
+    let app = app();
+    let (_, body) = app.get("/").await;
+    assert!(body.contains(r#"action="/import""#), "{body}");
+
+    let status = app.post("/import", "url=not+a+link").await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, page) = app.get("/").await;
+    assert!(page.contains("is not a GitHub pull request link"), "{page}");
+
+    app.post(
+        "/import",
+        "url=https%3A%2F%2Fgithub.com%2Fup%2Frepo%2Fpull%2F9",
+    )
+    .await;
+    let (_, page) = app.get("/").await;
+    assert!(
+        page.contains("no project opens pull requests against up/repo"),
+        "{page}"
+    );
+}
+
+#[tokio::test]
 async fn live_refresh_leaves_notices_for_the_next_page() {
     let app = app();
     app.post("/settings/active", "provider=anthropic").await;

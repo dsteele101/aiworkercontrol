@@ -223,6 +223,41 @@ pub(crate) async fn review_status(
     })
 }
 
+/// What an open pull request is made of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PrInfo {
+    pub state: PrState,
+    pub title: String,
+    /// The branch the pull request proposes.
+    pub head_branch: String,
+    /// The owner of the repository that branch is in.
+    pub head_owner: String,
+    /// The branch's latest commit.
+    pub head: String,
+}
+
+/// Reads the pull request at `url`.
+pub(crate) async fn pr_info(gh: &Path, url: &str) -> Result<PrInfo, PoolError> {
+    let fields = "state,title,headRefName,headRefOid,headRepositoryOwner";
+    let view = json(&run(gh, &["pr", "view", url, "--json", fields]).await?, url)?;
+    let state = match str_at(&view, "state") {
+        "MERGED" => PrState::Merged,
+        "CLOSED" => PrState::Closed,
+        _ => PrState::Open,
+    };
+    Ok(PrInfo {
+        state,
+        title: str_at(&view, "title").to_string(),
+        head_branch: str_at(&view, "headRefName").to_string(),
+        head_owner: view
+            .pointer("/headRepositoryOwner/login")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        head: str_at(&view, "headRefOid").to_string(),
+    })
+}
+
 /// Names and links of the failing checks on the pull request's latest
 /// commit: the required ones, or all of them if none are required.
 async fn failing_checks(gh: &Path, url: &str) -> Result<Vec<(String, String)>, PoolError> {
@@ -283,7 +318,7 @@ async fn inline_comments(gh: &Path, url: &str, head: &str) -> Result<String, Poo
 }
 
 /// `(owner, repo, number)` from `https://github.com/OWNER/REPO/pull/N`.
-fn parse_pr_url(url: &str) -> Option<(&str, &str, &str)> {
+pub(crate) fn parse_pr_url(url: &str) -> Option<(&str, &str, &str)> {
     let mut parts = url.strip_prefix("https://github.com/")?.split('/');
     let (owner, repo, pull, number) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
     (pull == "pull").then_some((owner, repo, number))

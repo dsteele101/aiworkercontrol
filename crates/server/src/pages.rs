@@ -261,6 +261,22 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
 
         }
 
+        // Outside the live sections, which refresh and would drop a typed link.
+        div {
+            h2 { "Import a pull request" }
+            form.panel.bar method="post" action="/import" {
+                input type="text" name="url" required style="flex:1; min-width:260px"
+                    placeholder="https://github.com/owner/repo/pull/123"
+                    aria-label="Pull request link";
+                button.primary { "Import" }
+            }
+            p.muted {
+                "Adds an open pull request to the queue, in review, for the project that opens pull requests "
+                "against its repository. Its branch must be on that project's push remote. Changes requested on "
+                "it and failing checks are then reworked like those on the app's own pull requests."
+            }
+        }
+
         div #queue data-live {
             h2 { "Queue" }
             div.panel {

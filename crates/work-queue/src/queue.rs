@@ -1,7 +1,7 @@
 //! The queue itself: listing items and moving them between states.
 
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
 use crate::{QueueError, State, WorkItem};
@@ -86,6 +86,20 @@ impl Queue {
     pub fn read(&self, state: State, item: &WorkItem) -> Result<String, QueueError> {
         let path = self.path(state, item);
         fs::read_to_string(&path).map_err(QueueError::io("read", path))
+    }
+
+    /// Creates `item` in `state` with `body`. Fails if the item file already
+    /// exists there, so an existing item is never overwritten.
+    pub fn add(&self, state: State, item: &WorkItem, body: &str) -> Result<(), QueueError> {
+        let path = self.path(state, item);
+        ensure_parent(&path)?;
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(QueueError::io("create", &path))?;
+        file.write_all(body.as_bytes())
+            .map_err(QueueError::io("write", path))
     }
 
     /// Claims the first open item for which `skip` returns false, moving it to
@@ -241,6 +255,18 @@ mod tests {
             queue.list(State::Closed).unwrap(),
             vec![WorkItem::new("phase", "a.txt")]
         );
+    }
+
+    #[test]
+    fn add_creates_an_item_and_refuses_to_overwrite_one() {
+        let (dir, queue) = queue_with(&[]);
+        let item = WorkItem::new("p", "a.txt");
+        queue.add(State::InReview, &item, "text").unwrap();
+        let path = dir.path().join("inreview/p/a.txt");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "text");
+        let err = queue.add(State::InReview, &item, "other").unwrap_err();
+        assert!(matches!(err, QueueError::Io { op: "create", .. }));
+        assert_eq!(fs::read_to_string(path).unwrap(), "text");
     }
 
     #[test]
