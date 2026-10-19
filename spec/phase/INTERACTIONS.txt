@@ -89,3 +89,104 @@ graveyard. If no cards are in that graveyard, flip this creature.")
   (self_flip_ignores_inherited_foreign_object_target), and
   crates/engine/src/parser/oracle_nom/condition.rs unit test
   (test_parse_no_cards_in_that_graveyard).
+
+
+"When this creature enters, target opponent reveals their hand and you choose a nonland card from it. Exile that card. / When this creature leaves the battlefield, return the exiled card to its owner's hand."
+(Two-trigger linked exile-and-return with hand origin and return to hand)
+--------------------------------------------------------------------------
+Cards: Tidehollow Sculler, Mesmeric Fiend
+
+- CR 607.1 + CR 607.2a + CR 406.6 + CR 610.3: Two-trigger linked exile-and-return
+  ability design where the ETB trigger exiles a chosen card from a revealed hand
+  via a sub-ability (`Effect::RevealHand` chaining into `Effect::ChangeZone` to `Exile`),
+  and the LTB trigger returns "the exiled card to its owner's hand" (`Effect::Bounce`
+  or `Effect::ChangeZone` to `Zone::Hand`).
+- `detect_etb_exile_ltb_return` / `trigger_is_etb_exile_pending_duration`:
+  The ETB exile is not at root; it lives in a sub-ability under `RevealHand`.
+  `ability_has_exile_pending_duration` descends through `sub_ability` to locate
+  the unstamped `ChangeZone` / `ChangeZoneAll` to `Zone::Exile`.
+- `trigger_is_ltb_return_shape` / `change_zone_return_has_no_entry_modifiers`:
+  Accepts return-to-hand shapes (`Effect::Bounce` with no or Hand destination, or
+  `Effect::ChangeZone` to `Zone::Hand`) targeting `TrackedSet` or `ExiledBySource`
+  without entry modifiers, matching return-to-battlefield shapes (Journey to Nowhere,
+  Oblivion Ring, Worldgorger Dragon).
+- `apply_etb_exile_ltb_return` / `stamp_etb_exile_pending_duration`:
+  Stamps `Duration::UntilHostLeavesPlay` on the ETB exile sub-ability node (and root),
+  so `zone_pipeline.rs` installs `ExileLinkKind::UntilSourceLeaves { return_zone: from }`
+  (with `from == Zone::Hand`).
+- When the permanent leaves the battlefield, `check_exile_returns` moves the exiled card
+  from `Zone::Exile` back to `Zone::Hand` (CR 400.7 / CR 108.3 owner's hand).
+- Tests: `crates/engine/src/parser/oracle_tests.rs`
+  (`tidehollow_sculler_etb_exile_gets_until_host_leaves_duration`),
+  `crates/engine/tests/integration/tidehollow_sculler_exile_return.rs`
+  (`tidehollow_sculler_returns_exiled_card_to_hand_when_it_leaves_play`,
+  `mesmeric_fiend_returns_exiled_card_to_hand_when_it_leaves_play`,
+  `tidehollow_sculler_with_no_nonland_cards_in_opponents_hand`).
+
+
+"... unless that player says "<phrase>"" / "you may say "<phrase>". If you do, [effect]"
+(spoken phrase as the cost of an unless-payment or optional payment; Un-card actions)
+--------------------------------------------------------------------------
+Cards: Rod of Spanking (unless that player says "Thank you, sir. May I have
+another?"), Impounding Lot-Bot (you may say "INCARCERATE!" in a robot voice),
+Infernius Spawnington III, Esq. (you may say "I'm here."). Same class, not yet
+built: Ow, Loose Lips, Carnivorous Death-Parrot ("sacrifice unless you say its
+flavor text"), Toy Boat's cumulative upkeep.
+
+- CR 118.12a: "[Do something] unless [a player does something else]" means the same
+  as "[A player] may [do something else]. If [that player] doesn't, [do something]."
+  Saying the phrase IS the payment: AbilityCost::SayPhrase { phrase }. It moves no
+  resources, so it rides the existing pipelines unchanged: resolution-time
+  unless-payments (WaitingFor::UnlessPayment + PayUnlessCost) and "you may pay ...
+  If you do" optional payments (Effect::PayCost + DecideOptionalEffect). Do not add a
+  parallel "say" effect or WaitingFor.
+- Opt-in gate: only a player who enabled Un-card actions (GameState.un_actions,
+  GameAction::UnAction(SetEnabled)) can say a phrase. For everyone else the prompt
+  never opens and the "unless" branch simply happens (resolution_unless payers are
+  skipped by un_actions::cost_requires_unavailable_speech; an optional "you may say"
+  is infeasible via effects::optional_effect_is_infeasible -> costs::can_pay_resolution).
+- Parser: extract_resolution_unless_pay_modifier (oracle_effect/mod.rs) reads
+  "unless <payer> says "..."" -- the quoted span is masked there, so the phrase is
+  read from the ORIGINAL text at the same byte offset. parse_cost_resource_ast
+  (imperative.rs) reads the imperative `say "..." [in a <x> voice]`.
+- Tests: crates/engine/tests/integration/un_card_actions.rs.
+
+
+"Gotcha -- If an opponent [does X], you may say "Gotcha!" When you do, return this
+card from your graveyard to your hand."
+(opponent behavior the engine cannot observe; Un-card actions)
+--------------------------------------------------------------------------
+Cards: Touch and Go, Cardpecker, Laughing Hyena, Stop That, Number Crunch,
+Creature Guy, Deal Damage, Kill! Destroy!, Save Life, Spell Counter, Name Dropping.
+
+- Modeled as TriggerMode::GotchaSaid + TriggerDefinition.gotcha_condition (typed
+  GotchaCondition: Physical(PhysicalTell) / SaysAnyOf{words} / SaysNumber /
+  SaysWordInGraveyardCardName). The trigger functions from the zone its effect
+  returns the card from (graveyard), except Name Dropping (battlefield, returns
+  "that card" = the TriggeringSource of GameEvent::GotchaSaid.returns).
+- "When you do" is the CR 603.12 reflexive trigger: calling "Gotcha!" emits
+  GameEvent::GotchaSaid, which the card's own trigger consumes; the return goes on the
+  stack like any trigger.
+- The engine cannot see a face being touched, so the OPPONENT performs the gesture
+  from the Un-actions menu (UnAction::PerformTell). un_actions::open_gotcha_offers
+  then opens a window (un_actions.gotcha_offers) for every opted-in opponent whose
+  Gotcha ability matches. The window closes at the next ordinary game action; the
+  client additionally shows the Gotcha! button for only 2 seconds. Windows open only
+  at a Priority boundary so the reflexive trigger can reach the stack at once.
+- The menu itself is derived by the engine (un_actions.menu = refresh_menu) from the
+  Gotcha abilities in play, so it never offers a gesture no card responds to.
+- Parser: parser/oracle_un.rs (split_gotcha_line / gotcha_trigger), dispatched at the
+  top of the oracle.rs line loop. American punctuation puts the comma inside the quote
+  ("guy,") -- trailing punctuation is trimmed from the watched words.
+- Swallow check: a Gotcha trigger satisfies Optional_YouMay (trigger_tree_has_optional)
+  and Condition_If (gotcha_condition) without extra AST flags.
+- Tests: crates/engine/tests/integration/un_card_actions.rs.
+
+
+Not yet implemented Un-card actions that fit the same building blocks
+--------------------------------------------------------------------------
+- "Whenever a player/opponent says the chosen word" (Censorship, Keeper of the Sacred
+  Word): a UnTell::Said already reaches the engine as GameEvent::UnTellPerformed;
+  a trigger mode matching the chosen word against the spoken text is the missing piece.
+- "...that player may say "Ow"" (Ow), "chosen sentence" (Loose Lips): AbilityCost::SayPhrase
+  with a chosen/dynamic phrase.
