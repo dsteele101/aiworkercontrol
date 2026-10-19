@@ -486,6 +486,7 @@ dependencies = [
  "axum",
  "maud",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

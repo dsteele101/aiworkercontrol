@@ -25,6 +25,7 @@ work-queue = { path = "../work-queue" }
 worker-pool = { path = "../worker-pool" }
 
 [dev-dependencies]
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 tower = { workspace = true, features = ["util"] }
 

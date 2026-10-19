@@ -549,3 +549,59 @@ async fn in_review_items_show_their_pull_request_and_status() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains("# reworked once"));
 }
+
+#[tokio::test]
+async fn history_page_loads_its_scripts_from_the_app() {
+    let app = app();
+    let (status, body) = app.get("/history").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains(r#"src="/static/chart.umd.js""#));
+    assert!(body.contains(r#"src="/static/history.js""#));
+    assert!(body.contains(r#"href="/history""#));
+    assert!(
+        !body.contains("https://") && !body.contains("http://cdn"),
+        "{body}"
+    );
+
+    for (name, marker) in [
+        ("chart.umd.js", "Chart.js v4"),
+        ("history.js", "history dashboard"),
+    ] {
+        let (status, script) = app.get(&format!("/static/{name}")).await;
+        assert_eq!(status, StatusCode::OK, "{name}");
+        assert!(script.contains(marker), "{name}");
+    }
+    assert_eq!(
+        app.get("/static/settings.toml").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        app.get("/static/..%2fCargo.toml").await.0,
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn history_json_summarizes_the_ledger() {
+    let app = app();
+    let (status, body) = app.get("/history.json").await;
+    assert_eq!(status, StatusCode::OK);
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["items"], serde_json::json!([]));
+
+    let turn = r#"{"kind":"turn","project":"demo","item":"a.txt","turn":1,"reason":"first","provider":"anthropic","fallback":false,"models":["claude-x"],"effort":"medium","started_at":1000,"ended_at":1100,"duration_ms":100000,"agent_ms":90000,"outcome":"closed","metrics":{"input_tokens":7,"output_tokens":3},"commits":1}"#;
+    fs::write(
+        app.dir.path().join("work/history.jsonl"),
+        format!("{turn}\n"),
+    )
+    .unwrap();
+    let (_, body) = app.get("/history.json").await;
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let item = &json["items"][0];
+    assert_eq!(item["item"], "a.txt");
+    assert_eq!(item["finished"], "closed");
+    assert_eq!(item["providers"], serde_json::json!(["anthropic"]));
+    assert_eq!(item["models"], serde_json::json!(["claude-x"]));
+    assert_eq!(item["input_tokens"], 7);
+    assert_eq!(item["records"][0]["effort"], "medium");
+}

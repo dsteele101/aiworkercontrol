@@ -5,8 +5,8 @@ use std::collections::HashMap;
 
 use agent_backend::{Cli, Provider};
 use axum::Router;
-use axum::extract::{Form, Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Form, Path, Query, State};
+use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use serde::Deserialize;
@@ -27,6 +27,9 @@ pub(crate) const MAX_BUILD_JOBS: u32 = 64;
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/", get(dashboard))
+        .route("/history", get(history_page))
+        .route("/history.json", get(history_json))
+        .route("/static/{name}", get(static_file))
         .route("/settings", get(settings_page))
         .route("/result", get(result))
         .route("/start", post(start))
@@ -81,6 +84,50 @@ async fn settings_page(State(app): State<AppState>) -> Html<String> {
         Cli::Antigravity => antigravity,
     };
     Html(pages::settings(&app, &settings, status, notice).into_string())
+}
+
+async fn history_page(State(app): State<AppState>) -> Html<String> {
+    Html(pages::history(app.take_notice()).into_string())
+}
+
+/// Every item's history summary, for the history page to draw.
+async fn history_json(State(app): State<AppState>) -> Response {
+    #[derive(serde::Serialize)]
+    struct History {
+        generated_at: u64,
+        items: Vec<worker_pool::ItemSummary>,
+    }
+    match app.pool().history() {
+        Ok(items) => {
+            let generated_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            axum::Json(History {
+                generated_at,
+                items,
+            })
+            .into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+/// The scripts of the history page, compiled in so it works offline.
+async fn static_file(Path(name): Path<String>) -> Response {
+    let body = match name.as_str() {
+        "chart.umd.js" => include_str!("../assets/chart.umd.js"),
+        "history.js" => include_str!("../assets/history.js"),
+        _ => return (StatusCode::NOT_FOUND, "no such file").into_response(),
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            // Revalidated each time, so an upgrade shows at once.
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        body,
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
