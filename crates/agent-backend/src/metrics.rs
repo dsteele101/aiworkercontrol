@@ -18,7 +18,9 @@ pub struct RunMetrics {
     pub cache_read_tokens: Option<u64>,
     /// Input tokens written to the prompt cache.
     pub cache_write_tokens: Option<u64>,
-    /// The CLI's own estimate of the cost, in millionths of a US dollar.
+    /// The CLI's own estimate of the cost, in millionths of a US dollar. Claude's is
+    /// the running total for its run, so a run that reports more than once
+    /// must not add them up.
     pub cost_micro_usd: Option<u64>,
     /// The CLI's own measure of how long the turn took, in milliseconds.
     pub duration_ms: Option<u64>,

@@ -40,6 +40,7 @@ async fn main() -> anyhow::Result<()> {
         "AI Worker Control: http://{addr}/ (root {})",
         root.display()
     );
+    tokio::spawn(backfill_history(state.clone()));
     tokio::spawn(clean_up_merged(state.clone()));
     tokio::spawn(watch_reviews(state.clone()));
     tokio::spawn(refresh_usage(state.clone()));
@@ -99,6 +100,19 @@ async fn refresh_usage(state: server::AppState) {
         for e in state.pool().refresh_usage().await {
             eprintln!("usage: {e}");
         }
+    }
+}
+
+/// Fills the work history in once, at start-up, for runs made before it was
+/// kept. Reading the agents' logs can take a moment, so it is off the
+/// runtime's threads.
+async fn backfill_history(state: server::AppState) {
+    let pool = state.pool().clone();
+    match tokio::task::spawn_blocking(move || pool.backfill_history()).await {
+        Ok(Ok(0)) => {}
+        Ok(Ok(runs)) => println!("work history: filled in {runs} earlier runs"),
+        Ok(Err(e)) => eprintln!("work history: {e}"),
+        Err(e) => eprintln!("work history: {e}"),
     }
 }
 

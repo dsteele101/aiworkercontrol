@@ -503,5 +503,6 @@ fn turn_record(
         files_changed: diff.map(|d| d.files),
         quota_before: facts.quota_before,
         quota_after: facts.quota_after,
+        backfilled: false,
     }
 }

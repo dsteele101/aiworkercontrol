@@ -31,13 +31,15 @@ impl Trace {
             }
             AgentEvent::Metrics(m) => {
                 // A run can report more than once, e.g. after background
-                // commands finish; each report covers its own stretch.
+                // commands finish. Tokens and time cover each report's own
+                // stretch, so they add up; the cost does not (below).
                 let total = &mut self.metrics;
                 total.input_tokens = sum(total.input_tokens, m.input_tokens);
                 total.output_tokens = sum(total.output_tokens, m.output_tokens);
                 total.cache_read_tokens = sum(total.cache_read_tokens, m.cache_read_tokens);
                 total.cache_write_tokens = sum(total.cache_write_tokens, m.cache_write_tokens);
-                total.cost_micro_usd = sum(total.cost_micro_usd, m.cost_micro_usd);
+                // Claude's cost is the running total for the whole run.
+                total.cost_micro_usd = total.cost_micro_usd.max(m.cost_micro_usd);
                 total.duration_ms = sum(total.duration_ms, m.duration_ms);
                 self.models.extend(m.models.iter().cloned());
             }
@@ -71,6 +73,7 @@ mod tests {
         let report = |input| {
             AgentEvent::Metrics(RunMetrics {
                 input_tokens: Some(input),
+                cost_micro_usd: Some(input * 100),
                 models: vec!["m".into()],
                 ..RunMetrics::default()
             })
@@ -85,6 +88,8 @@ mod tests {
             });
         }
         assert_eq!(trace.metrics.input_tokens, Some(12));
+        // Each report's cost already includes the earlier ones'.
+        assert_eq!(trace.metrics.cost_micro_usd, Some(700));
         assert_eq!(trace.metrics.output_tokens, None);
         assert_eq!(trace.models.len(), 1);
         assert_eq!(trace.tool_calls["Bash"], 2);

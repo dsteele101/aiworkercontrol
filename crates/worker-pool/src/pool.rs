@@ -1,5 +1,6 @@
 //! The supervisor: owns the shared pool state and spawns the workers.
 
+mod backfill;
 mod cleanup;
 mod import;
 mod review;

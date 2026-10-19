@@ -127,6 +127,10 @@ pub struct TurnRecord {
     /// The provider's plan usage when it ended.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub quota_after: Option<PlanUsage>,
+    /// Made up afterwards from the item's sidecars, not recorded as it
+    /// ran: its times, and whatever else is blank, are unknown, not zero.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub backfilled: bool,
 }
 
 /// What happened to an item outside a turn.

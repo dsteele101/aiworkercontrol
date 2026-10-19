@@ -49,6 +49,9 @@ pub struct ItemSummary {
     pub stalled_turns: u32,
     /// Finished after a single run.
     pub first_pass: bool,
+    /// Some of its runs were made up from its sidecars afterwards, so its
+    /// times (counted from when it was queued) and sizes are only estimates.
+    pub backfilled: bool,
     /// Providers used, in order of first use.
     pub providers: Vec<Provider>,
     /// Models the CLIs reported, in order of first use.
@@ -113,7 +116,15 @@ pub fn summarize(entries: &[Entry], now: u64) -> Vec<ItemSummary> {
     }
     let mut out: Vec<ItemSummary> = by_item
         .into_iter()
-        .filter_map(|((project, item), entries)| one(project, item, &entries, now))
+        .filter_map(|((project, item), mut entries)| {
+            // Entries added later, such as a backfill, can be older than
+            // ones before them in the file.
+            entries.sort_by_key(|e| match e {
+                Entry::Turn(t) => t.started_at,
+                Entry::Event(e) => e.at,
+            });
+            one(project, item, &entries, now)
+        })
         .collect();
     out.sort_by_key(|s| std::cmp::Reverse(s.started_at));
     out
@@ -182,6 +193,7 @@ fn one(project: &str, item: &str, entries: &[&Entry], now: u64) -> Option<ItemSu
         fallback_turns: 0,
         stalled_turns: 0,
         first_pass: finished.is_some() && records.len() == 1,
+        backfilled: records.iter().any(|r| r.backfilled),
         providers: Vec::new(),
         models: Vec::new(),
         efforts: Vec::new(),
@@ -341,6 +353,7 @@ mod tests {
                 session: window(14, 500),
                 weekly: window(41, 9000),
             }),
+            backfilled: false,
         }
     }
 

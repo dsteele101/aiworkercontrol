@@ -73,6 +73,9 @@
     const mid = s.length >> 1;
     return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
   }
+  // A backfilled run's length is unknown (stored as 0), and so are the times of
+  // an item with such runs: they are counted from when it was queued.
+  const known = (t) => !t.backfilled || t.duration_ms > 0;
   const sum = (xs) => xs.reduce((a, b) => a + b, 0);
   const pct = (a, b) => b ? Math.round(100 * a / b) + "%" : "–";
 
@@ -171,10 +174,13 @@
     const items = rows.map((r) => r.item);
     const turns = rows.flatMap((r) => r.turns);
     const finished = items.filter((i) => i.finished);
-    const ttm = items.map((i) => i.time_to_merge_s).filter((x) => x != null);
+    const measured = finished.filter((i) => !i.backfilled);
+    const ttm = items.filter((i) => !i.backfilled).map((i) => i.time_to_merge_s).filter((x) => x != null);
+    const backfilled = items.filter((i) => i.backfilled).length;
     const stats = [
       ["Bodies of work", fmtNum(items.length),
-        finished.length + " finished, " + (items.length - finished.length) + " in progress or waiting"],
+        finished.length + " finished, " + (items.length - finished.length) + " in progress or waiting"
+          + (backfilled ? "; " + backfilled + " backfilled" : "")],
       ["Runs", fmtNum(turns.length),
         (items.length ? (turns.length / items.length).toFixed(1) : "0") + " per item"],
       ["First-pass rate", pct(finished.filter((i) => i.first_pass).length, finished.length),
@@ -182,11 +188,11 @@
       ["Run failures", pct(turns.filter((t) => t.outcome === "failed").length, turns.length),
         turns.filter((t) => t.stalled).length + " stalled, "
           + turns.filter((t) => t.fallback).length + " on a fallback"],
-      ["Median time to finish", fmtDur(median(finished.map((i) => i.elapsed_s))),
-        "first run start to merge or close"],
-      ["Median time to merge", fmtDur(median(ttm)), "first push for review to merge"],
+      ["Median time to finish", fmtDur(median(measured.map((i) => i.elapsed_s))),
+        "first run start to merge or close; backfilled items left out"],
+      ["Median time to merge", fmtDur(median(ttm)), "first push for review to merge; backfilled items left out"],
       ["Agent time", fmtDur(sum(turns.map((t) => t.duration_ms)) / 1000),
-        "review wait " + fmtDur(sum(items.map((i) => i.review_wait_s)))],
+        "review wait " + fmtDur(sum(items.filter((i) => !i.backfilled).map((i) => i.review_wait_s)))],
       ["Tokens in / out", fmtTokens(sum(turns.map((t) => t.metrics.input_tokens || 0)))
         + " / " + fmtTokens(sum(turns.map((t) => t.metrics.output_tokens || 0))),
         fmtTokens(sum(turns.map((t) => t.metrics.cache_read_tokens || 0))) + " read from cache"],
@@ -329,7 +335,7 @@
         el("td", {}, k),
         el("td", { class: "num" }, ts.length),
         el("td", { class: "num" }, pct(ts.filter((t) => t.outcome === "failed").length, ts.length)),
-        el("td", { class: "num" }, fmtDur(median(ts.map((t) => t.duration_ms / 1000)))),
+        el("td", { class: "num" }, fmtDur(median(ts.filter(known).map((t) => t.duration_ms / 1000)))),
         el("td", { class: "num" }, fmtDur(sum(ts.map((t) => t.duration_ms)) / 1000)),
         el("td", { class: "num" }, fmtTokens(sum(ts.map((t) => t.metrics.input_tokens || 0))) + " / "
           + fmtTokens(sum(ts.map((t) => t.metrics.output_tokens || 0)))),
@@ -382,18 +388,19 @@
     return el("table", { class: "turns" }, el("tr", {}, header.map((h) => el("th", {}, h))),
       turns.map((t, i) => el("tr", {},
         el("td", {}, i + 1),
-        el("td", {}, t.reason + (t.feedback.length ? " (" + t.feedback.join(", ") + ")" : "")),
+        el("td", {}, t.reason + (t.feedback.length ? " (" + t.feedback.join(", ") + ")" : ""),
+          t.backfilled && el("span", { class: "tag" }, "backfilled")),
         el("td", {}, providerName(t.provider), t.fallback && el("span", { class: "tag" }, "fallback")),
         el("td", {}, t.models.join(", ") || "unreported", t.model_requested && el("div", { class: "muted small" }, "asked: " + t.model_requested)),
         el("td", {}, t.effort || "default"),
-        el("td", {}, fmtTime(t.started_at)),
-        el("td", {}, fmtDur(t.agent_ms / 1000) + " / " + fmtDur(t.duration_ms / 1000)),
+        el("td", {}, (known(t) ? "" : "~") + fmtTime(t.started_at)),
+        el("td", {}, known(t) ? fmtDur(t.agent_ms / 1000) + " / " + fmtDur(t.duration_ms / 1000) : "unknown"),
         el("td", {}, el("span", { class: t.outcome === "failed" ? "bad" : t.outcome === "hold" ? "warn" : "ok" },
           t.outcome), t.stalled && el("span", { class: "tag" }, "stalled"), t.refunded && el("span", { class: "tag" }, "refunded"),
           t.error && el("div", { class: "muted small err" }, (t.failure ? t.failure + ": " : "") + t.error)),
         el("td", { class: "num" }, fmtNum(t.metrics.input_tokens) + " / " + fmtNum(t.metrics.output_tokens)),
         el("td", { class: "num" }, t.metrics.cost_micro_usd != null ? fmtCost(t.metrics.cost_micro_usd) : "–"),
-        el("td", {}, t.commits + " · " + (t.lines_added == null ? "–" : "+" + t.lines_added + "/−" + t.lines_removed)
+        el("td", {}, (t.backfilled && !t.commits ? "–" : t.commits) + " · " + (t.lines_added == null ? "–" : "+" + t.lines_added + "/−" + t.lines_removed)
           + (t.files_changed != null ? " · " + t.files_changed + " files" : "")),
         el("td", { class: "small" }, Object.entries(t.tool_calls).sort((a, b) => b[1] - a[1])
           .slice(0, 5).map(([k, v]) => k + " " + v).join(", ") || "–"),
@@ -420,7 +427,8 @@
       body.push(el("tr", { class: "row", tabindex: "0", "aria-expanded": String(isOpen),
         onclick: () => { isOpen ? open.delete(id) : open.add(id); renderTable(rows); },
         onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.currentTarget.click(); } } },
-        el("td", {}, (isOpen ? "▾ " : "▸ "), id,
+        el("td", {}, (isOpen ? "▾ " : "▸ "), id, item.backfilled && el("span", { class: "tag",
+          title: "Made up afterwards from the item's files; times and sizes are estimates" }, "backfilled"),
           item.pr_url && item.pr_url.startsWith("https://") && el("a", { href: item.pr_url, target: "_blank",
             rel: "noopener", class: "pr", onclick: (e) => e.stopPropagation() }, "PR")),
         el("td", {}, stateCell(item)),
@@ -429,7 +437,7 @@
         el("td", {}, COLUMNS[4][2](r)),
         el("td", {}, COLUMNS[5][2](r)),
         el("td", {}, fmtTime(item.started_at)),
-        el("td", { class: "num" }, fmtDur(item.elapsed_s) + elapsedNote),
+        el("td", { class: "num" }, (item.backfilled ? "~" : "") + fmtDur(item.elapsed_s) + elapsedNote),
         el("td", { class: "num" }, fmtDur(sum(turns.map((t) => t.duration_ms)) / 1000),
           item.review_wait_s ? el("div", { class: "muted small" }, "review " + fmtDur(item.review_wait_s)) : null),
         el("td", { class: "num" }, fmtNum(sum(turns.map((t) => t.metrics.input_tokens || 0))) + " / "

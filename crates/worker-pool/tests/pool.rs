@@ -1626,3 +1626,59 @@ async fn pull_requests_that_cannot_be_reworked_are_not_imported() {
         assert!(queue.list(state).unwrap().is_empty(), "{state:?}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn earlier_runs_are_filled_in_from_sidecars_once() {
+    let fx = fixture(&[], 1);
+    let work = fx.root.join("work");
+    for state in ["open", "inprogress", "inreview", "closed", "hold"] {
+        fs::create_dir_all(work.join(state).join("demo")).unwrap();
+    }
+    let log = fx.root.join("old.log");
+    fs::write(
+        &log,
+        concat!(
+            "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-old\"}\n",
+            "{\"type\":\"result\",\"is_error\":false,\"result\":\"ok\",\"total_cost_usd\":1.5,",
+            "\"duration_ms\":90000,\"usage\":{\"input_tokens\":10,\"output_tokens\":5}}\n"
+        ),
+    )
+    .unwrap();
+    let closed = work.join("closed/demo");
+    fs::write(closed.join("old.txt"), "Fix it").unwrap();
+    fs::write(
+        closed.join("old.meta.json"),
+        r#"{"turns":2,"pr_url":"https://github.com/up/repo/pull/9"}"#,
+    )
+    .unwrap();
+    fs::write(
+        closed.join("old.result.md"),
+        format!(
+            "# demo/old.txt\n\n- Provider: Anthropic (Claude)\n- Log: `{}`\n\n## Commits\n\n- a fix\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    // A closed item that was never run has nothing to fill in.
+    fs::write(closed.join("never.txt"), "x").unwrap();
+
+    let pool = Supervisor::new(Queue::new(&work), fx.config.clone()).unwrap();
+    assert_eq!(pool.backfill_history().unwrap(), 2);
+    assert_eq!(pool.backfill_history().unwrap(), 0);
+
+    let [old] = pool.history().unwrap().try_into().unwrap();
+    assert_eq!(
+        (old.item.as_str(), old.state.as_deref()),
+        ("old.txt", Some("closed"))
+    );
+    assert_eq!(
+        (old.turns, old.rework_turns, old.finished),
+        (2, 1, Some("merged"))
+    );
+    assert!(old.backfilled);
+    assert_eq!(old.models, vec!["claude-old"]);
+    assert_eq!((old.input_tokens, old.output_tokens), (10, 5));
+    assert_eq!(old.cost_micro_usd, 1_500_000);
+    assert!(old.records.iter().all(|r| r.backfilled));
+    assert_eq!(old.records[1].duration_ms, 90_000);
+}
