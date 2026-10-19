@@ -87,6 +87,24 @@ pub(crate) async fn push(worktree: &Path, remote: &str, branch: &str) -> Result<
         .map(drop)
 }
 
+/// Pushes `branch` from `worktree` to `remote` without replacing anything:
+/// it is refused if the remote branch has commits the worktree lacks.
+pub(crate) async fn push_ahead(
+    worktree: &Path,
+    remote: &str,
+    branch: &str,
+) -> Result<(), PoolError> {
+    let refspec = format!("{branch}:refs/heads/{branch}");
+    git(worktree, &["push", remote, &refspec]).await.map(drop)
+}
+
+/// Commits nothing on the worktree's branch, to give it a new head.
+pub(crate) async fn commit_empty(worktree: &Path, message: &str) -> Result<(), PoolError> {
+    git(worktree, &["commit", "--allow-empty", "-m", message])
+        .await
+        .map(drop)
+}
+
 /// Makes sure the worktree at `path` exists, checking out the existing
 /// `branch` there if it does not. Returns whether it had to be created.
 pub(crate) async fn ensure_worktree(

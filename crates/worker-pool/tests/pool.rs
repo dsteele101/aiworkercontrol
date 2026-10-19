@@ -1055,6 +1055,85 @@ async fn requested_changes_are_reworked_in_the_same_worktree() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn one_item_can_be_checked_on_demand() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+
+    assert_eq!(pool.check_review(&item).await.unwrap(), None);
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(
+            r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[
+                {{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"Rename it.","commit":{{"oid":"{head}"}}}}]}}"#
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        pool.check_review(&item).await.unwrap(),
+        Some(ReviewChange::ChangesRequested)
+    );
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert!(meta.needs_rework.unwrap().contains("Rename it."));
+
+    let other = WorkItem::new("demo", "missing.txt");
+    assert!(matches!(
+        pool.check_review(&other).await,
+        Err(PoolError::NotInReview(_))
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bumping_pushes_an_empty_commit_to_the_pull_request() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    let bare = with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let worktree = fx.root.join("repo-worktrees/good");
+    sh(&worktree, &["config", "user.name", "t"]);
+    sh(&worktree, &["config", "user.email", "t@example.com"]);
+
+    pool.bump(&item).await.unwrap();
+
+    let new_head = git_out(&worktree, &["rev-parse", "HEAD"]);
+    assert_ne!(new_head, head);
+    assert_eq!(git_out(&worktree, &["rev-parse", "HEAD^"]), head);
+    assert_eq!(
+        git_out(&worktree, &["log", "-1", "--format=%s"]),
+        "chore: re-run checks"
+    );
+    let pushed = Command::new("git")
+        .arg("--git-dir")
+        .arg(&bare)
+        .args(["rev-parse", "ai/good"])
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&pushed.stdout).trim(), new_head);
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert_eq!(meta.pushed_head.as_deref(), Some(new_head.as_str()));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bumping_waits_while_feedback_is_queued() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    fs::write(
+        fx.root.join("bin/gh.view.json"),
+        format!(
+            r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[
+                {{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"Rename it.","commit":{{"oid":"{head}"}}}}]}}"#
+        ),
+    )
+    .unwrap();
+    pool.check_review(&item).await.unwrap();
+    assert!(matches!(
+        pool.bump(&item).await,
+        Err(PoolError::ReworkQueued(_))
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_rework_kept_to_its_provider_waits_for_it() {
     let mut fx = fixture(&[("good.txt", "Fix it")], 1);
     with_pull_requests(&mut fx);

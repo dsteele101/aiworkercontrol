@@ -518,6 +518,9 @@ async fn in_review_items_show_their_pull_request_and_status() {
     );
     assert!(page.contains("in review (1 of 3 turns used)"), "{page}");
     assert!(page.contains(r#"href="https://github.com/up/repo/pull/7""#));
+    assert!(page.contains("Next action"), "{page}");
+    assert!(page.contains(r#"action="/review/check""#), "{page}");
+    assert!(page.contains(r#"action="/review/bump""#), "{page}");
 
     let (status, body) = app.get("/result?item=demo%2Fa.txt").await;
     assert_eq!(status, StatusCode::OK);

@@ -113,7 +113,7 @@ impl Supervisor {
         }
     }
 
-    fn project(&self, item: &WorkItem) -> Result<Project, PoolError> {
+    pub(super) fn project(&self, item: &WorkItem) -> Result<Project, PoolError> {
         self.config()
             .projects
             .into_iter()
