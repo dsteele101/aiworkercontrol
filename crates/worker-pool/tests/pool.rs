@@ -578,6 +578,38 @@ echo '{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[{"name":"G
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn codex_usage_is_read_from_its_app_server() {
+    let mut fx = fixture(&[], 1);
+    fx.config.fallbacks = vec![ProviderConfig::new(Provider::OpenAi, Auth::Plan)];
+    // Stands in for `codex app-server`: answers each request it is sent, and
+    // like the real one stays up until stdin closes or it is killed.
+    let codex = fx.config.cli_dir.clone().unwrap().join("codex");
+    fs::write(
+        &codex,
+        r#"#!/bin/sh
+[ "$1" = "app-server" ] || exit 1
+while read -r line; do
+  case "$line" in
+    *'"id":1,'*) echo '{"id":1,"result":{}}' ;;
+    *rateLimits*) echo '{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":30,"windowDurationMins":300,"resetsAt":4000000000},"secondary":{"usedPercent":55,"windowDurationMins":10080,"resetsAt":4000100000}}}}' ;;
+  esac
+done
+sleep 60
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
+    let pool = Supervisor::new(Queue::new(fx.root.join("work")), fx.config.clone()).unwrap();
+
+    assert!(pool.refresh_usage().await.is_empty());
+    let usage = pool.snapshot().usage;
+    assert_eq!(usage.len(), 1);
+    assert_eq!(usage[0].provider, Provider::OpenAi);
+    assert_eq!(usage[0].usage.session.unwrap().percent, 30);
+    assert_eq!(usage[0].usage.weekly.unwrap().percent, 55);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn failures_are_retried_until_the_turns_run_out() {
     let mut fx = fixture(&[("bad.txt", "PLEASE-FAIL")], 1);
     fx.config.max_turns = 3;

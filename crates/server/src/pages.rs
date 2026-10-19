@@ -603,7 +603,7 @@ pub(crate) fn settings(
                     "Levels apply to each window a provider reports, the current one and the week. "
                     "At the stop level no new run starts on that provider; running agents finish their item. "
                     "Each fallback uses the model and effort on its card above, and is skipped unless it is set up. "
-                    "Claude and Antigravity report their usage; Codex doesn't, so it is never stopped."
+                    "Plan logins report their usage; a provider on an API key doesn't, so it is never stopped."
                 }
             }
         }
@@ -641,7 +641,7 @@ pub(crate) fn settings(
                 li { strong { "Priority failover" } ": the active provider, then each fallback in order once the ones before it reach the stop level." }
                 li { strong { "Round robin" } ": each provider in turn." }
                 li { strong { "Weighted" } ": in proportion to the weights, spread evenly; weights only matter here." }
-                li { strong { "Pace-based" } ": the provider furthest below its pace, i.e. least used for how much of its plan window has passed. Codex reports no usage, so it counts as exactly on pace." }
+                li { strong { "Pace-based" } ": the provider furthest below its pace, i.e. least used for how much of its plan window has passed. A provider that reports no usage, such as one on an API key, counts as exactly on pace." }
             }
         }
 
@@ -812,7 +812,7 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
                 }
             }
             @if snapshot.usage.is_empty() {
-                p.muted { "No usage reported yet. Claude reports its plan usage during each run, and Antigravity is asked for its usage every five minutes; Codex doesn't report its." }
+                p.muted { "No usage reported yet. Claude reports its plan usage during each run, and Antigravity and Codex are asked for theirs every five minutes." }
             } @else {
                 table {
                     tr { th { "Provider" } th { "Current window" } th { "Week" } th { "Status" } }

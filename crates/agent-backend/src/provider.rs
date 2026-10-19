@@ -211,6 +211,11 @@ pub struct Invocation {
     pub env_remove: Vec<String>,
     /// The working directory; the caller's when `None`.
     pub cwd: Option<PathBuf>,
+    /// Lines to write to stdin. The process gets no stdin when `None`.
+    pub stdin: Option<String>,
+    /// With `stdin`: the text marking the stdout line that answers it. The
+    /// process is stopped once that line arrives.
+    pub answer_marker: Option<String>,
 }
 
 impl Invocation {
@@ -221,6 +226,8 @@ impl Invocation {
             env: Vec::new(),
             env_remove: Vec::new(),
             cwd: None,
+            stdin: None,
+            answer_marker: None,
         }
     }
 
@@ -252,6 +259,8 @@ impl fmt::Debug for Invocation {
             .field("env", &env)
             .field("env_remove", &self.env_remove)
             .field("cwd", &self.cwd)
+            .field("stdin", &self.stdin)
+            .field("answer_marker", &self.answer_marker)
             .finish()
     }
 }

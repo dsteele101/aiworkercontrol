@@ -91,6 +91,8 @@ fn simple(cli: Cli, args: &[&str]) -> Invocation {
         env: Vec::new(),
         env_remove: Vec::new(),
         cwd: None,
+        stdin: None,
+        answer_marker: None,
     }
 }
 
