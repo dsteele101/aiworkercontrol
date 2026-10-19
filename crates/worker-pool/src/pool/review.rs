@@ -29,7 +29,7 @@ impl Supervisor {
         let gh = github::program(self.config().cli_dir.as_deref());
         let mut changes = Vec::new();
         for item in self.queue().list(ItemState::InReview)? {
-            if let Some(change) = self.check_item(&gh, &item).await? {
+            if let Some(change) = self.check_item(&gh, &item, false).await? {
                 changes.push((item, change));
             }
         }
@@ -40,14 +40,16 @@ impl Supervisor {
     }
 
     /// Checks the pull request of one item in review now, as
-    /// [`check_reviews`](Self::check_reviews) does for all of them. `None`
-    /// means there is nothing new to act on.
+    /// [`check_reviews`](Self::check_reviews) does for all of them, and also
+    /// acting on inline comments on the latest commit, such as a bot's, that
+    /// the periodic check leaves alone. `None` means there is nothing new to
+    /// act on.
     pub async fn check_review(&self, item: &WorkItem) -> Result<Option<ReviewChange>, PoolError> {
         if !self.queue().list(ItemState::InReview)?.contains(item) {
             return Err(PoolError::NotInReview(item.clone()));
         }
         let gh = github::program(self.config().cli_dir.as_deref());
-        let change = self.check_item(&gh, item).await?;
+        let change = self.check_item(&gh, item, true).await?;
         if change.is_some() {
             self.shared.changed();
         }
@@ -88,6 +90,7 @@ impl Supervisor {
         &self,
         gh: &Path,
         item: &WorkItem,
+        any_comments: bool,
     ) -> Result<Option<ReviewChange>, PoolError> {
         let queue = self.queue();
         let mut meta = ItemMeta::load(queue, ItemState::InReview, item)?;
@@ -97,7 +100,7 @@ impl Supervisor {
         if meta.needs_rework.is_some() {
             return Ok(None);
         }
-        let status = github::review_status(gh, &url).await?;
+        let status = github::review_status(gh, &url, any_comments).await?;
         let change = match status.state {
             PrState::Merged => {
                 meta.save(queue, ItemState::InReview, item)?;
@@ -142,7 +145,7 @@ impl Supervisor {
         let pr_open = match &meta.pr_url {
             Some(url) => {
                 let gh = github::program(self.config().cli_dir.as_deref());
-                github::review_status(&gh, url).await?.state == PrState::Open
+                github::review_status(&gh, url, false).await?.state == PrState::Open
             }
             None => false,
         };

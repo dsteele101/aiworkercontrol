@@ -141,8 +141,14 @@ pub(crate) struct ReviewStatus {
 
 /// Reads where the pull request at `url` stands. Feedback is gathered when
 /// its latest commit has a review requesting changes, or failing CI: the
-/// required checks, or every check when the repository requires none.
-pub(crate) async fn review_status(gh: &Path, url: &str) -> Result<ReviewStatus, PoolError> {
+/// required checks, or every check when the repository requires none. With
+/// `any_comments`, inline review comments on the latest commit count too,
+/// whatever kind of review they came in.
+pub(crate) async fn review_status(
+    gh: &Path,
+    url: &str,
+    any_comments: bool,
+) -> Result<ReviewStatus, PoolError> {
     let view = json(
         &run(
             gh,
@@ -176,7 +182,8 @@ pub(crate) async fn review_status(gh: &Path, url: &str) -> Result<ReviewStatus, 
         .iter()
         .any(|r| str_at(r, "state") == "CHANGES_REQUESTED");
     let failing = failing_checks(gh, url).await?;
-    if !changes_requested && failing.is_empty() {
+    let comments = inline_comments(gh, url, &head).await?;
+    if !changes_requested && failing.is_empty() && !(any_comments && !comments.is_empty()) {
         return Ok(ReviewStatus {
             state,
             head,
@@ -198,7 +205,6 @@ pub(crate) async fn review_status(gh: &Path, url: &str) -> Result<ReviewStatus, 
             ));
         }
     }
-    let comments = inline_comments(gh, url, &head).await?;
     if !comments.is_empty() {
         text.push_str("### Inline comments\n\n");
         text.push_str(&comments);
