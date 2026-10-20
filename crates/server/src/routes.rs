@@ -46,6 +46,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/cleanup", post(clean_up))
         .route("/settings/active", post(set_active))
         .route("/settings/provider", post(save_provider))
+        .route("/settings/provider/enabled", post(set_provider_enabled))
         .route("/settings/projects", post(add_project))
         .route("/settings/projects/delete", post(delete_project))
         .route("/login", post(start_login))
@@ -434,6 +435,9 @@ struct ActiveForm {
 
 async fn set_active(State(app): State<AppState>, Form(f): Form<ActiveForm>) -> Redirect {
     let saved = app.update_settings(|s| {
+        if !s.is_enabled(f.provider) {
+            return Err(format!("{} is disabled", f.provider.label()));
+        }
         s.active = f.provider;
         Ok(())
     });
@@ -442,6 +446,25 @@ async fn set_active(State(app): State<AppState>, Form(f): Form<ActiveForm>) -> R
             "Workers now use {} for the next item they pick up.",
             f.provider.label()
         ));
+    }
+    report(&app, saved);
+    Redirect::to("/settings")
+}
+
+#[derive(Deserialize)]
+struct EnabledForm {
+    provider: Provider,
+    enabled: bool,
+}
+
+async fn set_provider_enabled(State(app): State<AppState>, Form(f): Form<EnabledForm>) -> Redirect {
+    let saved = app.update_settings(|s| {
+        s.provider_mut(f.provider).enabled = f.enabled;
+        Ok(())
+    });
+    if saved.is_ok() {
+        let state = if f.enabled { "enabled" } else { "disabled" };
+        app.notify(format!("{} is {state}.", f.provider.label()));
     }
     report(&app, saved);
     Redirect::to("/settings")

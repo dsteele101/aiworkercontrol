@@ -329,6 +329,33 @@ async fn api_key_is_saved_but_never_shown() {
 }
 
 #[tokio::test]
+async fn disabling_a_provider_is_saved_and_the_active_one_is_protected() {
+    let app = app();
+    app.post(
+        "/settings/provider/enabled",
+        "provider=gemini&enabled=false",
+    )
+    .await;
+    assert!(!app.saved().provider(Provider::Gemini).unwrap().enabled);
+
+    // Disabled providers can't be made active.
+    app.post("/settings/active", "provider=gemini").await;
+    assert_ne!(app.saved().active, Provider::Gemini);
+
+    // The active provider can't be disabled.
+    app.post(
+        "/settings/provider/enabled",
+        "provider=anthropic&enabled=false",
+    )
+    .await;
+    assert!(app.saved().provider(Provider::Anthropic).unwrap().enabled);
+
+    app.post("/settings/provider/enabled", "provider=gemini&enabled=true")
+        .await;
+    assert!(app.saved().provider(Provider::Gemini).unwrap().enabled);
+}
+
+#[tokio::test]
 async fn unrunnable_active_provider_is_rejected() {
     let app = app();
     app.post("/settings/active", "provider=deepseek").await;
