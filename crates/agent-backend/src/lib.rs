@@ -12,6 +12,7 @@
 //! | OpenAI | `codex` | yes | `CODEX_API_KEY` |
 //! | OpenAI-compatible | `codex` | no | custom provider (Responses API) |
 //! | Gemini | `agy` (Antigravity) | yes | `GEMINI_API_KEY` |
+//! | Mistral | `vibe` | yes | `MISTRAL_API_KEY` |
 //!
 //! This crate only describes processes ([`Invocation`]) and parses their
 //! output ([`parse_line`]); running them is the caller's job.
