@@ -2,7 +2,7 @@
 
 AI Worker Control is a Rust app that turns a folder of task files into pull
 requests. It picks up work items from `work/`, hands each one to an AI coding
-agent (the official `claude`, `codex` or `agy` CLI), and lands the result on a
+agent (the official `claude`, `codex`, `agy` or `vibe` CLI), and lands the result on a
 branch in your project's git repository, optionally pushing it and opening a
 GitHub pull request. A local web dashboard shows what every worker is doing and
 holds the settings.
@@ -39,8 +39,10 @@ with the item.
 ## Features
 
 - **Several providers:** Anthropic (Claude), Gemini (Antigravity), OpenAI,
-  Deepseek and any OpenAI-compatible endpoint. Anthropic, OpenAI and Gemini can
-  run on your plan login instead of an API key.
+  Mistral (Vibe), Deepseek and any OpenAI-compatible endpoint. Anthropic,
+  OpenAI, Gemini and Mistral can run on your plan login instead of an API key.
+  Mistral's model comes from Vibe's own config, and its usage limits are not
+  tracked.
 - **Load balancing across providers:** priority failover, round robin, weighted
   or pace-based, so work is spread by share or by remaining plan allowance.
 - **Plan usage limits:** warning levels, and a stop level at which the app fails
@@ -57,7 +59,8 @@ with the item.
 - `git`.
 - At least one agent CLI on your `PATH`, signed in or with an API key set in
   the app: [`claude`](https://docs.claude.com/en/docs/claude-code) (also used
-  for Deepseek), `codex` (OpenAI and OpenAI-compatible), or `agy` (Gemini).
+  for Deepseek), `codex` (OpenAI and OpenAI-compatible), `agy` (Gemini), or
+  [`vibe`](https://github.com/mistralai/mistral-vibe) (Mistral).
   Setting `cli_dir` in the settings file looks them up elsewhere.
 - [`gh`](https://cli.github.com/), signed in, if you want pull requests opened.
 - Optional, for development: [`just`](https://github.com/casey/just),
@@ -120,10 +123,10 @@ and git-ignored). You can also edit it by hand while the app is stopped.
 
 ```toml
 workers = 2                  # parallel workers
-active = "anthropic"         # anthropic | gemini | open_ai | deepseek | open_ai_compatible
+active = "anthropic"         # anthropic | gemini | open_ai | deepseek | open_ai_compatible | mistral
 max_turns = 3                # agent runs an item may use before going on hold
 fallbacks = ["gemini"]       # providers to fail over to, or to share work with
-# cli_dir = "/opt/agents/bin"  # where claude/codex/agy/gh live; PATH when unset
+# cli_dir = "/opt/agents/bin"  # where claude/codex/agy/vibe/gh live; PATH when unset
 
 [[providers]]
 provider = "anthropic"

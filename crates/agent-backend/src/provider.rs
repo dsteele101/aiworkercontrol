@@ -26,16 +26,19 @@ pub enum Provider {
     Deepseek,
     /// Any endpoint speaking the OpenAI Responses API.
     OpenAiCompatible,
+    /// Mistral.
+    Mistral,
 }
 
 impl Provider {
     /// Every provider, in display order.
-    pub const ALL: [Provider; 5] = [
+    pub const ALL: [Provider; 6] = [
         Provider::Anthropic,
         Provider::Gemini,
         Provider::OpenAi,
         Provider::Deepseek,
         Provider::OpenAiCompatible,
+        Provider::Mistral,
     ];
 
     /// A human-readable name.
@@ -46,6 +49,7 @@ impl Provider {
             Provider::OpenAi => "OpenAI",
             Provider::Deepseek => "Deepseek",
             Provider::OpenAiCompatible => "OpenAI-compatible",
+            Provider::Mistral => "Mistral (Vibe)",
         }
     }
 
@@ -55,6 +59,7 @@ impl Provider {
             Provider::Anthropic | Provider::Deepseek => Cli::Claude,
             Provider::OpenAi | Provider::OpenAiCompatible => Cli::Codex,
             Provider::Gemini => Cli::Antigravity,
+            Provider::Mistral => Cli::Vibe,
         }
     }
 
@@ -68,7 +73,7 @@ impl Provider {
     pub fn supports_plan(self) -> bool {
         matches!(
             self,
-            Provider::Anthropic | Provider::OpenAi | Provider::Gemini
+            Provider::Anthropic | Provider::OpenAi | Provider::Gemini | Provider::Mistral
         )
     }
 }
@@ -83,6 +88,8 @@ pub enum Cli {
     /// Antigravity CLI, `agy`, which replaced the Gemini CLI for Google
     /// plan logins.
     Antigravity,
+    /// Mistral Vibe, `vibe`.
+    Vibe,
 }
 
 impl Cli {
@@ -92,6 +99,7 @@ impl Cli {
             Cli::Claude => "claude",
             Cli::Codex => "codex",
             Cli::Antigravity => "agy",
+            Cli::Vibe => "vibe",
         }
     }
 
@@ -108,6 +116,8 @@ impl Cli {
             Cli::Codex => &["minimal", "low", "medium", "high", "xhigh"],
             // From `agy --help` (1.4.2); its docs list only low to high.
             Cli::Antigravity => &["low", "medium", "high", "xhigh", "max"],
+            // `vibe` has no effort setting.
+            Cli::Vibe => &[],
         }
     }
 
@@ -118,6 +128,7 @@ impl Cli {
             Cli::Claude => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
             Cli::Codex => &["CODEX_API_KEY", "OPENAI_API_KEY"],
             Cli::Antigravity => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+            Cli::Vibe => &["MISTRAL_API_KEY"],
         }
     }
 }
@@ -324,6 +335,7 @@ impl ProviderConfig {
             Cli::Claude => self.claude(&mut run, job),
             Cli::Codex => self.codex(&mut run, job),
             Cli::Antigravity => self.antigravity(&mut run, job),
+            Cli::Vibe => self.vibe(&mut run, job),
         }
         Ok(run)
     }
@@ -437,6 +449,26 @@ impl ProviderConfig {
     }
 }
 
+impl ProviderConfig {
+    /// `vibe` takes its model from its own `config.toml` and has no flag or
+    /// env var for it, so the configured model is not passed.
+    fn vibe(&self, run: &mut Invocation, job: &Job<'_>) {
+        run.arg("-p")
+            .arg(job.prompt)
+            .arg("--output")
+            .arg("streaming")
+            // Headless runs cannot ask, and cannot answer the folder trust prompt.
+            .arg("--auto-approve")
+            .arg("--trust");
+        for dir in job.extra_dirs {
+            run.arg("--add-dir").arg(dir.display().to_string());
+        }
+        if let Some(key) = self.key() {
+            run.set_env("MISTRAL_API_KEY", key);
+        }
+    }
+}
+
 fn non_empty(value: &Option<String>) -> Option<&str> {
     value.as_deref().map(str::trim).filter(|v| !v.is_empty())
 }
@@ -521,6 +553,37 @@ mod tests {
         config.provider = Provider::Anthropic;
         assert_eq!(config.validate(), Ok(()));
         config.effort = Some("minimal".into());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn mistral_runs_vibe_headless() {
+        let mut config = ProviderConfig::new(Provider::Mistral, Auth::Plan);
+        let plan = config.invocation(&job()).unwrap();
+        assert_eq!(plan.program, "vibe");
+        assert_eq!(
+            plan.args,
+            [
+                "-p",
+                "do it",
+                "--output",
+                "streaming",
+                "--auto-approve",
+                "--trust"
+            ]
+        );
+        assert!(plan.env.is_empty());
+        assert_eq!(plan.env_remove, ["MISTRAL_API_KEY"]);
+
+        config.auth = Auth::ApiKey { key: "k".into() };
+        let run = config.invocation(&job()).unwrap();
+        assert_eq!(run.env_value("MISTRAL_API_KEY"), Some("k"));
+    }
+
+    #[test]
+    fn vibe_accepts_no_effort() {
+        let mut config = ProviderConfig::new(Provider::Mistral, Auth::Plan);
+        config.effort = Some("high".into());
         assert!(config.validate().is_err());
     }
 

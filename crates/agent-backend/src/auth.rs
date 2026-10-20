@@ -15,8 +15,9 @@ pub enum AuthStatus {
 
 /// The command that starts `cli`'s own plan login, printing the sign-in URL.
 ///
-/// `None` for Antigravity: `agy` has no login subcommand, and signs in with
-/// Google the first time it runs interactively in a terminal.
+/// `None` for Antigravity and Vibe: `agy` and `vibe` have no login
+/// subcommand. `agy` signs in with Google the first time it runs
+/// interactively in a terminal, and `vibe --setup` signs in with Mistral.
 ///
 /// ```
 /// use agent_backend::{Cli, login_invocation};
@@ -29,7 +30,7 @@ pub fn login_invocation(cli: Cli) -> Option<Invocation> {
     let args: &[&str] = match cli {
         Cli::Claude => &["auth", "login", "--claudeai"],
         Cli::Codex => &["login"],
-        Cli::Antigravity => return None,
+        Cli::Antigravity | Cli::Vibe => return None,
     };
     Some(simple(cli, args))
 }
@@ -37,11 +38,14 @@ pub fn login_invocation(cli: Cli) -> Option<Invocation> {
 /// The command that reports `cli`'s login status; read its output with
 /// [`parse_status`]. `agy` keeps its login in the system keyring and has no
 /// status command, so for it this lists the models, which needs a login.
+/// `vibe` has none either, and nothing cheap that needs a login, so for it
+/// this only shows the CLI is installed.
 pub fn status_invocation(cli: Cli) -> Invocation {
     let args: &[&str] = match cli {
         Cli::Claude => &["auth", "status", "--json"],
         Cli::Codex => &["login", "status"],
         Cli::Antigravity => &["models"],
+        Cli::Vibe => &["--version"],
     };
     simple(cli, args)
 }
@@ -72,7 +76,7 @@ pub fn parse_status(cli: Cli, output: &str) -> AuthStatus {
         }
         // `agy models` prints one `slug<TAB>name` line per model.
         Cli::Antigravity if output.lines().any(|l| l.contains('\t')) => AuthStatus::LoggedIn,
-        Cli::Antigravity => AuthStatus::Unknown,
+        Cli::Antigravity | Cli::Vibe => AuthStatus::Unknown,
     }
 }
 
