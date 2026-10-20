@@ -92,6 +92,27 @@ fn deepseek_uses_claude_against_anthropic_compatible_endpoint() {
 }
 
 #[test]
+fn openrouter_uses_claude_against_anthropic_compatible_endpoint() {
+    let mut config = ProviderConfig::new(Provider::OpenRouter, key());
+    let run = run(&config);
+    assert_eq!(run.program, "claude");
+    assert_eq!(
+        run.env_value("ANTHROPIC_BASE_URL"),
+        Some("https://openrouter.ai/api")
+    );
+    assert_eq!(run.env_value("ANTHROPIC_AUTH_TOKEN"), Some("sk-test"));
+    assert_eq!(run.env_value("ANTHROPIC_API_KEY"), None);
+
+    config.model = Some("openai/gpt-5".into());
+    assert_eq!(
+        self::run(&config).env_value("ANTHROPIC_MODEL"),
+        Some("openai/gpt-5")
+    );
+    config.auth = Auth::Plan;
+    assert!(config.validate().is_err());
+}
+
+#[test]
 fn deepseek_plan_is_rejected() {
     let config = ProviderConfig::new(Provider::Deepseek, Auth::Plan);
     let job = Job {

@@ -39,7 +39,7 @@ with the item.
 ## Features
 
 - **Several providers:** Anthropic (Claude), Gemini (Antigravity), OpenAI,
-  Deepseek and any OpenAI-compatible endpoint. Anthropic, OpenAI and Gemini can
+  Deepseek, OpenRouter and any OpenAI-compatible endpoint. Anthropic, OpenAI and Gemini can
   run on your plan login instead of an API key.
 - **Load balancing across providers:** priority failover, round robin, weighted
   or pace-based, so work is spread by share or by remaining plan allowance.
@@ -57,7 +57,7 @@ with the item.
 - `git`.
 - At least one agent CLI on your `PATH`, signed in or with an API key set in
   the app: [`claude`](https://docs.claude.com/en/docs/claude-code) (also used
-  for Deepseek), `codex` (OpenAI and OpenAI-compatible), or `agy` (Gemini).
+  for Deepseek and OpenRouter), `codex` (OpenAI and OpenAI-compatible), or `agy` (Gemini).
   Setting `cli_dir` in the settings file looks them up elsewhere.
 - [`gh`](https://cli.github.com/), signed in, if you want pull requests opened.
 - Optional, for development: [`just`](https://github.com/casey/just),
@@ -120,7 +120,7 @@ and git-ignored). You can also edit it by hand while the app is stopped.
 
 ```toml
 workers = 2                  # parallel workers
-active = "anthropic"         # anthropic | gemini | open_ai | deepseek | open_ai_compatible
+active = "anthropic"         # anthropic | gemini | open_ai | deepseek | open_router | open_ai_compatible
 max_turns = 3                # agent runs an item may use before going on hold
 fallbacks = ["gemini"]       # providers to fail over to, or to share work with
 # cli_dir = "/opt/agents/bin"  # where claude/codex/agy/gh live; PATH when unset
@@ -131,7 +131,7 @@ use_api_key = false          # false = use the CLI's plan login
 api_key = ""
 model = ""                   # CLI default when empty
 effort = "medium"            # low | medium | high | xhigh | max (codex: minimal..xhigh)
-base_url = ""                # Deepseek and OpenAI-compatible endpoints only
+base_url = ""                # Deepseek, OpenRouter and OpenAI-compatible endpoints only
 
 [[projects]]
 name = "myproject"           # matches work/<state>/myproject/

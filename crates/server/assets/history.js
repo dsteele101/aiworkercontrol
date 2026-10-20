@@ -7,7 +7,7 @@
   const PALETTE = ["#4c78a8", "#f58518", "#54a24b", "#e45756", "#72b7b2",
     "#b279a2", "#eeca3b", "#9d755d", "#bab0ac"];
   const PROVIDERS = { anthropic: "Anthropic", gemini: "Gemini", open_ai: "OpenAI",
-    deepseek: "Deepseek", open_ai_compatible: "OpenAI-compatible" };
+    deepseek: "Deepseek", open_router: "OpenRouter", open_ai_compatible: "OpenAI-compatible" };
   const STATES = { open: "open", inprogress: "in progress", inreview: "in review",
     closed: "closed", hold: "on hold" };
   const OUTCOMES = ["review", "closed", "hold", "failed"];
