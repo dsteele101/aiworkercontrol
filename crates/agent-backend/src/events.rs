@@ -63,6 +63,7 @@ pub fn parse_line(cli: Cli, line: &str) -> Vec<AgentEvent> {
         Cli::Claude => claude(&value),
         Cli::Codex => codex(&value),
         Cli::Antigravity => antigravity(&value),
+        Cli::Vibe => vibe(&value),
     }
 }
 
@@ -311,6 +312,42 @@ fn antigravity(v: &Value) -> Vec<AgentEvent> {
     }
 }
 
+/// `vibe` streams one entry per line: the user's `message`, `reasoning`, the
+/// assistant's `message`, and an `effect` per tool call. It has no closing
+/// `result` line, so a run ends by its exit status alone (non-zero when it
+/// stops on a limit or fails).
+fn vibe(v: &Value) -> Vec<AgentEvent> {
+    match str_at(v, "type") {
+        Some("message") if str_at(v, "role") == Some("assistant") => v
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|part| text_event(str_at(part, "text")))
+            .collect(),
+        Some("effect") => {
+            let failed =
+                v.pointer("/state/display/success").and_then(Value::as_bool) == Some(false);
+            let error = v
+                .pointer("/state/display/message")
+                .and_then(Value::as_str)
+                .filter(|_| failed)
+                .map(|m| AgentEvent::Notice(m.to_string()));
+            // Titles read `file_system.bash`; the tool is the last part.
+            let title = str_at(v, "title").unwrap_or_default();
+            let name = title.rsplit('.').next().unwrap_or(title);
+            [AgentEvent::ToolUse {
+                name: name.to_string(),
+                detail: tool_detail(v.pointer("/detail/input")),
+            }]
+            .into_iter()
+            .chain(error)
+            .collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn str_at<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
@@ -323,9 +360,10 @@ fn text_event(text: Option<&str>) -> Option<AgentEvent> {
 /// The most telling argument of a tool call; failing a known one, the first
 /// text argument (`agy` names them in CamelCase, e.g. `AbsolutePath`).
 fn tool_detail(input: Option<&Value>) -> String {
-    const KEYS: [&str; 8] = [
+    const KEYS: [&str; 9] = [
         "command",
         "file_path",
+        "filePath",
         "absolute_path",
         "path",
         "pattern",
@@ -378,6 +416,41 @@ mod tests {
 
     fn parse_all(cli: Cli, lines: &[&str]) -> Vec<AgentEvent> {
         lines.iter().flat_map(|l| parse_line(cli, l)).collect()
+    }
+
+    /// Captured from `vibe -p ... --output streaming` (3.0.0), trimmed to the
+    /// fields read.
+    const VIBE_RUN: [&str; 4] = [
+        r#"{"type":"message","role":"user","content":[{"type":"text","text":"Run echo hi"}]}"#,
+        r#"{"type":"reasoning","text":"I'll run it."}"#,
+        r#"{"type":"effect","title":"file_system.bash","detail":{"kind":"shell","input":{"command":"echo hi"}},"state":{"status":"completed","display":{"success":true,"message":"echo hi"}}}"#,
+        r#"{"type":"message","role":"assistant","content":[{"type":"text","text":"ok"}]}"#,
+    ];
+
+    #[test]
+    fn vibe_run_from_captured_output() {
+        assert_eq!(
+            parse_all(Cli::Vibe, &VIBE_RUN),
+            vec![
+                AgentEvent::ToolUse {
+                    name: "bash".into(),
+                    detail: "echo hi".into()
+                },
+                AgentEvent::Text("ok".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn vibe_file_write_names_its_path() {
+        let line = r#"{"type":"effect","title":"file_system.write_file","detail":{"input":{"filePath":"hello.txt","content":"hi"}}}"#;
+        assert_eq!(
+            parse_line(Cli::Vibe, line),
+            vec![AgentEvent::ToolUse {
+                name: "write_file".into(),
+                detail: "hello.txt".into()
+            }]
+        );
     }
 
     #[test]

@@ -538,9 +538,12 @@ pub(crate) fn settings(
                                 input type="password" name="api_key" autocomplete="off"
                                     placeholder=(if p.api_key.is_empty() { "not set" } else { "saved — leave blank to keep" });
                             }
-                            div {
-                                label { "Model" }
-                                input type="text" name="model" value=(p.model) placeholder="CLI default";
+                            // `vibe` takes its model from its own config.
+                            @if p.provider.cli() != Cli::Vibe {
+                                div {
+                                    label { "Model" }
+                                    input type="text" name="model" value=(p.model) placeholder="CLI default";
+                                }
                             }
                             @let levels = p.provider.cli().effort_levels();
                             @if !levels.is_empty() {
@@ -990,6 +993,7 @@ pub(crate) fn provider_value(provider: Provider) -> &'static str {
         Provider::Deepseek => "deepseek",
         Provider::OpenRouter => "open_router",
         Provider::OpenAiCompatible => "open_ai_compatible",
+        Provider::Mistral => "mistral",
     }
 }
 
