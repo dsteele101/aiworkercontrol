@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/anthropic";
 /// The model used for Deepseek when none is set.
 const DEEPSEEK_MODEL: &str = "deepseek-chat";
+/// OpenRouter's Anthropic-compatible endpoint, used when no base URL is set.
+const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api";
+/// The model used for OpenRouter when none is set.
+const OPENROUTER_MODEL: &str = "anthropic/claude-sonnet-4.5";
 /// Env var carrying an OpenAI-compatible endpoint's key into `codex`.
 const COMPATIBLE_KEY_ENV: &str = "AIWC_PROVIDER_API_KEY";
 
@@ -24,6 +28,8 @@ pub enum Provider {
     OpenAi,
     /// Deepseek.
     Deepseek,
+    /// OpenRouter.
+    OpenRouter,
     /// Any endpoint speaking the OpenAI Responses API.
     OpenAiCompatible,
     /// Mistral.
@@ -32,11 +38,12 @@ pub enum Provider {
 
 impl Provider {
     /// Every provider, in display order.
-    pub const ALL: [Provider; 6] = [
+    pub const ALL: [Provider; 7] = [
         Provider::Anthropic,
         Provider::Gemini,
         Provider::OpenAi,
         Provider::Deepseek,
+        Provider::OpenRouter,
         Provider::OpenAiCompatible,
         Provider::Mistral,
     ];
@@ -48,6 +55,7 @@ impl Provider {
             Provider::Gemini => "Gemini (Antigravity)",
             Provider::OpenAi => "OpenAI",
             Provider::Deepseek => "Deepseek",
+            Provider::OpenRouter => "OpenRouter",
             Provider::OpenAiCompatible => "OpenAI-compatible",
             Provider::Mistral => "Mistral (Vibe)",
         }
@@ -56,7 +64,7 @@ impl Provider {
     /// The CLI that runs this provider's agents.
     pub fn cli(self) -> Cli {
         match self {
-            Provider::Anthropic | Provider::Deepseek => Cli::Claude,
+            Provider::Anthropic | Provider::Deepseek | Provider::OpenRouter => Cli::Claude,
             Provider::OpenAi | Provider::OpenAiCompatible => Cli::Codex,
             Provider::Gemini => Cli::Antigravity,
             Provider::Mistral => Cli::Vibe,
@@ -169,7 +177,7 @@ pub struct ProviderConfig {
     /// default when `None`.
     #[serde(default)]
     pub effort: Option<String>,
-    /// The endpoint, for Deepseek (optional) and OpenAI-compatible (required).
+    /// The endpoint, for Deepseek and OpenRouter (optional) and OpenAI-compatible (required).
     #[serde(default)]
     pub base_url: Option<String>,
 }
@@ -363,9 +371,14 @@ impl ProviderConfig {
         if let Some(effort) = non_empty(&self.effort) {
             run.arg("--effort").arg(effort);
         }
-        if self.provider == Provider::Deepseek {
-            let model = non_empty(&self.model).unwrap_or(DEEPSEEK_MODEL);
-            let base_url = non_empty(&self.base_url).unwrap_or(DEEPSEEK_BASE_URL);
+        let hosted = match self.provider {
+            Provider::Deepseek => Some((DEEPSEEK_BASE_URL, DEEPSEEK_MODEL)),
+            Provider::OpenRouter => Some((OPENROUTER_BASE_URL, OPENROUTER_MODEL)),
+            _ => None,
+        };
+        if let Some((default_url, default_model)) = hosted {
+            let model = non_empty(&self.model).unwrap_or(default_model);
+            let base_url = non_empty(&self.base_url).unwrap_or(default_url);
             run.set_env("ANTHROPIC_BASE_URL", base_url)
                 .set_env("ANTHROPIC_AUTH_TOKEN", self.key().unwrap_or_default())
                 .set_env("ANTHROPIC_MODEL", model)

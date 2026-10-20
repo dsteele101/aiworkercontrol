@@ -557,11 +557,11 @@ pub(crate) fn settings(
                                     }
                                 }
                             }
-                            @if matches!(p.provider, Provider::Deepseek | Provider::OpenAiCompatible) {
+                            @if matches!(p.provider, Provider::Deepseek | Provider::OpenRouter | Provider::OpenAiCompatible) {
                                 div {
                                     label { "Base URL" }
                                     input type="text" name="base_url" value=(p.base_url)
-                                        placeholder=(if p.provider == Provider::Deepseek { "https://api.deepseek.com/anthropic" } else { "http://localhost:8000/v1 (Responses API)" });
+                                        placeholder=(if p.provider == Provider::Deepseek { "https://api.deepseek.com/anthropic" } else if p.provider == Provider::OpenRouter { "https://openrouter.ai/api" } else { "http://localhost:8000/v1 (Responses API)" });
                                 }
                             }
                         }
@@ -991,6 +991,7 @@ pub(crate) fn provider_value(provider: Provider) -> &'static str {
         Provider::Gemini => "gemini",
         Provider::OpenAi => "open_ai",
         Provider::Deepseek => "deepseek",
+        Provider::OpenRouter => "open_router",
         Provider::OpenAiCompatible => "open_ai_compatible",
         Provider::Mistral => "mistral",
     }

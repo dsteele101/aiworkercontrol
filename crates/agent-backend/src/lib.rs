@@ -9,6 +9,7 @@
 //! |----------|-----|------------|---------|
 //! | Anthropic | `claude` | yes | `ANTHROPIC_API_KEY` |
 //! | Deepseek | `claude` | no | Deepseek's Anthropic-compatible endpoint |
+//! | OpenRouter | `claude` | no | OpenRouter's Anthropic-compatible endpoint |
 //! | OpenAI | `codex` | yes | `CODEX_API_KEY` |
 //! | OpenAI-compatible | `codex` | no | custom provider (Responses API) |
 //! | Gemini | `agy` (Antigravity) | yes | `GEMINI_API_KEY` |

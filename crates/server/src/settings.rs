@@ -77,7 +77,7 @@ pub struct ProviderSettings {
     /// The effort level; the CLI's default when empty.
     #[serde(default)]
     pub effort: String,
-    /// The endpoint, for Deepseek and OpenAI-compatible.
+    /// The endpoint, for Deepseek, OpenRouter and OpenAI-compatible.
     #[serde(default)]
     pub base_url: String,
 }
