@@ -12,6 +12,7 @@ use work_queue::{State as ItemState, WorkItem};
 use super::trace::Trace;
 use super::worker::PR_LINE;
 use super::{PoolConfig, Shared};
+use crate::history::feedback_kinds;
 use crate::{PoolError, Project, PullRequests, agent, git, github, prompt};
 
 /// Which kind of run an item gets.
@@ -49,6 +50,11 @@ pub(super) enum Finish {
     },
     /// Committed but not published: needs a person.
     Hold { report: String, reason: String },
+}
+
+/// Whether the run is a rework whose feedback is inline comments alone.
+fn comments_only(kind: &Kind) -> bool {
+    matches!(kind, Kind::Rework { feedback, .. } if feedback_kinds(feedback) == ["comments"])
 }
 
 impl Shared {
@@ -108,12 +114,15 @@ impl Shared {
             return Err(PoolError::AgentFailed(reason));
         }
         // A run must add commits: to the base on a first attempt, to the
-        // pushed head on a rework.
+        // pushed head on a rework. The exception is a rework that only
+        // answers inline comments: they may all be addressed already, and
+        // the agent then has nothing to change.
         let added = git::commits_since(&worktree, &since).await?;
-        if added.is_empty() {
+        let unchanged = added.is_empty();
+        if unchanged && !comments_only(kind) {
             return Err(PoolError::NoCommits(branch));
         }
-        {
+        if !unchanged {
             // The size of the change is a nicety; a failure to count it
             // must not fail the turn.
             let diff = git::diff_stat(&worktree, &since).await.ok();
@@ -166,6 +175,7 @@ impl Shared {
                 )
                 .await
             }
+            Kind::Rework { pr_url, .. } if unchanged => Ok((pr_url.clone(), None)),
             Kind::Rework {
                 pr_url,
                 remote_branch,

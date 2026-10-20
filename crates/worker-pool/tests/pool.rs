@@ -51,6 +51,10 @@ case "$prompt" in
       echo '{"type":"result","is_error":true,"result":"rework failed"}'
       exit 1 ;;
     esac
+    case "$prompt" in *ALREADY-ADDRESSED*)
+      echo '{"type":"result","is_error":false,"result":"Nothing left to change"}'
+      exit 0 ;;
+    esac
     echo reviewed >> fixed.txt
     git add fixed.txt
     git -c user.name=t -c user.email=t@example.com commit -qm "fix: address review" >&2
@@ -1251,6 +1255,47 @@ async fn bumping_waits_while_feedback_is_queued() {
         pool.bump(&item).await,
         Err(PoolError::ReworkQueued(_))
     ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn comments_that_need_no_change_send_the_item_back_to_review() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[]}}"#),
+    )
+    .unwrap();
+    fs::write(
+        bin.join("gh.comments.json"),
+        format!(
+            r#"[{{"commit_id":"{head}","path":"fixed.txt","line":1,"body":"ALREADY-ADDRESSED","user":{{"login":"bot"}}}}]"#
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(
+        pool.check_review(&item).await.unwrap(),
+        Some(ReviewChange::ChangesRequested)
+    );
+    pool.start();
+    let queue = pool.queue().clone();
+    wait_for(&pool, |s| {
+        idle(s)
+            && queue.list(State::InReview).unwrap().len() == 1
+            && pool.meta(State::InReview, &item).unwrap().turns == 2
+    })
+    .await;
+    pool.stop();
+
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert_eq!(meta.pushed_head.as_deref(), Some(head.as_str()));
+    assert_eq!(meta.needs_rework, None);
+    assert_eq!(meta.last_error, None);
+    // The answered head keeps the same comments from queueing another turn.
+    assert_eq!(pool.check_review(&item).await.unwrap(), None);
 }
 
 #[tokio::test(flavor = "multi_thread")]
