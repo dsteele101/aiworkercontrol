@@ -51,12 +51,20 @@ fn default_max_turns() -> u32 {
     DEFAULT_MAX_TURNS
 }
 
+fn default_enabled() -> bool {
+    true
+}
+
 /// One provider's settings. Unlike [`ProviderConfig`], the API key is kept
 /// while plan login is selected, so switching back does not lose it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderSettings {
     /// The provider.
     pub provider: Provider,
+    /// Whether the provider may run work. A disabled provider keeps its
+    /// settings but is never active, a fallback, or part of the balancing.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     /// Use the API key rather than the plan login.
     #[serde(default)]
     pub use_api_key: bool,
@@ -78,6 +86,7 @@ impl std::fmt::Debug for ProviderSettings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProviderSettings")
             .field("provider", &self.provider)
+            .field("enabled", &self.enabled)
             .field("use_api_key", &self.use_api_key)
             .field(
                 "api_key",
@@ -94,6 +103,7 @@ impl ProviderSettings {
     fn new(provider: Provider) -> Self {
         Self {
             provider,
+            enabled: true,
             use_api_key: !provider.supports_plan(),
             api_key: String::new(),
             model: String::new(),
@@ -197,21 +207,29 @@ impl Settings {
     }
 
     /// The active provider's configuration, checked to be runnable.
-    pub fn active_config(&self) -> Result<ProviderConfig, ConfigError> {
+    pub fn active_config(&self) -> Result<ProviderConfig, String> {
+        if !self.is_enabled(self.active) {
+            return Err(format!("{} is disabled", self.active.label()));
+        }
         let config = self
             .provider(self.active)
             .cloned()
             .unwrap_or_else(|| ProviderSettings::new(self.active))
             .config();
-        config.validate()?;
+        config.validate().map_err(|e: ConfigError| e.to_string())?;
         Ok(config)
+    }
+
+    /// Whether `provider` may run work.
+    pub fn is_enabled(&self, provider: Provider) -> bool {
+        self.provider(provider).is_none_or(|p| p.enabled)
     }
 
     /// The pool configuration, with project paths resolved against `root`.
     /// An unrunnable active provider is passed through as is; check
     /// [`Settings::active_config`] before starting.
-    /// Fallbacks that are the active provider, repeated, or not runnable
-    /// (no API key, say) are left out.
+    /// Fallbacks that are the active provider, repeated, disabled, or not
+    /// runnable (no API key, say) are left out.
     pub fn pool_config(&self, root: &Path) -> PoolConfig {
         let config = |provider| {
             self.provider(provider)
@@ -224,6 +242,7 @@ impl Settings {
         for &p in &self.fallbacks {
             let fallback = config(p);
             if p != self.active
+                && self.is_enabled(p)
                 && !fallbacks.iter().any(|f| f.provider == p)
                 && fallback.validate().is_ok()
             {
@@ -336,6 +355,33 @@ mod tests {
             .map(|f| f.provider)
             .collect();
         assert_eq!(fallbacks, vec![Provider::Gemini]);
+    }
+
+    #[test]
+    fn disabled_providers_are_not_active_or_fallbacks() {
+        let mut settings = Settings {
+            fallbacks: vec![Provider::Gemini, Provider::Anthropic],
+            ..Settings::default()
+        };
+        settings.provider_mut(Provider::Gemini).enabled = false;
+        let pool = settings.pool_config(Path::new("/root"));
+        assert!(pool.fallbacks.is_empty());
+
+        settings.provider_mut(Provider::Anthropic).enabled = false;
+        assert_eq!(
+            settings.active_config().unwrap_err(),
+            "Anthropic (Claude) is disabled"
+        );
+    }
+
+    #[test]
+    fn missing_enabled_field_means_enabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut text = toml::to_string_pretty(&Settings::default()).unwrap();
+        text = text.replace("enabled = true\n", "");
+        fs::write(dir.path().join(SETTINGS_FILE), text).unwrap();
+        let settings = Settings::load(dir.path()).unwrap();
+        assert!(settings.providers.iter().all(|p| p.enabled));
     }
 
     #[test]

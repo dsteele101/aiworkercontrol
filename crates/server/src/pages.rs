@@ -499,7 +499,7 @@ pub(crate) fn settings(
         form.panel.bar method="post" action="/settings/active" {
             label for="active" { "Workers use" }
             select #active name="provider" style="width:auto" {
-                @for p in Provider::ALL {
+                @for p in Provider::ALL.into_iter().filter(|p| settings.is_enabled(*p)) {
                     option value=(provider_value(p)) selected[p == settings.active] { (p.label()) }
                 }
             }
@@ -512,6 +512,12 @@ pub(crate) fn settings(
                     h3 style="margin:0" {
                         (p.provider.label())
                         @if p.provider == settings.active { " " span.ok { "· active" } }
+                        @if !p.enabled { " " span.muted { "· disabled" } }
+                    }
+                    form.bar method="post" action="/settings/provider/enabled" {
+                        input type="hidden" name="provider" value=(provider_value(p.provider));
+                        input type="hidden" name="enabled" value=(!p.enabled);
+                        button { @if p.enabled { "Disable" } @else { "Enable" } }
                     }
                     @if p.provider.supports_plan() {
                         (login_block(app, p.provider, status(p.provider.cli())))
@@ -622,7 +628,7 @@ pub(crate) fn settings(
                         }
                     }
                 }
-                @for p in std::iter::once(settings.active).chain(settings.fallbacks.iter().copied().filter(|p| *p != settings.active)) {
+                @for p in std::iter::once(settings.active).chain(settings.fallbacks.iter().copied().filter(|p| *p != settings.active && settings.is_enabled(*p))) {
                     div {
                         @let name = format!("weight_{}", provider_value(p));
                         label for=(name) { (p.label()) " weight" }
