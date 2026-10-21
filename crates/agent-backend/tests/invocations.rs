@@ -87,6 +87,8 @@ fn deepseek_uses_claude_against_anthropic_compatible_endpoint() {
         Some("https://api.deepseek.com/anthropic")
     );
     assert_eq!(run.env_value("ANTHROPIC_AUTH_TOKEN"), Some("sk-test"));
+    // Removing the token would undo setting it.
+    assert!(!run.env_remove.contains(&"ANTHROPIC_AUTH_TOKEN".to_string()));
     assert_eq!(run.env_value("ANTHROPIC_MODEL"), Some("deepseek-chat"));
     assert_eq!(run.env_value("ANTHROPIC_API_KEY"), None);
 }

@@ -345,6 +345,9 @@ impl ProviderConfig {
             Cli::Antigravity => self.antigravity(&mut run, job),
             Cli::Vibe => self.vibe(&mut run, job),
         }
+        // Removing a var after setting it would drop the configured key too.
+        let set: Vec<&str> = run.env.iter().map(|(k, _)| k.as_str()).collect();
+        run.env_remove.retain(|k| !set.contains(&k.as_str()));
         Ok(run)
     }
 
