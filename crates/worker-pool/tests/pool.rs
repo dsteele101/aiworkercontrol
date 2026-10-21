@@ -1175,6 +1175,32 @@ async fn one_item_can_be_checked_on_demand() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_merge_conflict_queues_a_rework_to_resolve_it() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    fs::write(
+        fx.root.join("bin/gh.view.json"),
+        format!(
+            r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[],
+                "mergeable":"CONFLICTING","baseRefName":"main"}}"#
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        pool.check_review(&item).await.unwrap(),
+        Some(ReviewChange::ChangesRequested)
+    );
+    let feedback = pool
+        .meta(State::InReview, &item)
+        .unwrap()
+        .needs_rework
+        .unwrap();
+    assert!(feedback.contains("### Merge conflicts"), "{feedback}");
+    assert!(feedback.contains("`main`"), "{feedback}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn an_on_demand_check_acts_on_inline_comments_but_the_watcher_does_not() {
     let mut fx = fixture(&[("good.txt", "Fix it")], 1);
     with_pull_requests(&mut fx);
