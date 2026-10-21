@@ -87,10 +87,8 @@ fn deepseek_uses_claude_against_anthropic_compatible_endpoint() {
         Some("https://api.deepseek.com/anthropic")
     );
     assert_eq!(run.env_value("ANTHROPIC_AUTH_TOKEN"), Some("sk-test"));
-    // Removing the token would undo setting it.
-    assert!(!run.env_remove.contains(&"ANTHROPIC_AUTH_TOKEN".to_string()));
     assert_eq!(run.env_value("ANTHROPIC_MODEL"), Some("deepseek-chat"));
-    assert_eq!(run.env_value("ANTHROPIC_API_KEY"), None);
+    assert!(!run.env_remove.contains(&"ANTHROPIC_AUTH_TOKEN".to_string()));
 }
 
 #[test]
@@ -103,7 +101,9 @@ fn openrouter_uses_claude_against_anthropic_compatible_endpoint() {
         Some("https://openrouter.ai/api")
     );
     assert_eq!(run.env_value("ANTHROPIC_AUTH_TOKEN"), Some("sk-test"));
-    assert_eq!(run.env_value("ANTHROPIC_API_KEY"), None);
+    assert_eq!(run.env_value("ANTHROPIC_API_KEY"), Some(""));
+    // Removals run after the env is set, so they must not cancel it.
+    assert!(!run.env_remove.contains(&"ANTHROPIC_AUTH_TOKEN".to_string()));
 
     config.model = Some("openai/gpt-5".into());
     assert_eq!(

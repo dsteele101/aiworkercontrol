@@ -345,9 +345,10 @@ impl ProviderConfig {
             Cli::Antigravity => self.antigravity(&mut run, job),
             Cli::Vibe => self.vibe(&mut run, job),
         }
-        // Removing a var after setting it would drop the configured key too.
-        let set: Vec<&str> = run.env.iter().map(|(k, _)| k.as_str()).collect();
-        run.env_remove.retain(|k| !set.contains(&k.as_str()));
+        // The caller removes these after setting `env`, which would undo any
+        // that the provider set itself, such as Deepseek's auth token.
+        let set: Vec<_> = run.env.iter().map(|(k, _)| k.clone()).collect();
+        run.env_remove.retain(|v| !set.contains(v));
         Ok(run)
     }
 
@@ -384,6 +385,9 @@ impl ProviderConfig {
             let base_url = non_empty(&self.base_url).unwrap_or(default_url);
             run.set_env("ANTHROPIC_BASE_URL", base_url)
                 .set_env("ANTHROPIC_AUTH_TOKEN", self.key().unwrap_or_default())
+                // These endpoints ask for the API key to be set but empty;
+                // unset, `claude` could fall back to a stored login.
+                .set_env("ANTHROPIC_API_KEY", "")
                 .set_env("ANTHROPIC_MODEL", model)
                 .set_env("ANTHROPIC_SMALL_FAST_MODEL", model);
             return;
