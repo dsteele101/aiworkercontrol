@@ -133,7 +133,7 @@ pub(crate) enum PrState {
 }
 
 /// A pull request's state, latest commit, and the feedback asking for
-/// changes on that commit, if any.
+/// changes on that commit, if any (including a merge conflict with its base).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReviewStatus {
     pub state: PrState,
@@ -145,7 +145,8 @@ pub(crate) struct ReviewStatus {
 /// its latest commit has a review requesting changes, or failing CI: the
 /// required checks, or every check when the repository requires none. With
 /// `any_comments`, inline review comments on the latest commit count too,
-/// whatever kind of review they came in.
+/// whatever kind of review they came in. A merge conflict with the base
+/// branch is feedback too.
 pub(crate) async fn review_status(
     gh: &Path,
     url: &str,
@@ -154,7 +155,13 @@ pub(crate) async fn review_status(
     let view = json(
         &run(
             gh,
-            &["pr", "view", url, "--json", "state,headRefOid,reviews"],
+            &[
+                "pr",
+                "view",
+                url,
+                "--json",
+                "state,headRefOid,reviews,mergeable,baseRefName",
+            ],
         )
         .await?,
         url,
@@ -185,7 +192,12 @@ pub(crate) async fn review_status(
         .any(|r| str_at(r, "state") == "CHANGES_REQUESTED");
     let failing = failing_checks(gh, url).await?;
     let comments = inline_comments(gh, url, &head).await?;
-    if !changes_requested && failing.is_empty() && !(any_comments && !comments.is_empty()) {
+    let conflicts = str_at(&view, "mergeable") == "CONFLICTING";
+    if !changes_requested
+        && !conflicts
+        && failing.is_empty()
+        && !(any_comments && !comments.is_empty())
+    {
         return Ok(ReviewStatus {
             state,
             head,
@@ -211,6 +223,15 @@ pub(crate) async fn review_status(
         text.push_str("### Inline comments\n\n");
         text.push_str(&comments);
         text.push('\n');
+    }
+    if conflicts {
+        let base = str_at(&view, "baseRefName");
+        text.push_str(&format!(
+            "### Merge conflicts\n\nThe branch conflicts with `{base}` and cannot be \
+             merged. Fetch `{base}` from the repository's remote, merge it into the \
+             branch, resolve every conflict keeping the intent of both sides, and commit \
+             the merge.\n\n"
+        ));
     }
     if !failing.is_empty() {
         text.push_str("### Failing CI checks\n\n");
