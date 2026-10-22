@@ -25,7 +25,7 @@ impl Supervisor {
     /// closes its item, one closed unmerged puts it on hold, and feedback on
     /// its latest commit (changes requested, failing CI) queues a rework for
     /// the next free worker. Feedback on a commit already reworked is not
-    /// acted on again.
+    /// acted on again, unless a reviewer requests changes anew.
     pub async fn check_reviews(&self) -> Result<Vec<(WorkItem, ReviewChange)>, PoolError> {
         let gh = github::program(self.config().cli_dir.as_deref());
         let mut changes = Vec::new();
@@ -55,6 +55,25 @@ impl Supervisor {
             self.shared.changed();
         }
         Ok(change)
+    }
+
+    /// Checks the pull request of one item in review as
+    /// [`check_review`](Self::check_review) does, but acts on feedback on its
+    /// latest commit even if a rework already answered that commit. This is
+    /// the way out when a rework pushed nothing and left the feedback standing.
+    pub async fn rework_again(&self, item: &WorkItem) -> Result<Option<ReviewChange>, PoolError> {
+        let queue = self.queue();
+        if !queue.list(ItemState::InReview)?.contains(item) {
+            return Err(PoolError::NotInReview(item.clone()));
+        }
+        let mut meta = ItemMeta::load(queue, ItemState::InReview, item)?;
+        if meta.needs_rework.is_some() {
+            return Err(PoolError::ReworkQueued(item.clone()));
+        }
+        meta.answered_head = None;
+        meta.answered_review_at = None;
+        meta.save(queue, ItemState::InReview, item)?;
+        self.check_review(item).await
     }
 
     /// Pushes an empty commit to the pull request of an item in review, so
@@ -127,12 +146,17 @@ impl Supervisor {
                 let Some(feedback) = status.feedback else {
                     return Ok(None);
                 };
-                if meta.answered_head.as_deref() == Some(status.head.as_str()) {
+                // Feedback on a commit already reworked is left alone, unless a
+                // reviewer has asked for changes again since.
+                if meta.answered_head.as_deref() == Some(status.head.as_str())
+                    && status.reviewed_at <= meta.answered_review_at
+                {
                     return Ok(None);
                 }
                 let kinds = feedback_kinds(&feedback);
                 meta.needs_rework = Some(feedback);
                 meta.answered_head = Some(status.head.clone());
+                meta.answered_review_at = status.reviewed_at;
                 // Rework builds on what is actually on the pull request.
                 meta.pushed_head = Some(status.head);
                 meta.save(queue, ItemState::InReview, item)?;
@@ -167,6 +191,7 @@ impl Supervisor {
                 pushed_head: meta.pushed_head,
                 needs_rework: meta.needs_rework,
                 answered_head: meta.answered_head,
+                answered_review_at: meta.answered_review_at,
                 remote_branch: meta.remote_branch,
                 ..ItemMeta::default()
             };

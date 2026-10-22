@@ -11,7 +11,9 @@ use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use serde::Deserialize;
 use work_queue::{RESULT_SUFFIX, State as ItemState, WorkItem};
-use worker_pool::{Balancing, BranchOutcome, Project, PullRequests, ReviewChange, Scheme};
+use worker_pool::{
+    Balancing, BranchOutcome, PoolError, Project, PullRequests, ReviewChange, Scheme,
+};
 
 use crate::{AppState, login, pages};
 
@@ -38,6 +40,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/resume", post(resume))
         .route("/import", post(import_pull_request))
         .route("/review/check", post(check_review))
+        .route("/review/rework", post(rework_review))
         .route("/review/bump", post(bump_review))
         .route("/settings/max-turns", post(set_max_turns))
         .route("/settings/limits", post(set_limits))
@@ -228,23 +231,36 @@ async fn import_pull_request(State(app): State<AppState>, Form(f): Form<ImportFo
 async fn check_review(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {
     if let Some((project, file)) = f.item.split_once('/') {
         let item = WorkItem::new(project, file);
-        let message = match app.pool().check_review(&item).await {
-            Ok(Some(ReviewChange::Merged)) => format!("The pull request of {item} was merged."),
-            Ok(Some(ReviewChange::ClosedUnmerged)) => {
-                format!("The pull request of {item} was closed without merging; it is on hold.")
-            }
-            Ok(Some(ReviewChange::ChangesRequested)) => {
-                format!("Feedback found on {item}; it waits for a worker to rework it.")
-            }
-            Ok(None) => format!(
-                "Nothing new to act on for {item}: no changes requested, failing checks or \
-                 inline comments on the latest commit."
-            ),
-            Err(e) => format!("Could not check {item}: {e}"),
-        };
-        app.notify(message);
+        let result = app.pool().check_review(&item).await;
+        app.notify(review_message(&item, result));
     }
     Redirect::to("/")
+}
+
+async fn rework_review(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {
+    if let Some((project, file)) = f.item.split_once('/') {
+        let item = WorkItem::new(project, file);
+        let result = app.pool().rework_again(&item).await;
+        app.notify(review_message(&item, result));
+    }
+    Redirect::to("/")
+}
+
+fn review_message(item: &WorkItem, result: Result<Option<ReviewChange>, PoolError>) -> String {
+    match result {
+        Ok(Some(ReviewChange::Merged)) => format!("The pull request of {item} was merged."),
+        Ok(Some(ReviewChange::ClosedUnmerged)) => {
+            format!("The pull request of {item} was closed without merging; it is on hold.")
+        }
+        Ok(Some(ReviewChange::ChangesRequested)) => {
+            format!("Feedback found on {item}; it waits for a worker to rework it.")
+        }
+        Ok(None) => format!(
+            "Nothing new to act on for {item}: no changes requested, failing checks or \
+             inline comments on the latest commit."
+        ),
+        Err(e) => format!("Could not check {item}: {e}"),
+    }
 }
 
 async fn bump_review(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {

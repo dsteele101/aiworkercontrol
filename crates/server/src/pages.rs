@@ -435,6 +435,10 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                                                 input type="hidden" name="item" value=(item);
                                                 button title="Read the latest reviews, comments and CI results now, and queue a rework if they ask for changes" { "Check latest" }
                                             }
+                                            form.inline method="post" action="/review/rework" {
+                                                input type="hidden" name="item" value=(item);
+                                                button title="Act on feedback on the latest commit even if a rework already answered it, for when that rework changed nothing" { "Rework again" }
+                                            }
                                             form.inline method="post" action="/review/bump" {
                                                 input type="hidden" name="item" value=(item);
                                                 button title="Push an empty commit to the pull request so the remote checks run again" { "Bump PR" }
