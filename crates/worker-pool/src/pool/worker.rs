@@ -217,10 +217,12 @@ impl Shared {
             let reason = e.to_string();
             // A failing fallback is set aside, and its run is not held
             // against the item: the item only ran there because the active
-            // provider was stopped.
-            let refund = fallback && turn.is_some();
+            // provider was stopped. Nor is a run stopped for its provider's
+            // limit: that is no fault of the item's.
+            let halted = matches!(e, PoolError::ProviderLimit(_));
+            let refund = (fallback || halted) && turn.is_some();
             refunded = refund;
-            if refund {
+            if refund && !halted {
                 self.suspend(provider, &reason);
             }
             // Without a turn count the item cannot be tracked; hold it.
@@ -447,6 +449,7 @@ fn failure_kind(error: &PoolError, stalled: bool) -> &'static str {
     match error {
         PoolError::AgentFailed(_) if stalled => "stalled",
         PoolError::AgentFailed(_) => "agent",
+        PoolError::ProviderLimit(_) => "limit",
         PoolError::NoCommits(_) => "no_commits",
         PoolError::Setup { .. } => "setup",
         PoolError::Spawn { .. } => "spawn",
