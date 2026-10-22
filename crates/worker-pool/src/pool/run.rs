@@ -6,12 +6,12 @@ use std::path::Path;
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
-use agent_backend::Job;
+use agent_backend::{Job, Provider};
 use work_queue::{State as ItemState, WorkItem};
 
 use super::trace::Trace;
 use super::worker::PR_LINE;
-use super::{PoolConfig, Shared};
+use super::{PoolConfig, Shared, unix_now};
 use crate::history::feedback_kinds;
 use crate::{PoolError, Project, PullRequests, agent, git, github, prompt};
 
@@ -98,6 +98,9 @@ impl Shared {
                 id, item, project, config, &prompt, &worktree, fresh, &log, trace,
             )
             .await?;
+        if outcome.halted {
+            return Err(PoolError::ProviderLimit(config.provider.provider.label()));
+        }
         lock(trace).stalled = outcome.stalled;
         let stall_minutes = config.stall_after.as_secs() / 60;
         if !outcome.succeeded() {
@@ -211,6 +214,32 @@ impl Shared {
         })
     }
 
+    /// Whether `provider` is past the stop level, and not allowed to run on
+    /// regardless.
+    fn stopped(&self, provider: Provider) -> bool {
+        let stop = self.config.borrow().limits.clone();
+        let state = self.lock();
+        let used = state
+            .usage
+            .get(&provider)
+            .map_or(0, |u| u.highest_at(unix_now()));
+        stop.stopped(used) && !state.picker.overrides.contains(&provider)
+    }
+
+    /// Completes once `provider` goes past the stop level.
+    async fn over_limit(&self, provider: Provider) {
+        // Subscribed before the check, so no change in between is missed.
+        let mut changed = self.version.subscribe();
+        loop {
+            if self.stopped(provider) {
+                return;
+            }
+            if changed.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+
     /// Prepares the run's log, build cache and (in a fresh worktree) setup,
     /// then runs the agent with `prompt` in `worktree`.
     #[allow(clippy::too_many_arguments)] // One call site; a struct would only rename them.
@@ -281,6 +310,7 @@ impl Shared {
             config.cli_dir.as_deref(),
             log,
             config.stall_after,
+            self.over_limit(config.provider.provider),
             |event| {
                 lock(trace).observe(&event);
                 self.push_event(id, event);

@@ -102,6 +102,9 @@ case "$prompt" in
   *BUSY-SILENT*)
     end=$(( $(date +%s) + 4 ))
     while [ "$(date +%s)" -lt "$end" ]; do :; done ;;
+  *CROSSES-LIMIT*)
+    echo '{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.9,"resetsAt":4000000000}}}}'
+    while :; do sleep 1; done ;;
   *REPORTS-USAGE*)
     echo '{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.5,"resetsAt":4000000000}}}}'
     echo '{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.64,"resetsAt":4000000000},"seven_day":{"utilization":0.09,"resetsAt":4100000000}}}}' ;;
@@ -475,6 +478,23 @@ async fn stop_level_pauses_workers_until_overridden() {
     let snapshot = pool.snapshot();
     assert_eq!(snapshot.limited, None);
     assert_eq!(snapshot.overridden, vec![Provider::Anthropic]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_run_is_stopped_when_its_provider_goes_past_the_stop_level() {
+    let fx = fixture(&[("busy.txt", "CROSSES-LIMIT")], 1);
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+
+    // The agent would hang forever; the limit stops it and frees the item.
+    let snapshot = wait_for(&pool, |s| s.limited.is_some() && idle(s)).await;
+    pool.stop();
+    assert!(snapshot.limited.unwrap().contains("90% of its plan"));
+    assert_eq!(queue.list(State::Open).unwrap().len(), 1);
+    assert!(queue.list(State::Hold).unwrap().is_empty());
+    let log = fs::read_to_string(fx.root.join("repo-worktrees/busy.log")).unwrap();
+    assert!(log.contains("--- stopped: its provider went past"), "{log}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

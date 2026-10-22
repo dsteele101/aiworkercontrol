@@ -10,8 +10,8 @@ pub struct UsageLimits {
     /// Levels at which the dashboard warns, ascending.
     #[serde(default = "default_warn")]
     pub warn: Vec<u8>,
-    /// The level at which no new run starts on a provider, unless the user
-    /// overrides it.
+    /// The level at which no new run starts on a provider, and runs already
+    /// going on it are stopped, unless the user overrides it.
     #[serde(default = "default_stop")]
     pub stop: u8,
     /// Whether to move on to the next fallback provider at the stop level,

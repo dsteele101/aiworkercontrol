@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::ffi::OsStr;
+use std::future::Future;
 use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -29,12 +30,17 @@ pub(crate) struct Outcome {
     /// Stopped by the watchdog: no output and next to no CPU use for the
     /// stall time, e.g. a background wait that can never end.
     pub stalled: bool,
+    /// Stopped because its provider went past the stop level.
+    pub halted: bool,
 }
 
 impl Outcome {
     /// Success: a clean exit and no failure reported by the agent. A stalled
     /// run succeeds only if its last turn did, i.e. it hung after its work.
     pub fn succeeded(&self) -> bool {
+        if self.halted {
+            return false;
+        }
         if self.stalled {
             return matches!(self.finished, Some((true, _)));
         }
@@ -170,12 +176,14 @@ async fn converse(
 /// Runs `run`, logging its output to `log` and passing each event to
 /// `on_event`. A run that writes nothing for `stall_after` while its whole
 /// process tree uses under 1% of a CPU in that time is stopped as stalled.
+/// A run is also stopped, whatever it is doing, once `halt` completes.
 pub(crate) async fn run(
     run: &Invocation,
     cli: Cli,
     cli_dir: Option<&Path>,
     log: &Path,
     stall_after: Duration,
+    halt: impl Future<Output = ()>,
     mut on_event: impl FnMut(AgentEvent),
 ) -> Result<Outcome, PoolError> {
     let program = match cli_dir {
@@ -234,6 +242,8 @@ pub(crate) async fn run(
     let mut finished = None;
     let mut last_text = None;
     let mut stalled = false;
+    let mut halted = false;
+    tokio::pin!(halt);
     let read = async {
         let Some(stdout) = stdout else {
             return Ok(());
@@ -244,6 +254,17 @@ pub(crate) async fn run(
         loop {
             let line = tokio::select! {
                 line = lines.next_line() => line.map_err(PoolError::io("read", log))?,
+                () = &mut halt, if !halted => {
+                    halted = true;
+                    log_file
+                        .write_all(b"\n--- stopped: its provider went past the stop level ---\n")
+                        .await
+                        .map_err(PoolError::io("write", log))?;
+                    if let Some(pid) = pid {
+                        kill_tree(pid);
+                    }
+                    continue;
+                }
                 _ = tick.tick() => {
                     if !stalled && pid.is_some_and(|pid| watchdog.stalled(pid)) {
                         stalled = true;
@@ -305,6 +326,7 @@ pub(crate) async fn run(
         last_text,
         stderr_tail: tail(&String::from_utf8_lossy(&stderr)),
         stalled,
+        halted,
     })
 }
 

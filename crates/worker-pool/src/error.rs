@@ -121,6 +121,9 @@ pub enum PoolError {
     /// The agent reported failure or exited unsuccessfully.
     #[error("agent failed: {0}")]
     AgentFailed(String),
+    /// The run was stopped because its provider went past the stop level.
+    #[error("stopped: {0} went past its plan-usage stop level")]
+    ProviderLimit(&'static str),
     /// The agent finished without committing anything on its branch.
     #[error("agent finished without committing to {0}")]
     NoCommits(String),
