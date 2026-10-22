@@ -1325,6 +1325,116 @@ async fn comments_that_need_no_change_send_the_item_back_to_review() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn reworking_again_acts_on_feedback_a_rework_left_standing() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[]}}"#),
+    )
+    .unwrap();
+    fs::write(
+        bin.join("gh.comments.json"),
+        format!(
+            r#"[{{"commit_id":"{head}","path":"fixed.txt","line":1,"body":"ALREADY-ADDRESSED","user":{{"login":"bot"}}}}]"#
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(
+        pool.check_review(&item).await.unwrap(),
+        Some(ReviewChange::ChangesRequested)
+    );
+    pool.start();
+    let queue = pool.queue().clone();
+    wait_for(&pool, |s| {
+        idle(s)
+            && queue.list(State::InReview).unwrap().len() == 1
+            && pool.meta(State::InReview, &item).unwrap().turns == 2
+    })
+    .await;
+    pool.stop();
+
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert_eq!(meta.pushed_head.as_deref(), Some(head.as_str()));
+    assert_eq!(meta.needs_rework, None);
+    assert_eq!(meta.last_error, None);
+    // The answered head keeps the same comments from queueing another turn.
+    assert_eq!(pool.check_review(&item).await.unwrap(), None);
+
+    // Reworking again is the way past it.
+    assert_eq!(
+        pool.rework_again(&item).await.unwrap(),
+        Some(ReviewChange::ChangesRequested)
+    );
+    assert!(
+        pool.meta(State::InReview, &item)
+            .unwrap()
+            .needs_rework
+            .is_some()
+    );
+    assert!(matches!(
+        pool.rework_again(&item).await,
+        Err(PoolError::ReworkQueued(_))
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_for_changes_after_a_rework_that_changed_nothing_is_acted_on() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    let view = format!(r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[]}}"#);
+    fs::write(bin.join("gh.view.json"), view).unwrap();
+    // Inline comments the agent finds nothing to change for.
+    fs::write(
+        bin.join("gh.comments.json"),
+        format!(
+            r#"[{{"commit_id":"{head}","path":"fixed.txt","line":1,"body":"ALREADY-ADDRESSED","user":{{"login":"bot"}}}}]"#
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        pool.check_review(&item).await.unwrap(),
+        Some(ReviewChange::ChangesRequested)
+    );
+    pool.start();
+    let queue = pool.queue().clone();
+    wait_for(&pool, |s| {
+        idle(s)
+            && queue.list(State::InReview).unwrap().len() == 1
+            && pool.meta(State::InReview, &item).unwrap().turns == 2
+    })
+    .await;
+    pool.stop();
+    assert!(pool.check_reviews().await.unwrap().is_empty());
+
+    // A reviewer then requests changes on the same commit.
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(
+            r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[
+                {{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"Rename it.","commit":{{"oid":"{head}"}},"submittedAt":"2026-01-01T10:00:00Z"}}]}}"#
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        pool.check_reviews().await.unwrap(),
+        vec![(item.clone(), ReviewChange::ChangesRequested)]
+    );
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert_eq!(
+        meta.answered_review_at.as_deref(),
+        Some("2026-01-01T10:00:00Z")
+    );
+    // Once queued, the same request is not queued again.
+    assert!(pool.check_reviews().await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_rework_kept_to_its_provider_waits_for_it() {
     let mut fx = fixture(&[("good.txt", "Fix it")], 1);
     with_pull_requests(&mut fx);

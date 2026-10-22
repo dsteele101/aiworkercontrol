@@ -139,6 +139,8 @@ pub(crate) struct ReviewStatus {
     pub state: PrState,
     pub head: String,
     pub feedback: Option<String>,
+    /// When the latest review requesting changes on `head` was submitted.
+    pub reviewed_at: Option<String>,
 }
 
 /// Reads where the pull request at `url` stands. Feedback is gathered when
@@ -177,6 +179,7 @@ pub(crate) async fn review_status(
             state,
             head,
             feedback: None,
+            reviewed_at: None,
         });
     }
 
@@ -187,9 +190,17 @@ pub(crate) async fn review_status(
         .flatten()
         .filter(|r| r.pointer("/commit/oid").and_then(Value::as_str) == Some(head.as_str()))
         .collect();
-    let changes_requested = on_head
+    let requests: Vec<&&Value> = on_head
         .iter()
-        .any(|r| str_at(r, "state") == "CHANGES_REQUESTED");
+        .filter(|r| str_at(r, "state") == "CHANGES_REQUESTED")
+        .collect();
+    let changes_requested = !requests.is_empty();
+    let reviewed_at = requests
+        .iter()
+        .map(|r| str_at(r, "submittedAt"))
+        .filter(|at| !at.is_empty())
+        .max()
+        .map(str::to_string);
     let failing = failing_checks(gh, url).await?;
     let comments = inline_comments(gh, url, &head).await?;
     let conflicts = str_at(&view, "mergeable") == "CONFLICTING";
@@ -202,6 +213,7 @@ pub(crate) async fn review_status(
             state,
             head,
             feedback: None,
+            reviewed_at: None,
         });
     }
 
@@ -243,6 +255,7 @@ pub(crate) async fn review_status(
         state,
         head,
         feedback: Some(text.trim().to_string()),
+        reviewed_at,
     })
 }
 
