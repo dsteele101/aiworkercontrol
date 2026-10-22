@@ -101,9 +101,10 @@ pub(crate) async fn report(
     run: &Invocation,
     cli_dir: Option<&Path>,
 ) -> Result<Option<String>, PoolError> {
-    let program = match cli_dir {
-        Some(dir) => dir.join(&run.program),
-        None => run.program.clone().into(),
+    // A system tool such as `sh` is not in `cli_dir`; use it from `PATH`.
+    let program = match cli_dir.map(|dir| dir.join(&run.program)) {
+        Some(found) if found.exists() => found,
+        _ => run.program.clone().into(),
     };
     let mut command = Command::new(&program);
     command
