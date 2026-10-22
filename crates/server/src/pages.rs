@@ -616,7 +616,7 @@ pub(crate) fn settings(
                     "Levels apply to each window a provider reports, the current one and the week. "
                     "At the stop level no new run starts on that provider; running agents finish their item. "
                     "Each fallback uses the model and effort on its card above, and is skipped unless it is set up. "
-                    "Plan logins report their usage; a provider on an API key doesn't, so it is never stopped."
+                    "Plan logins report their usage; a provider on an API key doesn't (except OpenRouter on a free model, which reports its daily free-request allowance), so it is never stopped."
                 }
             }
         }
@@ -825,7 +825,7 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
                 }
             }
             @if snapshot.usage.is_empty() {
-                p.muted { "No usage reported yet. Claude reports its plan usage during each run, and Antigravity and Codex are asked for theirs every five minutes." }
+                p.muted { "No usage reported yet. Claude reports its plan usage during each run, and Antigravity, Codex and an OpenRouter key on a free model are asked for theirs every five minutes (OpenRouter's is its daily free-request allowance)." }
             } @else {
                 table {
                     tr { th { "Provider" } th { "Current window" } th { "Week" } th { "Status" } }

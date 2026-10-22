@@ -1,8 +1,11 @@
 //! How much of a plan's allowance has been used, as a CLI reports it.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::provider::OPENROUTER_BASE_URL;
 use crate::{Auth, Cli, Invocation, Provider, ProviderConfig};
 
 /// The app-server requests behind `codex`'s `/status`: the handshake, then
@@ -15,6 +18,10 @@ const CODEX_USAGE_REQUESTS: [&str; 3] = [
 
 /// Marks the stdout line holding the answer to the rate-limit read.
 const CODEX_USAGE_ANSWER: &str = r#""id":2,"#;
+
+/// The script behind OpenRouter's usage read. The key travels in the
+/// environment, not the arguments, so `ps` does not show it.
+const OPENROUTER_USAGE_SCRIPT: &str = r#"curl -sf --max-time 30 -H "Authorization: Bearer $OPENROUTER_API_KEY" "$OPENROUTER_KEY_URL""#;
 
 /// A plan's usage in its rate-limit windows. A window the CLI did not report
 /// is `None`.
@@ -67,12 +74,46 @@ impl PlanUsage {
 }
 
 impl ProviderConfig {
+    /// An OpenRouter key set to a free model.
+    fn openrouter_free(&self) -> bool {
+        self.provider == Provider::OpenRouter
+            && self.key().is_some_and(|k| !k.is_empty())
+            && self
+                .model
+                .as_deref()
+                .is_some_and(|m| m.trim().ends_with(":free"))
+    }
+
     /// A run that reports the plan's usage without starting an agent, read
     /// with [`ProviderConfig::parse_usage_report`]. `agy` has its `/usage`
     /// command, and `codex` answers the app-server request behind its
     /// `/status`; neither spends quota. `None` for `claude`, which reports
     /// usage only during runs, and for API keys.
+    ///
+    /// The exception is an OpenRouter key on a `:free` model: OpenRouter
+    /// counts those requests per UTC day (50, or 1000 once the account has
+    /// bought credits) and refuses more, and `GET /api/v1/key` reports the
+    /// count.
     pub fn usage_invocation(&self) -> Option<Invocation> {
+        if self.openrouter_free() {
+            let base = self.base_url.as_deref().map(str::trim).unwrap_or_default();
+            let base = if base.is_empty() {
+                OPENROUTER_BASE_URL
+            } else {
+                base
+            };
+            let mut run = Invocation::new(Cli::Claude);
+            run.program = "sh".to_string();
+            run.args = vec!["-c".to_string(), OPENROUTER_USAGE_SCRIPT.to_string()];
+            run.env = vec![
+                ("OPENROUTER_API_KEY".to_string(), self.key()?.to_string()),
+                (
+                    "OPENROUTER_KEY_URL".to_string(),
+                    format!("{}/v1/key", base.trim_end_matches('/')),
+                ),
+            ];
+            return Some(run);
+        }
         if self.auth != Auth::Plan {
             return None;
         }
@@ -101,6 +142,10 @@ impl ProviderConfig {
     /// that share a quota. Only the Gemini group is read: the Claude and GPT
     /// models Antigravity also offers are being withdrawn.
     pub fn parse_usage_report(&self, output: &str) -> Option<PlanUsage> {
+        if self.provider == Provider::OpenRouter {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+            return openrouter_usage(output, now);
+        }
         if self.provider.cli() == Cli::Codex {
             return codex_usage(output);
         }
@@ -135,6 +180,26 @@ impl ProviderConfig {
         };
         (usage != PlanUsage::default()).then_some(usage)
     }
+}
+
+/// The free-model requests in OpenRouter's `GET /api/v1/key`, as a daily
+/// window that resets at the next UTC midnight (`now` is Unix seconds).
+fn openrouter_usage(output: &str, now: u64) -> Option<PlanUsage> {
+    let report: Value = serde_json::from_str(output).ok()?;
+    let requests = report.pointer("/data/free_model_daily_requests")?;
+    let used = requests.get("used").and_then(Value::as_f64)?;
+    let limit = requests
+        .get("limit")
+        .and_then(Value::as_f64)
+        .filter(|l| *l > 0.0)?;
+    Some(PlanUsage {
+        session: Some(UsageWindow {
+            // Clamped, so the cast cannot truncate.
+            percent: (used / limit * 100.0).round().clamp(0.0, 100.0) as u8,
+            resets_at: Some((now / 86_400 + 1) * 86_400),
+        }),
+        weekly: None,
+    })
 }
 
 /// The plan usage in `codex app-server`'s answer to `account/rateLimits/read`.
@@ -295,6 +360,48 @@ mod tests {
         assert_eq!(run.answer_marker.as_deref(), Some(r#""id":2,"#));
         let compatible = ProviderConfig::new(Provider::OpenAiCompatible, Auth::Plan);
         assert!(compatible.usage_invocation().is_none());
+    }
+
+    fn openrouter(model: &str) -> ProviderConfig {
+        let mut config =
+            ProviderConfig::new(Provider::OpenRouter, Auth::ApiKey { key: "sk".into() });
+        config.model = Some(model.into());
+        config
+    }
+
+    #[test]
+    fn openrouter_free_requests_are_read_from_the_key_endpoint() {
+        let report = r#"{"data":{"label":"k","is_free_tier":false,"free_model_daily_requests":{"used":250,"limit":1000,"remaining":750}}}"#;
+        // 1970-01-02T01:00:00Z: the window ends at the next midnight.
+        assert_eq!(
+            openrouter_usage(report, 90_000),
+            Some(PlanUsage {
+                session: Some(UsageWindow {
+                    percent: 25,
+                    resets_at: Some(172_800),
+                }),
+                weekly: None,
+            })
+        );
+        assert_eq!(openrouter_usage(r#"{"data":{}}"#, 0), None);
+        let zero = report.replace("1000", "0");
+        assert_eq!(openrouter_usage(&zero, 0), None);
+        assert!(openrouter("x/y:free").parse_usage_report(report).is_some());
+    }
+
+    #[test]
+    fn only_free_openrouter_models_are_polled() {
+        let run = openrouter("x/y:free").usage_invocation().unwrap();
+        assert_eq!(run.program, "sh");
+        assert!(run.args.iter().all(|a| !a.contains("sk")));
+        assert!(run.env.contains(&(
+            "OPENROUTER_KEY_URL".to_string(),
+            "https://openrouter.ai/api/v1/key".to_string()
+        )));
+        assert!(openrouter("x/y").usage_invocation().is_none());
+        let mut unset = openrouter("x/y:free");
+        unset.model = None;
+        assert!(unset.usage_invocation().is_none());
     }
 
     #[test]

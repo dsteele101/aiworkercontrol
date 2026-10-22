@@ -10,7 +10,7 @@ const DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com/anthropic";
 /// The model used for Deepseek when none is set.
 const DEEPSEEK_MODEL: &str = "deepseek-chat";
 /// OpenRouter's Anthropic-compatible endpoint, used when no base URL is set.
-const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api";
+pub(crate) const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api";
 /// The model used for OpenRouter when none is set.
 const OPENROUTER_MODEL: &str = "anthropic/claude-sonnet-4.5";
 /// Env var carrying an OpenAI-compatible endpoint's key into `codex`.
@@ -352,7 +352,7 @@ impl ProviderConfig {
         Ok(run)
     }
 
-    fn key(&self) -> Option<&str> {
+    pub(crate) fn key(&self) -> Option<&str> {
         match &self.auth {
             Auth::Plan => None,
             Auth::ApiKey { key } => Some(key),
