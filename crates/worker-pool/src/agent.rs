@@ -195,7 +195,11 @@ pub(crate) async fn run(
     command
         .args(&run.args)
         .envs(run.env.iter().map(|(k, v)| (k, v)))
-        .stdin(Stdio::null())
+        .stdin(if run.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         // Its own process group, so the agent's children (background builds,
@@ -214,6 +218,14 @@ pub(crate) async fn run(
     })?;
     let pid = child.id();
     let group = pid.map(ProcessGroup);
+    if let (Some(input), Some(mut stdin)) = (&run.stdin, child.stdin.take()) {
+        // Writing on its own task: a prompt larger than the pipe buffer
+        // blocks until the agent reads it. Dropping `stdin` signals the end.
+        let input = input.clone();
+        tokio::spawn(async move {
+            let _ = stdin.write_all(input.as_bytes()).await;
+        });
+    }
 
     let mut log_file = tokio::fs::OpenOptions::new()
         .create(true)

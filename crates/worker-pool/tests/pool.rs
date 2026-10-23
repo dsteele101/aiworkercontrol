@@ -39,10 +39,10 @@ case "$1 $2" in
 esac
 "#;
 
-/// Stands in for `claude -p <prompt> …`: commits a file in its working
+/// Stands in for `claude -p …` with the prompt on stdin: commits a file in its working
 /// directory and reports success, unless the prompt asks it to fail.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
-prompt="$2"
+prompt=$(cat)
 echo '{"type":"system","subtype":"init","model":"claude-test-1"}'
 case "$prompt" in
   *"<review-feedback>"*)
