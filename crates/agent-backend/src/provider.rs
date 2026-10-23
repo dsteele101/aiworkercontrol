@@ -360,8 +360,10 @@ impl ProviderConfig {
     }
 
     fn claude(&self, run: &mut Invocation, job: &Job<'_>) {
+        // The prompt goes on stdin: one argument may not exceed 128 KiB on
+        // Linux, and a work item with its spec can.
+        run.stdin = Some(job.prompt.to_string());
         run.arg("-p")
-            .arg(job.prompt)
             .arg("--output-format")
             .arg("stream-json")
             .arg("--verbose")
@@ -442,7 +444,7 @@ impl ProviderConfig {
         } else if let Some(key) = self.key() {
             run.set_env("CODEX_API_KEY", key);
         }
-        run.arg(job.prompt);
+        run.stdin = Some(job.prompt.to_string());
     }
 
     /// `agy` works in its current directory, the worktree.
@@ -473,8 +475,8 @@ impl ProviderConfig {
     /// `vibe` takes its model from its own `config.toml` and has no flag or
     /// env var for it, so the configured model is not passed.
     fn vibe(&self, run: &mut Invocation, job: &Job<'_>) {
+        run.stdin = Some(job.prompt.to_string());
         run.arg("-p")
-            .arg(job.prompt)
             .arg("--output")
             .arg("streaming")
             // Headless runs cannot ask, and cannot answer the folder trust prompt.
@@ -583,15 +585,9 @@ mod tests {
         assert_eq!(plan.program, "vibe");
         assert_eq!(
             plan.args,
-            [
-                "-p",
-                "do it",
-                "--output",
-                "streaming",
-                "--auto-approve",
-                "--trust"
-            ]
+            ["-p", "--output", "streaming", "--auto-approve", "--trust"]
         );
+        assert_eq!(plan.stdin.as_deref(), Some("do it"));
         assert!(plan.env.is_empty());
         assert_eq!(plan.env_remove, ["MISTRAL_API_KEY"]);
 

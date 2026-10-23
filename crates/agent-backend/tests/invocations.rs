@@ -39,7 +39,9 @@ fn every_run_works_in_the_worktree() {
     for config in &configs {
         let run = run(config);
         assert_eq!(run.cwd.as_deref(), Some(Path::new("/wt/phase/a")));
-        assert!(run.args.iter().any(|a| a == "PROMPT"), "{config:?}");
+        let prompted =
+            run.args.iter().any(|a| a == "PROMPT") || run.stdin.as_deref() == Some("PROMPT");
+        assert!(prompted, "{config:?}");
         assert!(run.args.iter().any(|a| a == "/spec/phase"), "{config:?}");
     }
 }
@@ -48,7 +50,9 @@ fn every_run_works_in_the_worktree() {
 fn anthropic_plan_strips_inherited_keys() {
     let run = run(&ProviderConfig::new(Provider::Anthropic, Auth::Plan));
     assert_eq!(run.program, "claude");
-    assert!(has_pair(&run, "-p", "PROMPT"));
+    assert!(run.args.iter().any(|a| a == "-p"));
+    assert!(!run.args.iter().any(|a| a == "PROMPT"));
+    assert_eq!(run.stdin.as_deref(), Some("PROMPT"));
     assert!(has_pair(&run, "--output-format", "stream-json"));
     assert!(has_pair(&run, "--add-dir", "/spec/phase"));
     assert!(run.args.iter().any(|a| a == "--verbose"));
@@ -137,7 +141,7 @@ fn openai_plan_and_key() {
     assert!(has_pair(&plan, "--cd", "/wt/phase/a"));
     assert!(has_pair(&plan, "--sandbox", "workspace-write"));
     assert!(has_pair(&plan, "--add-dir", "/spec/phase"));
-    assert_eq!(plan.args.last().map(String::as_str), Some("PROMPT"));
+    assert_eq!(plan.stdin.as_deref(), Some("PROMPT"));
     assert!(plan.env.is_empty());
     assert!(plan.env_remove.contains(&"OPENAI_API_KEY".to_string()));
 
