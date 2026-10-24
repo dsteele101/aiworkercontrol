@@ -82,7 +82,7 @@ async fn dashboard_renders() {
         body.contains(r#"<noscript><meta http-equiv="refresh" content="2"></noscript>"#),
         "{body}"
     );
-    for id in ["status", "usage", "workers", "suggestions", "queue"] {
+    for id in ["status", "usage", "workers", "queue"] {
         assert!(
             body.contains(&format!(r#"<div id="{id}" data-live>"#)),
             "{id}"
@@ -660,7 +660,7 @@ fn app_with_suggestion() -> App {
 #[tokio::test]
 async fn suggestions_are_shown_and_accepted_into_the_notes_file() {
     let app = app_with_suggestion();
-    let (_, page) = app.get("/").await;
+    let (_, page) = app.get("/suggestions").await;
     assert!(page.contains("Run the tests before committing."), "{page}");
     assert!(page.contains("tests failed"), "{page}");
     for button in ["Accept", "Reject", "Comment", "Ask the agent to evaluate"] {
@@ -676,7 +676,7 @@ async fn suggestions_are_shown_and_accepted_into_the_notes_file() {
         notes.contains("- Run the tests before committing."),
         "{notes}"
     );
-    let (_, page) = app.get("/").await;
+    let (_, page) = app.get("/suggestions").await;
     assert!(
         page.contains("Added suggestion 1 to the demo notes"),
         "{page}"
@@ -701,12 +701,12 @@ async fn suggestions_are_shown_and_accepted_into_the_notes_file() {
 async fn rejected_suggestions_are_listed_and_can_be_restored() {
     let app = app_with_suggestion();
     app.post("/suggestions/reject", "project=demo&id=1").await;
-    let (_, page) = app.get("/").await;
+    let (_, page) = app.get("/suggestions").await;
     assert!(page.contains("Rejected (1), kept for 14 days"), "{page}");
     assert!(page.contains("Restore"));
 
     app.post("/suggestions/restore", "project=demo&id=1").await;
-    let (_, page) = app.get("/").await;
+    let (_, page) = app.get("/suggestions").await;
     assert!(!page.contains("Rejected ("), "{page}");
 }
 
@@ -718,7 +718,7 @@ async fn a_comment_can_be_added_to_the_suggestion() {
         "project=demo&id=1&mode=add&comment=%20",
     )
     .await;
-    let (_, page) = app.get("/").await;
+    let (_, page) = app.get("/suggestions").await;
     assert!(page.contains("Write a comment first."), "{page}");
 
     app.post(
@@ -740,4 +740,18 @@ async fn retention_is_saved_and_clamped() {
     assert_eq!(app.saved().suggestion_retention_days, 30);
     app.post("/settings/suggestion-retention", "days=0").await;
     assert_eq!(app.saved().suggestion_retention_days, 1);
+}
+
+#[tokio::test]
+async fn suggestions_have_their_own_page_and_not_a_dashboard_section() {
+    let app = app_with_suggestion();
+    let (_, dashboard) = app.get("/").await;
+    assert!(!dashboard.contains("Run the tests before committing."));
+    assert!(dashboard.contains(r#"href="/suggestions""#));
+    let (status, page) = app.get("/suggestions").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        page.contains(r#"<div id="suggestions" data-live>"#),
+        "{page}"
+    );
 }
