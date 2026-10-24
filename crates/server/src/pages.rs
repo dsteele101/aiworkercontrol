@@ -553,7 +553,7 @@ fn suggestion_card(project: &str, s: &Suggestion, rejected: bool) -> Markup {
             p.text { (s.text) }
             @if !s.error.is_empty() {
                 details {
-                    summary.muted.small { "The failure" }
+                    summary.muted.small { @if s.failure == "review" { "The reviewer's feedback" } @else { "The failure" } }
                     pre { (s.error) }
                 }
             }

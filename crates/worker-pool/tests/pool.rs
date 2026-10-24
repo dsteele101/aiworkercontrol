@@ -49,6 +49,9 @@ case "$prompt" in
   *"An AI coding agent failed a work item"*)
     echo '{"type":"result","is_error":false,"result":"```json\n{\"verdict\":\"suggest\",\"suggestion\":\"Run the tests before committing.\"}\n```"}'
     exit 0 ;;
+  *"a reviewer asked for changes"*)
+    echo '{"type":"result","is_error":false,"result":"{\"verdict\":\"suggest\",\"suggestion\":\"Name things the way the module does.\"}"}'
+    exit 0 ;;
   *"You suggested a lesson"*)
     case "$prompt" in
       *REVISE*) echo '{"type":"result","is_error":false,"result":"{\"verdict\":\"revise\",\"suggestion\":\"Run just ci before committing.\",\"reply\":\"Good point.\"}"}' ;;
@@ -2093,4 +2096,33 @@ async fn a_comment_goes_to_the_agent_or_is_added_to_the_suggestion() {
     );
     let notes = pool.notes_versions("demo").unwrap();
     assert_eq!(notes[0].note, format!("accepted suggestion {c}"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn requested_changes_yield_a_suggestion() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(
+            r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[
+                {{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"Please rename it.","commit":{{"oid":"{head}"}}}}]}}"#
+        ),
+    )
+    .unwrap();
+
+    pool.check_reviews().await.unwrap();
+
+    let found = wait_for_suggestions(&pool, |s| !s.is_empty()).await;
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].failure, "review");
+    assert_eq!(found[0].item, item.file);
+    assert_eq!(found[0].text, "Name things the way the module does.");
+    assert!(
+        found[0].error.contains("Please rename it."),
+        "{:?}",
+        found[0]
+    );
 }

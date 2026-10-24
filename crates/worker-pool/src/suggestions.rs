@@ -2,7 +2,8 @@
 //! agent failures the pool sees.
 //!
 //! When a run fails for a reason within the agent's control, an agent
-//! evaluates the failure and may suggest a lesson for future runs. A person
+//! evaluates the failure and may suggest a lesson for future runs. So does a
+//! review that asks for changes to an item's pull request. A person
 //! then accepts, rejects or comments on each suggestion. An accepted one is
 //! added to the project's notes file ([`NOTES_FILE`]) in its spec directory,
 //! where every later run is pointed at it.
@@ -16,7 +17,7 @@ mod notes;
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) use evaluate::{Response, comment_prompt, eligible, failure_prompt};
+pub(crate) use evaluate::{Response, comment_prompt, eligible, failure_prompt, review_prompt};
 pub use notes::NOTES_FILE;
 pub(crate) use notes::Notes;
 
@@ -64,10 +65,10 @@ pub struct Suggestion {
     pub id: u32,
     /// The work item whose failure prompted it, as `file`.
     pub item: String,
-    /// What kind of failure it was: `agent`, `stalled` or `no_commits`.
-    /// Empty when the suggestion was not prompted by a failure.
+    /// What prompted it: a failure of kind `agent`, `stalled` or
+    /// `no_commits`, or `review` for changes a reviewer requested.
     pub failure: String,
-    /// The failure's error, cut short.
+    /// The failure's error, or the reviewer's feedback, cut short.
     pub error: String,
     /// The lesson, as it would appear in the notes file.
     pub text: String,

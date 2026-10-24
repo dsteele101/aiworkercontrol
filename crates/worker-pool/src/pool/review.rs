@@ -2,9 +2,12 @@
 
 use std::path::Path;
 
+use std::sync::Arc;
+
 use work_queue::{Queue, State as ItemState, WorkItem};
 
 use super::Supervisor;
+use super::suggest::Evidence;
 use crate::github::{self, PrState};
 use crate::history::{EventKind, feedback_kinds};
 use crate::{ItemMeta, PoolError, Project, git};
@@ -154,6 +157,11 @@ impl Supervisor {
                     return Ok(None);
                 }
                 let kinds = feedback_kinds(&feedback);
+                // A reviewer asking for changes may point at what the
+                // instructions should have said.
+                if kinds.iter().any(|k| k == "review") {
+                    self.learn_from_review(item, &feedback);
+                }
                 meta.needs_rework = Some(feedback);
                 meta.answered_head = Some(status.head.clone());
                 meta.answered_review_at = status.reviewed_at;
@@ -166,6 +174,29 @@ impl Supervisor {
             }
         };
         Ok(Some(change))
+    }
+
+    /// Has an agent evaluate the `feedback` a reviewer left on `item`'s pull
+    /// request, in the background, for a lesson to suggest. Skipped when the
+    /// project is unknown or the item's text cannot be read.
+    fn learn_from_review(&self, item: &WorkItem, feedback: &str) {
+        let (Ok(project), Ok(body)) = (
+            self.project(item),
+            self.queue().read(ItemState::InReview, item),
+        ) else {
+            return;
+        };
+        let evidence = Evidence::Review {
+            feedback: feedback.to_string(),
+        };
+        let config = self.config();
+        tokio::spawn(Arc::clone(&self.shared).learn_from(
+            project,
+            item.clone(),
+            body,
+            evidence,
+            config,
+        ));
     }
 
     /// Returns an item on hold to the agents with a fresh turn count. If its
