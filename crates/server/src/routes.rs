@@ -21,6 +21,8 @@ use crate::{AppState, login, pages};
 pub(crate) const MAX_WORKERS: usize = 32;
 /// The highest turn limit the UI allows.
 pub(crate) const MAX_TURNS: u32 = 50;
+/// The most days a rejected suggestion may be kept.
+pub(crate) const MAX_RETENTION_DAYS: u32 = 365;
 /// The highest provider weight the UI allows.
 pub(crate) const MAX_WEIGHT: u32 = 100;
 /// The most build jobs a project's agents may run at once.
@@ -42,7 +44,14 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/review/check", post(check_review))
         .route("/review/rework", post(rework_review))
         .route("/review/bump", post(bump_review))
+        .route("/suggestions/accept", post(accept_suggestion))
+        .route("/suggestions/reject", post(reject_suggestion))
+        .route("/suggestions/restore", post(restore_suggestion))
+        .route("/suggestions/comment", post(comment_suggestion))
+        .route("/notes", get(notes_page))
+        .route("/notes/revert", post(revert_notes))
         .route("/settings/max-turns", post(set_max_turns))
+        .route("/settings/suggestion-retention", post(set_retention))
         .route("/settings/limits", post(set_limits))
         .route("/settings/balancing", post(set_balancing))
         .route("/usage/override", post(override_stop))
@@ -273,6 +282,130 @@ async fn bump_review(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Re
         app.notify(message);
     }
     Redirect::to("/")
+}
+
+#[derive(Deserialize)]
+struct SuggestionForm {
+    project: String,
+    id: u32,
+}
+
+async fn accept_suggestion(State(app): State<AppState>, Form(f): Form<SuggestionForm>) -> Redirect {
+    let message = match app.pool().accept_suggestion(&f.project, f.id) {
+        Ok(()) => format!(
+            "Added suggestion {} to the {} notes, where the next runs will read it.",
+            f.id, f.project
+        ),
+        Err(e) => format!("Could not accept the suggestion: {e}"),
+    };
+    app.notify(message);
+    Redirect::to("/")
+}
+
+async fn reject_suggestion(State(app): State<AppState>, Form(f): Form<SuggestionForm>) -> Redirect {
+    let message = match app.pool().reject_suggestion(&f.project, f.id) {
+        Ok(()) => format!(
+            "Rejected suggestion {}. It is kept for {} days in case you change your mind.",
+            f.id,
+            app.settings().suggestion_retention_days
+        ),
+        Err(e) => format!("Could not reject the suggestion: {e}"),
+    };
+    app.notify(message);
+    Redirect::to("/")
+}
+
+async fn restore_suggestion(
+    State(app): State<AppState>,
+    Form(f): Form<SuggestionForm>,
+) -> Redirect {
+    let message = match app.pool().restore_suggestion(&f.project, f.id) {
+        Ok(()) => format!("Suggestion {} is waiting for a decision again.", f.id),
+        Err(e) => format!("Could not restore the suggestion: {e}"),
+    };
+    app.notify(message);
+    Redirect::to("/")
+}
+
+#[derive(Deserialize)]
+struct CommentForm {
+    project: String,
+    id: u32,
+    comment: String,
+    /// `add`: the comment refines the suggestion, which is then accepted.
+    /// `evaluate`: the agent evaluates the suggestion against the comment.
+    mode: String,
+}
+
+async fn comment_suggestion(State(app): State<AppState>, Form(f): Form<CommentForm>) -> Redirect {
+    let message = if f.comment.trim().is_empty() {
+        "Write a comment first.".to_string()
+    } else if f.mode == "evaluate" {
+        match app.pool().evaluate_suggestion(&f.project, f.id, &f.comment) {
+            Ok(()) => format!("Sent suggestion {} and your comment to the agent.", f.id),
+            Err(e) => format!("Could not send the suggestion: {e}"),
+        }
+    } else {
+        match app.pool().amend_suggestion(&f.project, f.id, &f.comment) {
+            Ok(()) => format!(
+                "Added suggestion {} with your comment to the {} notes.",
+                f.id, f.project
+            ),
+            Err(e) => format!("Could not add the suggestion: {e}"),
+        }
+    };
+    app.notify(message);
+    Redirect::to("/")
+}
+
+#[derive(Deserialize)]
+struct NotesQuery {
+    project: String,
+}
+
+/// A project's notes file over time, with a button to go back to any version.
+async fn notes_page(State(app): State<AppState>, Query(q): Query<NotesQuery>) -> Response {
+    match app.pool().notes_versions(&q.project) {
+        Ok(versions) => Html(pages::notes(&q.project, &versions, app.take_notice()).into_string())
+            .into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RevertForm {
+    project: String,
+    version: u32,
+}
+
+async fn revert_notes(State(app): State<AppState>, Form(f): Form<RevertForm>) -> Redirect {
+    let message = match app.pool().revert_notes(&f.project, f.version) {
+        Ok(()) => format!(
+            "The {} notes are back as version {} had them.",
+            f.project, f.version
+        ),
+        Err(e) => format!("Could not revert the notes: {e}"),
+    };
+    app.notify(message);
+    Redirect::to(&format!("/notes?project={}", pages::url_encode(&f.project)))
+}
+
+#[derive(Deserialize)]
+struct RetentionForm {
+    days: u32,
+}
+
+async fn set_retention(State(app): State<AppState>, Form(f): Form<RetentionForm>) -> Redirect {
+    let days = f.days.clamp(1, MAX_RETENTION_DAYS);
+    let saved = app.update_settings(|s| {
+        s.suggestion_retention_days = days;
+        Ok(())
+    });
+    if saved.is_ok() {
+        app.notify(format!("Rejected suggestions are kept for {days} days."));
+    }
+    report(&app, saved);
+    Redirect::to("/settings")
 }
 
 #[derive(Deserialize)]

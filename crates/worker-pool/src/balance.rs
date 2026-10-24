@@ -296,6 +296,7 @@ mod tests {
                 ..Balancing::default()
             },
             stall_after: crate::DEFAULT_STALL_AFTER,
+            suggestion_retention: crate::DEFAULT_SUGGESTION_RETENTION,
         }
     }
 

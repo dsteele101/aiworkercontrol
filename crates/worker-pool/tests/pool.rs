@@ -11,9 +11,10 @@ use std::time::Duration;
 use agent_backend::{Auth, PlanUsage, Provider, ProviderConfig, UsageWindow};
 use work_queue::{Queue, State, WorkItem};
 use worker_pool::{
-    Activity, Balancing, BranchOutcome, Cleanup, DEFAULT_STALL_AFTER, PoolConfig, PoolError,
-    PoolSnapshot, Project, ProviderUsage, PullRequests, ReviewChange, Supervisor, TurnOutcome,
-    TurnReason, UsageLimits,
+    Activity, Author, Balancing, BranchOutcome, Cleanup, DEFAULT_STALL_AFTER,
+    DEFAULT_SUGGESTION_RETENTION, NOTES_FILE, PoolConfig, PoolError, PoolSnapshot, Project,
+    ProviderUsage, PullRequests, ReviewChange, Suggestion, SuggestionStatus, Supervisor,
+    TurnOutcome, TurnReason, UsageLimits,
 };
 
 /// Stands in for `gh`: records its arguments, and answers `pr list`,
@@ -45,6 +46,19 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 prompt=$(cat)
 echo '{"type":"system","subtype":"init","model":"claude-test-1"}'
 case "$prompt" in
+  *"An AI coding agent failed a work item"*)
+    echo '{"type":"result","is_error":false,"result":"```json\n{\"verdict\":\"suggest\",\"suggestion\":\"Run the tests before committing.\"}\n```"}'
+    exit 0 ;;
+  *"You suggested a lesson"*)
+    case "$prompt" in
+      *REVISE*) echo '{"type":"result","is_error":false,"result":"{\"verdict\":\"revise\",\"suggestion\":\"Run just ci before committing.\",\"reply\":\"Good point.\"}"}' ;;
+      *WITHDRAW*) echo '{"type":"result","is_error":false,"result":"{\"verdict\":\"withdraw\",\"reply\":\"Too narrow.\"}"}' ;;
+      *) echo '{"type":"result","is_error":false,"result":"{\"verdict\":\"keep\",\"reply\":\"It stands.\"}"}' ;;
+    esac
+    exit 0 ;;
+  *NETWORK-FAIL*)
+    echo '{"type":"result","is_error":true,"result":"API Error: connection reset by peer"}'
+    exit 1 ;;
   *"<review-feedback>"*)
     printf '%s' "$prompt" > "$(dirname "$0")/rework-prompt.txt"
     case "$prompt" in *FAIL-REWORK*)
@@ -184,6 +198,7 @@ fn fixture(items: &[(&str, &str)], workers: usize) -> Fixture {
         fallbacks: Vec::new(),
         balancing: Balancing::default(),
         stall_after: DEFAULT_STALL_AFTER,
+        suggestion_retention: DEFAULT_SUGGESTION_RETENTION,
     };
     Fixture {
         _dir: dir,
@@ -1916,4 +1931,166 @@ async fn earlier_runs_are_filled_in_from_sidecars_once() {
     assert_eq!(old.cost_micro_usd, 1_500_000);
     assert!(old.records.iter().all(|r| r.backfilled));
     assert_eq!(old.records[1].duration_ms, 90_000);
+}
+
+/// Waits until the pool's suggestions satisfy `done`.
+async fn wait_for_suggestions(
+    pool: &Supervisor,
+    done: impl Fn(&[Suggestion]) -> bool,
+) -> Vec<Suggestion> {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let open: Vec<_> = pool
+                .suggestions()
+                .unwrap()
+                .into_iter()
+                .flat_map(|p| p.open.into_iter().chain(p.rejected))
+                .collect();
+            if done(&open) {
+                return open;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("suggestions did not reach the expected state")
+}
+
+/// Runs the failing `items` to hold and returns the pool, stopped.
+async fn failed_pool(fx: &Fixture) -> Supervisor {
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    let failing = queue.list(State::Open).unwrap().len();
+    pool.start();
+    wait_for(&pool, |s| {
+        queue.list(State::Hold).unwrap().len() == failing && idle(s)
+    })
+    .await;
+    pool.stop();
+    pool
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failure_the_agent_could_avoid_yields_a_suggestion_that_is_kept_once_accepted() {
+    let fx = fixture(
+        &[("bad.txt", "PLEASE-FAIL"), ("net.txt", "NETWORK-FAIL")],
+        1,
+    );
+    let pool = failed_pool(&fx).await;
+
+    let found = wait_for_suggestions(&pool, |s| !s.is_empty()).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let found = wait_for_suggestions(&pool, |s| s.len() >= found.len()).await;
+    assert_eq!(
+        found.len(),
+        1,
+        "the network failure was evaluated: {found:?}"
+    );
+    let s = &found[0];
+    assert_eq!((s.item.as_str(), s.failure.as_str()), ("bad.txt", "agent"));
+    assert_eq!(s.text, "Run the tests before committing.");
+    assert_eq!(s.status, SuggestionStatus::Pending);
+
+    let notes = fx.root.join("spec/demo").join(NOTES_FILE);
+    assert!(!notes.exists());
+    pool.accept_suggestion("demo", s.id).unwrap();
+    let text = fs::read_to_string(&notes).unwrap();
+    assert!(
+        text.contains("- Run the tests before committing.\n"),
+        "{text}"
+    );
+    assert!(pool.suggestions().unwrap()[0].open.is_empty());
+    assert!(matches!(
+        pool.accept_suggestion("demo", s.id),
+        Err(PoolError::SuggestionState(_))
+    ));
+
+    let versions = pool.notes_versions("demo").unwrap();
+    assert_eq!(versions.len(), 2);
+    assert_eq!(versions[0].note, format!("accepted suggestion {}", s.id));
+    pool.revert_notes("demo", versions[1].id).unwrap();
+    assert_eq!(fs::read_to_string(&notes).unwrap(), "");
+    let versions = pool.notes_versions("demo").unwrap();
+    assert_eq!(versions.len(), 3);
+    pool.revert_notes("demo", versions[1].id).unwrap();
+    assert_eq!(fs::read_to_string(&notes).unwrap(), text);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rejected_suggestions_can_be_restored_until_they_expire() {
+    let mut fx = fixture(&[("bad.txt", "PLEASE-FAIL")], 1);
+    let pool = failed_pool(&fx).await;
+    let id = wait_for_suggestions(&pool, |s| !s.is_empty()).await[0].id;
+
+    pool.reject_suggestion("demo", id).unwrap();
+    let listed = &pool.suggestions().unwrap()[0];
+    assert!(listed.open.is_empty());
+    assert_eq!(listed.rejected[0].status, SuggestionStatus::Rejected);
+    pool.restore_suggestion("demo", id).unwrap();
+    assert_eq!(pool.suggestions().unwrap()[0].open[0].id, id);
+
+    // With nothing to keep rejections for, they go at the next look.
+    fx.config.suggestion_retention = Duration::ZERO;
+    pool.set_config(fx.config.clone());
+    pool.reject_suggestion("demo", id).unwrap();
+    assert!(pool.suggestions().unwrap().is_empty());
+    assert!(matches!(
+        pool.restore_suggestion("demo", id),
+        Err(PoolError::NoSuggestion(_))
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_comment_goes_to_the_agent_or_is_added_to_the_suggestion() {
+    let fx = fixture(
+        &[
+            ("a.txt", "PLEASE-FAIL"),
+            ("b.txt", "PLEASE-FAIL"),
+            ("c.txt", "PLEASE-FAIL"),
+        ],
+        1,
+    );
+    let pool = failed_pool(&fx).await;
+    let found = wait_for_suggestions(&pool, |s| s.len() == 3).await;
+    let [a, b, c] = [&found[0], &found[1], &found[2]].map(|s| s.id);
+
+    // Asked to evaluate, the agent revises, keeps or withdraws.
+    pool.evaluate_suggestion("demo", a, "REVISE it").unwrap();
+    let after = wait_for_suggestions(&pool, |s| {
+        s.iter().all(|s| s.status != SuggestionStatus::Evaluating)
+            && s.iter().any(|s| s.text == "Run just ci before committing.")
+    })
+    .await;
+    let revised = after.iter().find(|s| s.id == a).unwrap();
+    assert_eq!(revised.status, SuggestionStatus::Pending);
+    let who: Vec<_> = revised.remarks.iter().map(|r| r.by).collect();
+    assert_eq!(who, [Author::User, Author::Agent]);
+    assert_eq!(revised.remarks[1].text, "Good point.");
+
+    pool.evaluate_suggestion("demo", b, "WITHDRAW it").unwrap();
+    let after = wait_for_suggestions(&pool, |s| {
+        s.iter()
+            .any(|s| s.id == b && s.status == SuggestionStatus::Rejected)
+    })
+    .await;
+    assert_eq!(
+        after.iter().find(|s| s.id == b).unwrap().remarks[1].text,
+        "Too narrow."
+    );
+
+    // The notes file gets the revised text, and the comment on the other.
+    pool.accept_suggestion("demo", a).unwrap();
+    pool.amend_suggestion("demo", c, "Only the changed crates.")
+        .unwrap();
+    let text = fs::read_to_string(fx.root.join("spec/demo").join(NOTES_FILE)).unwrap();
+    assert!(
+        text.contains("- Run just ci before committing.\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("- Run the tests before committing.\n  Only the changed crates.\n"),
+        "{text}"
+    );
+    let notes = pool.notes_versions("demo").unwrap();
+    assert_eq!(notes[0].note, format!("accepted suggestion {c}"));
 }

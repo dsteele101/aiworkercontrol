@@ -6,9 +6,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use agent_backend::{AgentEvent, AuthStatus, Cli, Provider, UsageWindow};
 use maud::{DOCTYPE, Markup, html};
 use work_queue::{State as ItemState, WorkItem};
-use worker_pool::{ActiveJob, Activity, DEFAULT_BUILD_JOBS, PoolSnapshot, Scheme, UsageLimits};
+use worker_pool::{
+    ActiveJob, Activity, Author, DEFAULT_BUILD_JOBS, NotesVersion, PoolSnapshot,
+    ProjectSuggestions, Scheme, Suggestion, SuggestionStatus, UsageLimits,
+};
 
-use crate::routes::{MAX_BUILD_JOBS, MAX_TURNS, MAX_WEIGHT, MAX_WORKERS};
+use crate::routes::{MAX_BUILD_JOBS, MAX_RETENTION_DAYS, MAX_TURNS, MAX_WEIGHT, MAX_WORKERS};
 use crate::{AppState, Settings};
 
 /// Agent events shown per worker card.
@@ -82,7 +85,7 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
   font-weight: 600; }
 button:hover { border-color: var(--accent); }
 button:disabled { opacity: .5; cursor: default; }
-input[type=text], input[type=password], input[type=number], select {
+input[type=text], input[type=password], input[type=number], select, textarea {
   background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
   padding: 5px 8px; width: 100%; }
 label { display: block; margin: 8px 0 2px; font-size: 13px; color: var(--muted); }
@@ -119,6 +122,12 @@ table.turns th, table.turns td { font-size: 12px; }
   font-size: 11px; color: var(--muted); }
 a.pr { margin-left: 8px; font-size: 12px; }
 .err { max-width: 40ch; }
+details.comment { margin-top: 8px; }
+details.comment summary { cursor: pointer; color: var(--link); }
+details.comment textarea { margin: 8px 0; min-height: 4.5em; }
+.suggestion p.text { margin: 8px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.suggestion .remark { margin: 4px 0; padding-left: 8px; border-left: 3px solid var(--border); }
+.suggestion .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .scroll { overflow-x: auto; }
 @media (max-width: 600px) { header { flex-wrap: wrap; gap: 10px 16px; } }
 "#;
@@ -314,6 +323,11 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
             p.muted { "Balancing: " (settings.balancing.scheme.label()) }
         }
 
+        div #suggestions data-live {
+            h2 { "Agent instruction suggestions" }
+            (suggestions_panel(&app.pool().suggestions().unwrap_or_default(), settings.suggestion_retention_days))
+        }
+
         div #workers data-live {
             h2 { "Workers" }
             @if snapshot.workers.is_empty() {
@@ -475,6 +489,183 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
     layout("Dashboard", "dashboard", true, notice, body)
 }
 
+/// The suggestions awaiting a decision, and the rejected ones still kept.
+fn suggestions_panel(projects: &[ProjectSuggestions], retention_days: u32) -> Markup {
+    let none = projects
+        .iter()
+        .all(|p| p.open.is_empty() && p.rejected.is_empty());
+    html! {
+        @if none {
+            p.muted {
+                "None. When a run fails for a reason within the agent's control, an agent "
+                "suggests how to improve the project's instructions, and the suggestion "
+                "appears here."
+            }
+        }
+        @for project in projects {
+            @if !project.open.is_empty() || !project.rejected.is_empty() || project.versions > 0 {
+                h3 {
+                    (project.project) " "
+                    @if project.versions > 0 {
+                        a.small href={ "/notes?project=" (url_encode(&project.project)) } {
+                            "Notes history (" (project.versions) " versions)"
+                        }
+                    }
+                }
+            }
+            div.grid {
+                @for s in &project.open { (suggestion_card(&project.project, s, false)) }
+            }
+            @if !project.rejected.is_empty() {
+                details style="margin-top:8px" {
+                    summary.muted {
+                        "Rejected (" (project.rejected.len()) "), kept for " (retention_days) " days"
+                    }
+                    div.grid style="margin-top:8px" {
+                        @for s in &project.rejected { (suggestion_card(&project.project, s, true)) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn suggestion_card(project: &str, s: &Suggestion, rejected: bool) -> Markup {
+    let hidden = html! {
+        input type="hidden" name="project" value=(project);
+        input type="hidden" name="id" value=(s.id);
+    };
+    html! {
+        div.panel.card.suggestion {
+            h3 {
+                span { (s.item) span.tag { (s.failure) } }
+                span.muted { "#" (s.id) " · " (utc(s.created_at)) }
+            }
+            p.text { (s.text) }
+            @if !s.error.is_empty() {
+                details {
+                    summary.muted.small { "The failure" }
+                    pre { (s.error) }
+                }
+            }
+            @for remark in &s.remarks {
+                div.remark.small {
+                    strong { @match remark.by { Author::User => "You", Author::Agent => "Agent" } }
+                    ": " (remark.text)
+                }
+            }
+            @if let Some(error) = &s.evaluation_error {
+                p.warn.small { "The agent could not evaluate it: " (error) }
+            }
+            @if s.status == SuggestionStatus::Evaluating {
+                p.muted { "The agent is evaluating your comment…" }
+            } @else if rejected {
+                div.actions {
+                    form.inline method="post" action="/suggestions/restore" {
+                        (hidden)
+                        button { "Restore" }
+                    }
+                    form.inline method="post" action="/suggestions/accept" {
+                        (hidden)
+                        button.primary { "Accept" }
+                    }
+                }
+            } @else {
+                div.actions {
+                    form.inline method="post" action="/suggestions/accept" {
+                        (hidden)
+                        button.primary title="Add it to the project's notes file now" { "Accept" }
+                    }
+                    form.inline method="post" action="/suggestions/reject" {
+                        (hidden)
+                        button title="Turn it down; it is kept for a while in case you change your mind" { "Reject" }
+                    }
+                }
+                details.comment {
+                    summary { "Comment" }
+                    form method="post" action="/suggestions/comment" {
+                        (hidden)
+                        textarea name="comment" required placeholder="Your comment" {}
+                        div.actions {
+                            button name="mode" value="add"
+                                title="Add your comment to the suggestion and put it in the notes file" {
+                                "Add to suggestion and accept"
+                            }
+                            button name="mode" value="evaluate"
+                                title="Send the suggestion and your comment to the agent to reconsider" {
+                                "Ask the agent to evaluate"
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A project's notes file over time: each version, newest first, with a
+/// button to put the file back as it was then.
+pub(crate) fn notes(project: &str, versions: &[NotesVersion], notice: Option<String>) -> Markup {
+    let body = html! {
+        h2 { (project) " notes history" }
+        @if versions.is_empty() {
+            p.muted { "No suggestion has been accepted yet, so the notes file has no history." }
+        }
+        div.stack {
+            @for (i, v) in versions.iter().enumerate() {
+                div.panel {
+                    div.bar {
+                        strong { "Version " (v.id) }
+                        span.muted { (utc(v.at)) " UTC · " (v.note) }
+                        @if i == 0 {
+                            span.ok { "current" }
+                        } @else {
+                            form.inline method="post" action="/notes/revert" {
+                                input type="hidden" name="project" value=(project);
+                                input type="hidden" name="version" value=(v.id);
+                                button title="Put the notes file back as this version had it. This becomes a new version, so nothing is lost." {
+                                    "Revert to this version"
+                                }
+                            }
+                        }
+                    }
+                    details {
+                        summary.muted.small { "Show the file" }
+                        pre { @if v.content.is_empty() { "(empty)" } @else { (v.content) } }
+                    }
+                }
+            }
+        }
+        p { a href="/" { "← Dashboard" } }
+    };
+    layout("Notes history", "dashboard", false, notice, body)
+}
+
+/// `YYYY-MM-DD HH:MM`, in UTC, for Unix seconds.
+fn utc(secs: u64) -> String {
+    let days = i64::try_from(secs / 86_400).unwrap_or(0);
+    // Days since 1970-01-01 to a calendar date (Howard Hinnant's algorithm).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * shifted_month + 2) / 5 + 1;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
+    format!(
+        "{year:04}-{month:02}-{day:02} {:02}:{:02}",
+        secs / 3_600 % 24,
+        secs / 60 % 60
+    )
+}
+
 pub(crate) fn settings(
     app: &AppState,
     settings: &Settings,
@@ -496,6 +687,15 @@ pub(crate) fn settings(
             span.muted {
                 "Every agent run on an item is a turn, failed ones included; failures retry until "
                 "the limit, then the item goes on hold for you to review and return."
+            }
+        }
+        form.panel.bar method="post" action="/settings/suggestion-retention" style="margin-top:12px" {
+            label for="days" { "Days to keep rejected suggestions" }
+            input #days type="number" name="days" min="1" max=(MAX_RETENTION_DAYS) value=(settings.suggestion_retention_days) style="width:6em";
+            button { "Save" }
+            span.muted {
+                "A rejected suggestion for the agent instructions can be restored from the "
+                "dashboard until this many days have passed."
             }
         }
 
@@ -1001,7 +1201,7 @@ pub(crate) fn provider_value(provider: Provider) -> &'static str {
     }
 }
 
-fn url_encode(text: &str) -> String {
+pub(crate) fn url_encode(text: &str) -> String {
     text.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
@@ -1024,6 +1224,13 @@ mod tests {
         assert_eq!(clock(5), "0:05");
         assert_eq!(clock(59 * 60 + 9), "59:09");
         assert_eq!(clock(3_600 + 62), "1:01:02");
+    }
+
+    #[test]
+    fn utc_formats_unix_seconds() {
+        assert_eq!(utc(0), "1970-01-01 00:00");
+        assert_eq!(utc(951_782_400 + 3_600 * 13 + 60 * 5), "2000-02-29 13:05");
+        assert_eq!(utc(1_700_000_000), "2023-11-14 22:13");
     }
 
     #[test]

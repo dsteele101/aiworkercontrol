@@ -127,6 +127,18 @@ pub enum PoolError {
     /// The agent finished without committing anything on its branch.
     #[error("agent finished without committing to {0}")]
     NoCommits(String),
+    /// The project has no suggestion with this number.
+    #[error("there is no suggestion {0}")]
+    NoSuggestion(u32),
+    /// The suggestion is not in a state the action applies to.
+    #[error("suggestion {0} cannot be changed that way now")]
+    SuggestionState(u32),
+    /// The project's notes file has no version with this number.
+    #[error("the notes file has no version {0}")]
+    NoNotesVersion(u32),
+    /// The evaluating agent's answer was not the JSON it was asked for.
+    #[error("the agent's answer could not be read: {0}")]
+    BadAnswer(String),
     /// A provider's usage report could not be read.
     #[error("could not read {provider}'s plan usage: {reason}")]
     UsageReport {

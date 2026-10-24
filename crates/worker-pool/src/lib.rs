@@ -25,6 +25,11 @@
 //! ran it, with which model and effort, how long it took, what it used and
 //! how it ended. [`Supervisor::history`] summarizes it per item.
 //!
+//! Runs that fail for a reason within the agent's control are evaluated by
+//! an agent, which may suggest a lesson for the project's notes file
+//! ([`NOTES_FILE`]); [`Supervisor::suggestions`]
+//! lists them for the user to accept, reject or comment on.
+//!
 //! Once a closed item's branch is merged, [`Supervisor::clean_up_merged`]
 //! removes its worktree and branch to free the space.
 
@@ -40,6 +45,7 @@ mod pool;
 mod project;
 mod prompt;
 mod status;
+mod suggestions;
 mod usage;
 
 pub use balance::{Balancing, Scheme};
@@ -50,7 +56,13 @@ pub use history::{
 };
 pub use limits::UsageLimits;
 pub use meta::ItemMeta;
-pub use pool::{BranchOutcome, Cleanup, DEFAULT_STALL_AFTER, PoolConfig, ReviewChange, Supervisor};
+pub use pool::{
+    BranchOutcome, Cleanup, DEFAULT_STALL_AFTER, DEFAULT_SUGGESTION_RETENTION, PoolConfig,
+    ReviewChange, Supervisor,
+};
 pub use project::{DEFAULT_BUILD_JOBS, Project, PullRequests};
 pub use status::{ActiveJob, Activity, PoolSnapshot, WorkerStatus};
+pub use suggestions::{
+    Author, NOTES_FILE, NotesVersion, ProjectSuggestions, Remark, Suggestion, SuggestionStatus,
+};
 pub use usage::ProviderUsage;

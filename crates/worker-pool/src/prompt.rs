@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use work_queue::WorkItem;
 
-use crate::{PoolError, Project};
+use crate::{NOTES_FILE, PoolError, Project};
 
 /// Builds the prompt for `item`, whose text is `body`. Spec files are listed
 /// by absolute path rather than inlined: some are far too large to send
@@ -110,8 +110,17 @@ fn specs_section(project: &Project) -> Result<String, PoolError> {
         "The project's spec files give direction for this work. Read the ones \
          relevant to the task and follow them:\n",
     );
+    let mut has_notes = false;
     for spec in specs {
+        has_notes |= spec.file_name().is_some_and(|n| n == NOTES_FILE)
+            && std::fs::read_to_string(&spec).is_ok_and(|t| !t.trim().is_empty());
         text.push_str(&format!("- {}\n", spec.display()));
+    }
+    if has_notes {
+        text.push_str(&format!(
+            "{NOTES_FILE} holds lessons from earlier runs on this project that went \
+             wrong. Read it before you start.\n"
+        ));
     }
     text.push('\n');
     Ok(text)
@@ -157,6 +166,21 @@ mod tests {
         assert!(a < b);
         assert!(!prompt.contains(".hidden"));
         assert!(prompt.contains("branch `ai/timesifter`, cut from `main`"));
+    }
+
+    #[test]
+    fn points_at_the_notes_file_only_when_it_has_notes() {
+        let spec = tempfile::tempdir().unwrap();
+        let notes = spec.path().join(NOTES_FILE);
+        let project = Project::new("phase", spec.path(), "/dev/phase");
+        let item = WorkItem::new("phase", "timesifter.txt");
+
+        std::fs::write(&notes, "\n").unwrap();
+        assert!(!build(&project, &item, "x").unwrap().contains("lessons"));
+
+        std::fs::write(&notes, "- Run the tests.\n").unwrap();
+        let prompt = build(&project, &item, "x").unwrap();
+        assert!(prompt.contains("AGENT-NOTES.md holds lessons from earlier runs"));
     }
 
     #[test]

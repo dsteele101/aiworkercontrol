@@ -82,7 +82,7 @@ async fn dashboard_renders() {
         body.contains(r#"<noscript><meta http-equiv="refresh" content="2"></noscript>"#),
         "{body}"
     );
-    for id in ["status", "usage", "workers", "queue"] {
+    for id in ["status", "usage", "workers", "suggestions", "queue"] {
         assert!(
             body.contains(&format!(r#"<div id="{id}" data-live>"#)),
             "{id}"
@@ -631,4 +631,113 @@ async fn history_json_summarizes_the_ledger() {
     assert_eq!(item["models"], serde_json::json!(["claude-x"]));
     assert_eq!(item["input_tokens"], 7);
     assert_eq!(item["records"][0]["effort"], "medium");
+}
+
+/// An app with the project `demo` and one pending suggestion for it.
+fn app_with_suggestion() -> App {
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("work/suggestions")).unwrap();
+    fs::create_dir_all(dir.path().join("spec/demo")).unwrap();
+    fs::create_dir_all(dir.path().join("no-clis")).unwrap();
+    fs::write(
+        dir.path().join("work/suggestions/demo.json"),
+        r#"{"next_id": 1, "versions": [], "suggestions": [{
+            "id": 1, "item": "a.txt", "failure": "agent", "error": "tests failed",
+            "text": "Run the tests before committing.", "created_at": 1700000000,
+            "status": "pending"}]}"#,
+    )
+    .unwrap();
+    let settings = Settings {
+        cli_dir: Some(dir.path().join("no-clis")),
+        projects: vec![worker_pool::Project::new("demo", "spec/demo", "repo")],
+        ..Settings::default()
+    };
+    settings.save(dir.path()).unwrap();
+    let state = AppState::new(dir.path(), PORT).unwrap();
+    App { dir, state }
+}
+
+#[tokio::test]
+async fn suggestions_are_shown_and_accepted_into_the_notes_file() {
+    let app = app_with_suggestion();
+    let (_, page) = app.get("/").await;
+    assert!(page.contains("Run the tests before committing."), "{page}");
+    assert!(page.contains("tests failed"), "{page}");
+    for button in ["Accept", "Reject", "Comment", "Ask the agent to evaluate"] {
+        assert!(page.contains(button), "{button}");
+    }
+
+    assert_eq!(
+        app.post("/suggestions/accept", "project=demo&id=1").await,
+        StatusCode::SEE_OTHER
+    );
+    let notes = fs::read_to_string(app.dir.path().join("spec/demo/AGENT-NOTES.md")).unwrap();
+    assert!(
+        notes.contains("- Run the tests before committing."),
+        "{notes}"
+    );
+    let (_, page) = app.get("/").await;
+    assert!(
+        page.contains("Added suggestion 1 to the demo notes"),
+        "{page}"
+    );
+    assert!(!page.contains(r#"<p class="text">"#), "{page}");
+
+    // The history lists the versions, and a revert empties the file again.
+    let (status, history) = app.get("/notes?project=demo").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(history.contains("accepted suggestion 1") && history.contains("current"));
+    assert_eq!(
+        app.post("/notes/revert", "project=demo&version=1").await,
+        StatusCode::SEE_OTHER
+    );
+    let notes = fs::read_to_string(app.dir.path().join("spec/demo/AGENT-NOTES.md")).unwrap();
+    assert_eq!(notes, "");
+    let (_, history) = app.get("/notes?project=demo").await;
+    assert!(history.contains("reverted to version 1"), "{history}");
+}
+
+#[tokio::test]
+async fn rejected_suggestions_are_listed_and_can_be_restored() {
+    let app = app_with_suggestion();
+    app.post("/suggestions/reject", "project=demo&id=1").await;
+    let (_, page) = app.get("/").await;
+    assert!(page.contains("Rejected (1), kept for 14 days"), "{page}");
+    assert!(page.contains("Restore"));
+
+    app.post("/suggestions/restore", "project=demo&id=1").await;
+    let (_, page) = app.get("/").await;
+    assert!(!page.contains("Rejected ("), "{page}");
+}
+
+#[tokio::test]
+async fn a_comment_can_be_added_to_the_suggestion() {
+    let app = app_with_suggestion();
+    app.post(
+        "/suggestions/comment",
+        "project=demo&id=1&mode=add&comment=%20",
+    )
+    .await;
+    let (_, page) = app.get("/").await;
+    assert!(page.contains("Write a comment first."), "{page}");
+
+    app.post(
+        "/suggestions/comment",
+        "project=demo&id=1&mode=add&comment=Only+the+changed+crates.",
+    )
+    .await;
+    let notes = fs::read_to_string(app.dir.path().join("spec/demo/AGENT-NOTES.md")).unwrap();
+    assert!(
+        notes.contains("- Run the tests before committing.\n  Only the changed crates.\n"),
+        "{notes}"
+    );
+}
+
+#[tokio::test]
+async fn retention_is_saved_and_clamped() {
+    let app = app();
+    app.post("/settings/suggestion-retention", "days=30").await;
+    assert_eq!(app.saved().suggestion_retention_days, 30);
+    app.post("/settings/suggestion-retention", "days=0").await;
+    assert_eq!(app.saved().suggestion_retention_days, 1);
 }
