@@ -40,6 +40,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/stop", post(stop))
         .route("/workers", post(set_workers))
         .route("/resume", post(resume))
+        .route("/close", post(close))
         .route("/import", post(import_pull_request))
         .route("/review/check", post(check_review))
         .route("/review/rework", post(rework_review))
@@ -218,6 +219,18 @@ async fn resume(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirec
         let message = match app.pool().resume(&item).await {
             Ok(()) => format!("Returned {item} to the agents with a fresh turn count."),
             Err(e) => format!("Could not return {item}: {e}"),
+        };
+        app.notify(message);
+    }
+    Redirect::to("/")
+}
+
+async fn close(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {
+    if let Some((project, file)) = f.item.split_once('/') {
+        let item = WorkItem::new(project, file);
+        let message = match app.pool().close(&item) {
+            Ok(()) => format!("Closed {item}."),
+            Err(e) => format!("Could not close {item}: {e}"),
         };
         app.notify(message);
     }

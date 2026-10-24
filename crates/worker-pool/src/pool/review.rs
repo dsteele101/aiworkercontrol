@@ -199,6 +199,19 @@ impl Supervisor {
         ));
     }
 
+    /// Closes an item on hold, such as one whose pull request was closed
+    /// without merging, so it leaves the queue for good.
+    pub fn close(&self, item: &WorkItem) -> Result<(), PoolError> {
+        let queue = self.queue();
+        if !queue.list(ItemState::Hold)?.contains(item) {
+            return Err(PoolError::NotOnHold(item.clone()));
+        }
+        queue.transition(item, ItemState::Hold, ItemState::Closed)?;
+        self.shared.record(item, EventKind::Closed, None);
+        self.shared.changed();
+        Ok(())
+    }
+
     /// Returns an item on hold to the agents with a fresh turn count. If its
     /// pull request is still open it goes back to review, keeping any
     /// feedback still to be addressed; otherwise it starts over from `open`.

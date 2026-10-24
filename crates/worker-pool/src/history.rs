@@ -147,6 +147,8 @@ pub enum EventKind {
     ClosedUnmerged,
     /// An item on hold was returned to an agent.
     Resumed,
+    /// An item on hold was closed by hand.
+    Closed,
 }
 
 /// A change in an item's life that no turn caused.
