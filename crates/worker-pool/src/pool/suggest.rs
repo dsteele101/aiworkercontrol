@@ -21,8 +21,29 @@ const EVALUATION_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 /// How much of the end of a failed run's log the evaluating agent sees.
 const LOG_TAIL_CHARS: usize = 6000;
 
-/// How much of a failure's error a suggestion keeps.
-const ERROR_CHARS: usize = 1000;
+/// How much of a failure's error, or of a review's feedback, a suggestion
+/// keeps.
+const ERROR_CHARS: usize = 2000;
+
+/// What a suggestion is drawn from.
+#[derive(Debug)]
+pub(super) enum Evidence {
+    /// A run that failed, of the given kind, with its error.
+    Failure { kind: &'static str, error: String },
+    /// A review that asked for changes to the item's pull request, as the
+    /// rework prompt carries it.
+    Review { feedback: String },
+}
+
+impl Evidence {
+    /// The kind a suggestion records, and the text behind it.
+    fn parts(&self) -> (&str, &str) {
+        match self {
+            Self::Failure { kind, error } => (kind, error),
+            Self::Review { feedback } => ("review", feedback),
+        }
+    }
+}
 
 impl Supervisor {
     /// Every project's suggestions to act on, and the rejected ones still
@@ -272,29 +293,28 @@ impl Shared {
         self.changed();
     }
 
-    /// Has an agent look at a failed run of `item`, and saves the lesson it
-    /// suggests, if it sees one. Failures the agent could not have avoided
-    /// are skipped.
-    pub(super) async fn learn_from_failure(
+    /// Has an agent look at what went wrong with `item`, and saves the
+    /// lesson it suggests, if it sees one.
+    pub(super) async fn learn_from(
         self: Arc<Self>,
         project: Project,
         item: WorkItem,
         body: String,
-        failure: &'static str,
-        error: String,
+        evidence: Evidence,
         config: PoolConfig,
     ) {
         if self.stopped(config.provider.provider) {
             return;
         }
         let result = self
-            .evaluate_failure(&project, &item, &body, failure, &error, &config)
+            .evaluate(&project, &item, &body, &evidence, &config)
             .await;
         match result {
             Ok(Some(text)) => {
-                let error: String = error.chars().take(ERROR_CHARS).collect();
+                let (kind, detail) = evidence.parts();
+                let detail: String = detail.chars().take(ERROR_CHARS).collect();
                 let added = self.with_notes(&project.name, |notes| {
-                    notes.add(&item.file, failure, &error, &text, unix_now());
+                    notes.add(&item.file, kind, &detail, &text, unix_now());
                     Ok(())
                 });
                 match added {
@@ -307,13 +327,12 @@ impl Shared {
         }
     }
 
-    async fn evaluate_failure(
+    async fn evaluate(
         &self,
         project: &Project,
         item: &WorkItem,
         body: &str,
-        failure: &str,
-        error: &str,
+        evidence: &Evidence,
         config: &PoolConfig,
     ) -> Result<Option<String>, PoolError> {
         let pending = self.view(&project.name, |notes| {
@@ -324,18 +343,31 @@ impl Shared {
                 .cloned()
                 .collect::<Vec<_>>()
         })?;
-        let log = std::fs::read_to_string(project.log_path(item)).unwrap_or_default();
-        let prompt = suggestions::failure_prompt(
-            &project.name,
-            &item.file,
-            body,
-            failure,
-            error,
-            tail(&log, LOG_TAIL_CHARS),
-            &read_notes(project),
-            &pending,
-        );
-        let name = format!("{}-{}", project.name, item.stem());
+        let notes = read_notes(project);
+        let prompt = match evidence {
+            Evidence::Failure { kind, error } => {
+                let log = std::fs::read_to_string(project.log_path(item)).unwrap_or_default();
+                suggestions::failure_prompt(
+                    &project.name,
+                    &item.file,
+                    body,
+                    kind,
+                    error,
+                    tail(&log, LOG_TAIL_CHARS),
+                    &notes,
+                    &pending,
+                )
+            }
+            Evidence::Review { feedback } => suggestions::review_prompt(
+                &project.name,
+                &item.file,
+                body,
+                feedback,
+                &notes,
+                &pending,
+            ),
+        };
+        let name = format!("{}-{}-{}", project.name, item.stem(), evidence.parts().0);
         let response = self.ask(config, &prompt, &name).await?;
         Ok((response.verdict == "suggest")
             .then_some(response.suggestion)

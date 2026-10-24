@@ -8,6 +8,7 @@ use agent_backend::{AgentEvent, PlanUsage, Provider};
 use work_queue::{State as ItemState, WorkItem};
 
 use super::run::{Finish, Kind};
+use super::suggest::Evidence;
 use super::trace::Trace;
 use super::{POLL_INTERVAL, PoolConfig, Shared, State, unix_now};
 use crate::balance::{Pick, Suspension};
@@ -241,12 +242,15 @@ impl Shared {
                 self.lock().last_error = Some(format!("{item}: {e}; then {bookkeeping}"));
             }
             if let Some(body) = lesson {
-                tokio::spawn(Arc::clone(self).learn_from_failure(
+                let evidence = Evidence::Failure {
+                    kind: kind_of_failure,
+                    error: reason.clone(),
+                };
+                tokio::spawn(Arc::clone(self).learn_from(
                     project.clone(),
                     item.clone(),
                     body,
-                    kind_of_failure,
-                    reason.clone(),
+                    evidence,
                     config.clone(),
                 ));
             }

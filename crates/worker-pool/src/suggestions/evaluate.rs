@@ -77,6 +77,15 @@ const FORMAT_FAILURE: &str = "Answer with a single JSON object and nothing else:
       the environment). Leave \"suggestion\" out.\n\
     - \"duplicate\": the notes or a pending suggestion already cover it. Leave \"suggestion\" out.\n";
 
+const FORMAT_REVIEW: &str = "Answer with a single JSON object and nothing else:\n\
+    {\"verdict\": \"suggest\" | \"external\" | \"duplicate\", \"suggestion\": \"...\"}\n\
+    - \"suggest\": better instructions would have prevented this feedback. \"suggestion\" is \
+      one lesson for the project's notes file, written as an instruction to a future agent: \
+      specific, short, and useful beyond this one pull request.\n\
+    - \"external\": the feedback is a matter of taste or specific to this change, so no \
+      instruction would help. Leave \"suggestion\" out.\n\
+    - \"duplicate\": the notes or a pending suggestion already cover it. Leave \"suggestion\" out.\n";
+
 const FORMAT_COMMENT: &str = "Answer with a single JSON object and nothing else:\n\
     {\"verdict\": \"keep\" | \"revise\" | \"withdraw\", \"suggestion\": \"...\", \"reply\": \"...\"}\n\
     - \"keep\": the suggestion stands as written. Leave \"suggestion\" out.\n\
@@ -123,15 +132,48 @@ pub(crate) fn failure_prompt(
         log_tail = log_tail.trim(),
     );
     prompt.push_str(&notes_block(notes));
-    if !pending.is_empty() {
-        prompt.push_str("Suggestions already waiting for the user:\n");
-        for s in pending {
-            prompt.push_str(&format!("- {}\n", s.text.replace('\n', " ")));
-        }
-        prompt.push('\n');
-    }
+    push_pending(&mut prompt, pending);
     prompt.push_str(READ_ONLY);
     prompt.push_str(FORMAT_FAILURE);
+    prompt
+}
+
+fn push_pending(prompt: &mut String, pending: &[Suggestion]) {
+    if pending.is_empty() {
+        return;
+    }
+    prompt.push_str("Suggestions already waiting for the user:\n");
+    for s in pending {
+        prompt.push_str(&format!("- {}\n", s.text.replace('\n', " ")));
+    }
+    prompt.push('\n');
+}
+
+/// The prompt for evaluating the `feedback` a reviewer left on the pull
+/// request of a finished work item, asking for changes: what the item asked,
+/// what the reviewer said, the notes so far, and the suggestions pending.
+pub(crate) fn review_prompt(
+    project: &str,
+    item: &str,
+    body: &str,
+    feedback: &str,
+    notes: &str,
+    pending: &[Suggestion],
+) -> String {
+    let mut prompt = format!(
+        "An AI coding agent carried out a work item on the project \"{project}\", and a \
+         reviewer asked for changes to its pull request. Decide whether better instructions \
+         would have led the agent to get it right the first time, and if so suggest one lesson \
+         to add to the project's notes file, which every agent run is told to read.\n\n\
+         <work-item name=\"{item}\">\n{body}\n</work-item>\n\n\
+         <review-feedback>\n{feedback}\n</review-feedback>\n\n",
+        body = body.trim(),
+        feedback = feedback.trim(),
+    );
+    prompt.push_str(&notes_block(notes));
+    push_pending(&mut prompt, pending);
+    prompt.push_str(READ_ONLY);
+    prompt.push_str(FORMAT_REVIEW);
     prompt
 }
 
@@ -145,7 +187,14 @@ pub(crate) fn comment_prompt(project: &str, suggestion: &Suggestion, notes: &str
          <suggestion>\n{text}\n</suggestion>\n\n",
         text = suggestion.text.trim(),
     );
-    if !suggestion.failure.is_empty() {
+    if suggestion.failure == "review" {
+        prompt.push_str(&format!(
+            "It came from changes a reviewer requested on {item}:\n\
+             <review-feedback>\n{feedback}\n</review-feedback>\n\n",
+            item = suggestion.item,
+            feedback = suggestion.error.trim(),
+        ));
+    } else if !suggestion.failure.is_empty() {
         prompt.push_str(&format!(
             "It came from a failure of {item} ({kind}):\n<error>\n{error}\n</error>\n\n",
             item = suggestion.item,
@@ -201,6 +250,47 @@ mod tests {
         assert_eq!(response.verdict, "suggest");
         assert_eq!(response.suggestion.as_deref(), Some("Run it."));
         assert!(Response::parse("no json here").is_none());
+    }
+
+    #[test]
+    fn review_prompt_carries_the_feedback_and_pending_suggestions() {
+        let mut pending = suggestion_with("Run the tests.");
+        pending.status = SuggestionStatus::Pending;
+        let prompt = review_prompt(
+            "phase",
+            "a.txt",
+            " Add it. ",
+            "### Review by maint (CHANGES_REQUESTED)\n\nRename it.",
+            "- Be brief.",
+            &[pending],
+        );
+        assert!(prompt.contains("<work-item name=\"a.txt\">\nAdd it.\n</work-item>"));
+        assert!(prompt.contains("<review-feedback>\n### Review by maint"));
+        assert!(prompt.contains("- Be brief."));
+        assert!(prompt.contains("- Run the tests.\n"));
+        assert!(prompt.contains("a reviewer asked for changes"));
+    }
+
+    fn suggestion_with(text: &str) -> Suggestion {
+        Suggestion {
+            id: 1,
+            item: "a.txt".into(),
+            failure: "review".into(),
+            error: "Rename it.".into(),
+            text: text.into(),
+            created_at: 0,
+            status: SuggestionStatus::Pending,
+            decided_at: None,
+            remarks: Vec::new(),
+            evaluation_error: None,
+        }
+    }
+
+    #[test]
+    fn comment_prompt_says_where_a_review_suggestion_came_from() {
+        let prompt = comment_prompt("phase", &suggestion_with("Be brief."), "");
+        assert!(prompt.contains("changes a reviewer requested on a.txt"));
+        assert!(prompt.contains("<review-feedback>\nRename it."));
     }
 
     #[test]
