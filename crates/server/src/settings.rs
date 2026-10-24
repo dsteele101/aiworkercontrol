@@ -4,6 +4,7 @@ use std::fs;
 use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use agent_backend::{Auth, ConfigError, Provider, ProviderConfig};
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,17 @@ pub struct Settings {
     /// How work is spread across the active provider and the fallbacks.
     #[serde(default)]
     pub balancing: Balancing,
+    /// Days a rejected suggestion for the agent instructions is kept, in
+    /// case the user changes their mind.
+    #[serde(default = "default_retention_days")]
+    pub suggestion_retention_days: u32,
+}
+
+/// The default for [`Settings::suggestion_retention_days`].
+pub const DEFAULT_RETENTION_DAYS: u32 = 14;
+
+fn default_retention_days() -> u32 {
+    DEFAULT_RETENTION_DAYS
 }
 
 /// The default for [`Settings::max_turns`].
@@ -144,6 +156,7 @@ impl Default for Settings {
             limits: UsageLimits::default(),
             fallbacks: Vec::new(),
             balancing: Balancing::default(),
+            suggestion_retention_days: DEFAULT_RETENTION_DAYS,
         }
     }
 }
@@ -268,6 +281,9 @@ impl Settings {
             fallbacks,
             balancing: self.balancing.clone(),
             stall_after: DEFAULT_STALL_AFTER,
+            suggestion_retention: Duration::from_secs(
+                u64::from(self.suggestion_retention_days) * 24 * 60 * 60,
+            ),
         }
     }
 }

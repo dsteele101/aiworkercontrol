@@ -202,6 +202,15 @@ pub(crate) async fn diff_stat(worktree: &Path, base: &str) -> Result<DiffStat, P
     Ok(stat)
 }
 
+/// Makes `dir` a git repository if it is not one, for runs that need no
+/// repository but whose CLI refuses to start outside one.
+pub(crate) async fn ensure_repo(dir: &Path) -> Result<(), PoolError> {
+    if dir.join(".git").exists() {
+        return Ok(());
+    }
+    git(dir, &["init", "-q"]).await.map(|_| ())
+}
+
 async fn git(dir: &Path, args: &[&str]) -> Result<String, PoolError> {
     let output = Command::new("git")
         .arg("-C")

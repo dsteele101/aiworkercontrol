@@ -13,6 +13,7 @@ use super::{POLL_INTERVAL, PoolConfig, Shared, State, unix_now};
 use crate::balance::{Pick, Suspension};
 use crate::history::{Entry, EventKind, TurnOutcome, TurnReason, TurnRecord, feedback_kinds};
 use crate::status::EVENT_TAIL;
+use crate::suggestions;
 use crate::usage;
 use crate::{ActiveJob, Activity, ItemMeta, PoolError, Project};
 
@@ -162,7 +163,7 @@ impl Shared {
         }
     }
 
-    async fn carry_out(&self, id: usize, claim: Claim) {
+    async fn carry_out(self: &Arc<Self>, id: usize, claim: Claim) {
         let Claim {
             item,
             project,
@@ -225,6 +226,13 @@ impl Shared {
             if refund && !halted {
                 self.suspend(provider, &reason);
             }
+            // A failure the agent could have avoided is worth a lesson for
+            // later runs. The item's text is read before it leaves
+            // `inprogress`.
+            let kind_of_failure = failure_kind(e, trace_stalled(&trace));
+            let lesson = (!refund && suggestions::eligible(kind_of_failure, &reason))
+                .then(|| self.queue.read(ItemState::InProgress, &item).ok())
+                .flatten();
             // Without a turn count the item cannot be tracked; hold it.
             let turn = turn.unwrap_or(config.max_turns);
             if let Err(bookkeeping) =
@@ -232,7 +240,17 @@ impl Shared {
             {
                 self.lock().last_error = Some(format!("{item}: {e}; then {bookkeeping}"));
             }
-            failure = Some((failure_kind(e, trace_stalled(&trace)), reason));
+            if let Some(body) = lesson {
+                tokio::spawn(Arc::clone(self).learn_from_failure(
+                    project.clone(),
+                    item.clone(),
+                    body,
+                    kind_of_failure,
+                    reason.clone(),
+                    config.clone(),
+                ));
+            }
+            failure = Some((kind_of_failure, reason));
         }
         if let Some((turn, retry)) = context {
             let quota_after = self.lock().usage.get(&provider).cloned();

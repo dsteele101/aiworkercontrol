@@ -5,6 +5,7 @@ mod cleanup;
 mod import;
 mod review;
 mod run;
+mod suggest;
 mod trace;
 mod worker;
 
@@ -31,6 +32,9 @@ use crate::{
 
 /// The default for [`PoolConfig::stall_after`].
 pub const DEFAULT_STALL_AFTER: Duration = Duration::from_secs(20 * 60);
+
+/// The default for [`PoolConfig::suggestion_retention`]: two weeks.
+pub const DEFAULT_SUGGESTION_RETENTION: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
 /// How often idle workers look for new items when nothing wakes them.
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -60,6 +64,9 @@ pub struct PoolConfig {
     /// How long an agent may go without output while its processes use
     /// next to no CPU before it is stopped as stalled.
     pub stall_after: Duration,
+    /// How long a rejected suggestion for the agent instructions is kept,
+    /// in case the user changes their mind.
+    pub suggestion_retention: Duration,
 }
 
 /// Owns the workers. Cheap to clone; every clone controls the same pool.
@@ -78,6 +85,9 @@ struct Shared {
     wake: Notify,
     usage_file: PathBuf,
     ledger: Ledger,
+    /// Held while a project's suggestions are read, changed and saved, so
+    /// evaluations finishing together do not overwrite one another.
+    notes_lock: Mutex<()>,
 }
 
 #[derive(Debug, Default)]
@@ -110,6 +120,7 @@ impl Supervisor {
                 wake: Notify::new(),
                 usage_file,
                 ledger,
+                notes_lock: Mutex::new(()),
             }),
         })
     }
