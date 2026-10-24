@@ -700,6 +700,14 @@ async fn only_held_items_can_be_resumed() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn only_held_items_can_be_closed() {
+    let fx = fixture(&[("a.txt", "Fix it")], 1);
+    let pool = Supervisor::new(Queue::new(fx.root.join("work")), fx.config.clone()).unwrap();
+    let err = pool.close(&WorkItem::new("demo", "a.txt")).unwrap_err();
+    assert!(matches!(err, PoolError::NotOnHold(_)), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn resizing_spawns_and_retires_workers() {
     let fx = fixture(&[], 3);
     let pool = Supervisor::new(Queue::new(fx.root.join("work")), fx.config.clone()).unwrap();

@@ -532,6 +532,24 @@ async fn held_items_show_their_reason_and_can_be_returned() {
 }
 
 #[tokio::test]
+async fn a_held_item_can_be_closed() {
+    let app = app();
+    let hold = app.dir.path().join("work/hold/demo");
+    fs::create_dir_all(&hold).unwrap();
+    fs::write(hold.join("a.txt"), "Fix it").unwrap();
+
+    let (_, page) = app.get("/").await;
+    assert!(page.contains(r#"action="/close""#), "{page}");
+
+    assert_eq!(
+        app.post("/close", "item=demo%2Fa.txt").await,
+        StatusCode::SEE_OTHER
+    );
+    assert!(app.dir.path().join("work/closed/demo/a.txt").is_file());
+    assert!(!hold.join("a.txt").exists());
+}
+
+#[tokio::test]
 async fn max_turns_is_saved_and_clamped() {
     let app = app();
     assert_eq!(app.saved().max_turns, 3);

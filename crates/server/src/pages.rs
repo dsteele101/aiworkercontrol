@@ -414,6 +414,10 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                                     input type="hidden" name="item" value=(item);
                                     button title="Reset its turn count and give it back to the agents" { "Return to agent" }
                                 }
+                                form.inline method="post" action="/close" {
+                                    input type="hidden" name="item" value=(item);
+                                    button title="Close it without more work, such as after its pull request was closed" { "Close" }
+                                }
                             }
                         }
                     }
