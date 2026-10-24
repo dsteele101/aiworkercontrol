@@ -190,6 +190,7 @@ fn layout(title: &str, here: &str, refresh: bool, notice: Option<String>, body: 
                     h1 { "AI Worker Control" }
                     a href="/" class=[(here == "dashboard").then_some("here")] { "Dashboard" }
                     a href="/history" class=[(here == "history").then_some("here")] { "History" }
+                    a href="/suggestions" class=[(here == "suggestions").then_some("here")] { "Suggestions" }
                     a href="/settings" class=[(here == "settings").then_some("here")] { "Settings" }
                 }
                 main {
@@ -321,11 +322,6 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
             h2 { "Plan usage" }
             (usage_panel(&snapshot, &settings.limits))
             p.muted { "Balancing: " (settings.balancing.scheme.label()) }
-        }
-
-        div #suggestions data-live {
-            h2 { "Agent instruction suggestions" }
-            (suggestions_panel(&app.pool().suggestions().unwrap_or_default(), settings.suggestion_retention_days))
         }
 
         div #workers data-live {
@@ -489,7 +485,20 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
     layout("Dashboard", "dashboard", true, notice, body)
 }
 
-/// The suggestions awaiting a decision, and the rejected ones still kept.
+/// The suggestions page: those awaiting a decision, and the rejected ones
+/// still kept.
+pub(crate) fn suggestions(app: &AppState, notice: Option<String>) -> Markup {
+    let days = app.settings().suggestion_retention_days;
+    let projects = app.pool().suggestions().unwrap_or_default();
+    let body = html! {
+        div #suggestions data-live {
+            h2 { "Agent instruction suggestions" }
+            (suggestions_panel(&projects, days))
+        }
+    };
+    layout("Suggestions", "suggestions", true, notice, body)
+}
+
 fn suggestions_panel(projects: &[ProjectSuggestions], retention_days: u32) -> Markup {
     let none = projects
         .iter()
@@ -636,9 +645,9 @@ pub(crate) fn notes(project: &str, versions: &[NotesVersion], notice: Option<Str
                 }
             }
         }
-        p { a href="/" { "← Dashboard" } }
+        p { a href="/suggestions" { "← Suggestions" } }
     };
-    layout("Notes history", "dashboard", false, notice, body)
+    layout("Notes history", "suggestions", false, notice, body)
 }
 
 /// `YYYY-MM-DD HH:MM`, in UTC, for Unix seconds.

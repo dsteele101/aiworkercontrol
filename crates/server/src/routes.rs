@@ -44,6 +44,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/review/check", post(check_review))
         .route("/review/rework", post(rework_review))
         .route("/review/bump", post(bump_review))
+        .route("/suggestions", get(suggestions_page))
         .route("/suggestions/accept", post(accept_suggestion))
         .route("/suggestions/reject", post(reject_suggestion))
         .route("/suggestions/restore", post(restore_suggestion))
@@ -290,6 +291,18 @@ struct SuggestionForm {
     id: u32,
 }
 
+async fn suggestions_page(
+    State(app): State<AppState>,
+    Query(q): Query<DashboardQuery>,
+) -> Html<String> {
+    let notice = if q.live.is_some() {
+        None
+    } else {
+        app.take_notice()
+    };
+    Html(pages::suggestions(&app, notice).into_string())
+}
+
 async fn accept_suggestion(State(app): State<AppState>, Form(f): Form<SuggestionForm>) -> Redirect {
     let message = match app.pool().accept_suggestion(&f.project, f.id) {
         Ok(()) => format!(
@@ -299,7 +312,7 @@ async fn accept_suggestion(State(app): State<AppState>, Form(f): Form<Suggestion
         Err(e) => format!("Could not accept the suggestion: {e}"),
     };
     app.notify(message);
-    Redirect::to("/")
+    Redirect::to("/suggestions")
 }
 
 async fn reject_suggestion(State(app): State<AppState>, Form(f): Form<SuggestionForm>) -> Redirect {
@@ -312,7 +325,7 @@ async fn reject_suggestion(State(app): State<AppState>, Form(f): Form<Suggestion
         Err(e) => format!("Could not reject the suggestion: {e}"),
     };
     app.notify(message);
-    Redirect::to("/")
+    Redirect::to("/suggestions")
 }
 
 async fn restore_suggestion(
@@ -324,7 +337,7 @@ async fn restore_suggestion(
         Err(e) => format!("Could not restore the suggestion: {e}"),
     };
     app.notify(message);
-    Redirect::to("/")
+    Redirect::to("/suggestions")
 }
 
 #[derive(Deserialize)]
@@ -355,7 +368,7 @@ async fn comment_suggestion(State(app): State<AppState>, Form(f): Form<CommentFo
         }
     };
     app.notify(message);
-    Redirect::to("/")
+    Redirect::to("/suggestions")
 }
 
 #[derive(Deserialize)]
