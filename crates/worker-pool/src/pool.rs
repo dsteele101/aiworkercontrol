@@ -67,6 +67,9 @@ pub struct PoolConfig {
     /// How long a rejected suggestion for the agent instructions is kept,
     /// in case the user changes their mind.
     pub suggestion_retention: Duration,
+    /// Whether the periodic review check also acts on inline comments from
+    /// reviews that do not request changes, as a non-maintainer's cannot.
+    pub follow_all_comments: bool,
 }
 
 /// Owns the workers. Cheap to clone; every clone controls the same pool.

@@ -761,6 +761,17 @@ async fn retention_is_saved_and_clamped() {
 }
 
 #[tokio::test]
+async fn following_all_review_comments_is_saved() {
+    let app = app();
+    assert!(!app.saved().follow_all_comments);
+    app.post("/settings/review-comments", "follow_all_comments=on")
+        .await;
+    assert!(app.saved().follow_all_comments);
+    app.post("/settings/review-comments", "").await;
+    assert!(!app.saved().follow_all_comments);
+}
+
+#[tokio::test]
 async fn suggestions_have_their_own_page_and_not_a_dashboard_section() {
     let app = app_with_suggestion();
     let (_, dashboard) = app.get("/").await;

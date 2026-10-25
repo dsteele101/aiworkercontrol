@@ -27,13 +27,16 @@ impl Supervisor {
     /// Checks the pull request of every item in review once: a merged one
     /// closes its item, one closed unmerged puts it on hold, and feedback on
     /// its latest commit (changes requested, failing CI) queues a rework for
-    /// the next free worker. Feedback on a commit already reworked is not
-    /// acted on again, unless a reviewer requests changes anew.
+    /// the next free worker. Inline comments count only with
+    /// [`PoolConfig::follow_all_comments`]. Feedback on a commit already
+    /// reworked is not acted on again, unless a reviewer requests changes anew.
     pub async fn check_reviews(&self) -> Result<Vec<(WorkItem, ReviewChange)>, PoolError> {
-        let gh = github::program(self.config().cli_dir.as_deref());
+        let config = self.config();
+        let gh = github::program(config.cli_dir.as_deref());
+        let follow_all = config.follow_all_comments;
         let mut changes = Vec::new();
         for item in self.queue().list(ItemState::InReview)? {
-            if let Some(change) = self.check_item(&gh, &item, false).await? {
+            if let Some(change) = self.check_item(&gh, &item, follow_all).await? {
                 changes.push((item, change));
             }
         }
