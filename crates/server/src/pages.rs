@@ -711,6 +711,17 @@ pub(crate) fn settings(
                 "dashboard until this many days have passed."
             }
         }
+        form.panel.bar method="post" action="/settings/review-comments" style="margin-top:12px" {
+            label.check {
+                input type="checkbox" name="follow_all_comments" checked[settings.follow_all_comments];
+                "Follow review comments even if changes are not requested"
+            }
+            button { "Save" }
+            span.muted {
+                "Only a maintainer can request changes. With this on, inline comments on a pull "
+                "request's latest commit from anyone queue a rework too."
+            }
+        }
 
         h2 { "AI system" }
         form.panel.bar method="post" action="/settings/active" {

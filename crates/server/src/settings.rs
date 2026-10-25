@@ -47,6 +47,11 @@ pub struct Settings {
     /// case the user changes their mind.
     #[serde(default = "default_retention_days")]
     pub suggestion_retention_days: u32,
+    /// Act on every inline comment on a pull request's latest commit, not
+    /// only on reviews that request changes (which a non-maintainer cannot
+    /// make).
+    #[serde(default)]
+    pub follow_all_comments: bool,
 }
 
 /// The default for [`Settings::suggestion_retention_days`].
@@ -157,6 +162,7 @@ impl Default for Settings {
             fallbacks: Vec::new(),
             balancing: Balancing::default(),
             suggestion_retention_days: DEFAULT_RETENTION_DAYS,
+            follow_all_comments: false,
         }
     }
 }
@@ -284,6 +290,7 @@ impl Settings {
             suggestion_retention: Duration::from_secs(
                 u64::from(self.suggestion_retention_days) * 24 * 60 * 60,
             ),
+            follow_all_comments: self.follow_all_comments,
         }
     }
 }

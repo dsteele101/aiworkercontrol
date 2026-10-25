@@ -147,7 +147,8 @@ pub(crate) struct ReviewStatus {
 /// its latest commit has a review requesting changes, or failing CI: the
 /// required checks, or every check when the repository requires none. With
 /// `any_comments`, inline review comments on the latest commit count too,
-/// whatever kind of review they came in. A merge conflict with the base
+/// whatever kind of review they came in, as does a comment-only review with
+/// a body, and a non-bot conversation comment naming the head. A merge conflict with the base
 /// branch is feedback too.
 pub(crate) async fn review_status(
     gh: &Path,
@@ -203,11 +204,21 @@ pub(crate) async fn review_status(
         .map(str::to_string);
     let failing = failing_checks(gh, url).await?;
     let comments = inline_comments(gh, url, &head).await?;
+    let notes = if any_comments {
+        conversation_comments(gh, url, &head).await?
+    } else {
+        String::new()
+    };
     let conflicts = str_at(&view, "mergeable") == "CONFLICTING";
+    // A reviewer without write access cannot request changes; their review
+    // is a comment whose body carries the next steps.
+    let commented = on_head
+        .iter()
+        .any(|r| str_at(r, "state") == "COMMENTED" && !str_at(r, "body").trim().is_empty());
     if !changes_requested
         && !conflicts
         && failing.is_empty()
-        && !(any_comments && !comments.is_empty())
+        && !(any_comments && (!comments.is_empty() || !notes.is_empty() || commented))
     {
         return Ok(ReviewStatus {
             state,
@@ -234,6 +245,11 @@ pub(crate) async fn review_status(
     if !comments.is_empty() {
         text.push_str("### Inline comments\n\n");
         text.push_str(&comments);
+        text.push('\n');
+    }
+    if !notes.is_empty() {
+        text.push_str("### Conversation comments\n\n");
+        text.push_str(&notes);
         text.push('\n');
     }
     if conflicts {
@@ -348,6 +364,45 @@ async fn inline_comments(gh: &Path, url: &str, head: &str) -> Result<String, Poo
                 .and_then(Value::as_str)
                 .unwrap_or("someone"),
             str_at(c, "body").trim().replace('\n', "\n  "),
+        ));
+    }
+    Ok(text)
+}
+
+/// The pull request conversation comments that name `head`, one bullet each:
+/// a maintainer's note on where a commit stands, which no review carries.
+/// Bots are left out, since their reports name the head too.
+async fn conversation_comments(gh: &Path, url: &str, head: &str) -> Result<String, PoolError> {
+    let Some((owner, repo, number)) = parse_pr_url(url) else {
+        return Ok(String::new());
+    };
+    if head.is_empty() {
+        return Ok(String::new());
+    }
+    let endpoint = format!("repos/{owner}/{repo}/issues/{number}/comments");
+    let pages = json(
+        &run(gh, &["api", "--paginate", "--slurp", &endpoint]).await?,
+        url,
+    )?;
+    let comments = pages
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_array)
+        .flatten();
+    let mut text = String::new();
+    for c in comments {
+        let body = str_at(c, "body").trim();
+        let bot = c.pointer("/user/type").and_then(Value::as_str) == Some("Bot");
+        if bot || !body.contains(head) {
+            continue;
+        }
+        text.push_str(&format!(
+            "- ({}): {}\n",
+            c.pointer("/user/login")
+                .and_then(Value::as_str)
+                .unwrap_or("someone"),
+            body.replace('\n', "\n  "),
         ));
     }
     Ok(text)

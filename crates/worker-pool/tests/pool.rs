@@ -36,6 +36,10 @@ case "$1 $2" in
     if [ -f "$here/gh.checks.json" ]; then cat "$here/gh.checks.json"; exit 1; fi
     echo 'no checks reported on the branch' >&2; exit 1 ;;
   "api --paginate")
+    case "$*" in *issues*)
+      if [ -f "$here/gh.issue_comments.json" ]; then echo "[$(cat "$here/gh.issue_comments.json")]"; else echo '[[]]'; fi
+      exit 0 ;;
+    esac
     if [ -f "$here/gh.comments.json" ]; then echo "[$(cat "$here/gh.comments.json")]"; else echo '[[]]'; fi ;;
 esac
 "#;
@@ -202,6 +206,7 @@ fn fixture(items: &[(&str, &str)], workers: usize) -> Fixture {
         balancing: Balancing::default(),
         stall_after: DEFAULT_STALL_AFTER,
         suggestion_retention: DEFAULT_SUGGESTION_RETENTION,
+        follow_all_comments: false,
     };
     Fixture {
         _dir: dir,
@@ -1278,6 +1283,83 @@ async fn an_on_demand_check_acts_on_inline_comments_but_the_watcher_does_not() {
     );
     let meta = pool.meta(State::InReview, &item).unwrap();
     assert!(meta.needs_rework.unwrap().contains("Handle the empty case"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_watcher_follows_a_comment_only_review_when_told_to() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    // A reviewer without write access can only comment; the next steps are
+    // in the review's body.
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(
+            r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[
+                {{"state":"COMMENTED","author":{{"login":"rev"}},"body":"Next step: add a test.","commit":{{"oid":"{head}"}}}}]}}"#
+        ),
+    )
+    .unwrap();
+    fs::write(bin.join("gh.comments.json"), "[]").unwrap();
+
+    assert!(pool.check_reviews().await.unwrap().is_empty());
+
+    let mut config = pool.config();
+    config.follow_all_comments = true;
+    pool.set_config(config);
+    let changes = pool.check_reviews().await.unwrap();
+    assert_eq!(
+        changes,
+        vec![(item.clone(), ReviewChange::ChangesRequested)]
+    );
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert!(
+        meta.needs_rework
+            .unwrap()
+            .contains("Next step: add a test.")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_watcher_follows_a_maintainers_conversation_comment_naming_the_head() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[]}}"#),
+    )
+    .unwrap();
+    fs::write(
+        bin.join("gh.issue_comments.json"),
+        format!(
+            r#"[{{"body":"Report for head `{head}`.","user":{{"login":"ci","type":"Bot"}}}},
+                {{"body":"Held at exact head `{head}`. Next step: add a test.","user":{{"login":"maint","type":"User"}}}},
+                {{"body":"Held at exact head `0000`. Next step: old.","user":{{"login":"maint","type":"User"}}}}]"#
+        ),
+    )
+    .unwrap();
+
+    assert!(pool.check_reviews().await.unwrap().is_empty());
+
+    let mut config = pool.config();
+    config.follow_all_comments = true;
+    pool.set_config(config);
+    let changes = pool.check_reviews().await.unwrap();
+    assert_eq!(
+        changes,
+        vec![(item.clone(), ReviewChange::ChangesRequested)]
+    );
+    let feedback = pool
+        .meta(State::InReview, &item)
+        .unwrap()
+        .needs_rework
+        .unwrap();
+    assert!(feedback.contains("Next step: add a test."), "{feedback}");
+    assert!(!feedback.contains("Report for head"), "{feedback}");
+    assert!(!feedback.contains("old."), "{feedback}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

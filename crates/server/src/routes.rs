@@ -54,6 +54,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/notes/revert", post(revert_notes))
         .route("/settings/max-turns", post(set_max_turns))
         .route("/settings/suggestion-retention", post(set_retention))
+        .route("/settings/review-comments", post(set_review_comments))
         .route("/settings/limits", post(set_limits))
         .route("/settings/balancing", post(set_balancing))
         .route("/usage/override", post(override_stop))
@@ -429,6 +430,32 @@ async fn set_retention(State(app): State<AppState>, Form(f): Form<RetentionForm>
     });
     if saved.is_ok() {
         app.notify(format!("Rejected suggestions are kept for {days} days."));
+    }
+    report(&app, saved);
+    Redirect::to("/settings")
+}
+
+#[derive(Deserialize)]
+struct ReviewCommentsForm {
+    #[serde(default)]
+    follow_all_comments: Option<String>,
+}
+
+async fn set_review_comments(
+    State(app): State<AppState>,
+    Form(f): Form<ReviewCommentsForm>,
+) -> Redirect {
+    let follow = f.follow_all_comments.is_some();
+    let saved = app.update_settings(|s| {
+        s.follow_all_comments = follow;
+        Ok(())
+    });
+    if saved.is_ok() {
+        app.notify(if follow {
+            "Review comments are followed even when no changes are requested."
+        } else {
+            "Only reviews requesting changes are followed."
+        });
     }
     report(&app, saved);
     Redirect::to("/settings")
