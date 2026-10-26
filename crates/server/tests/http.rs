@@ -550,6 +550,32 @@ async fn a_held_item_can_be_closed() {
 }
 
 #[tokio::test]
+async fn all_held_items_can_be_returned_or_closed_at_once() {
+    let app = app();
+    let hold = app.dir.path().join("work/hold/demo");
+    fs::create_dir_all(&hold).unwrap();
+    for name in ["a.txt", "b.txt", "c.txt", "d.txt"] {
+        fs::write(hold.join(name), "item").unwrap();
+    }
+
+    let (_, page) = app.get("/").await;
+    assert!(page.contains(r#"action="/resume-all""#), "{page}");
+    assert!(page.contains(r#"action="/close-all""#), "{page}");
+    assert!(page.contains("onsubmit=\"return confirm("), "{page}");
+
+    assert_eq!(app.post("/resume-all", "").await, StatusCode::SEE_OTHER);
+    let open = app.dir.path().join("work/open/demo");
+    assert!(open.join("a.txt").is_file() && open.join("d.txt").is_file());
+    assert!(!hold.join("a.txt").exists());
+
+    fs::create_dir_all(&hold).unwrap();
+    fs::write(hold.join("e.txt"), "item").unwrap();
+    assert_eq!(app.post("/close-all", "").await, StatusCode::SEE_OTHER);
+    assert!(app.dir.path().join("work/closed/demo/e.txt").is_file());
+    assert!(!hold.join("e.txt").exists());
+}
+
+#[tokio::test]
 async fn max_turns_is_saved_and_clamped() {
     let app = app();
     assert_eq!(app.saved().max_turns, 3);

@@ -382,6 +382,16 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                 p.bar {
                     @for (state, items) in &lists { span { (state) ": " strong { (items.len()) } } }
                 }
+                @if !lists.get("hold").is_none_or(Vec::is_empty) {
+                    div.bar {
+                        form.inline method="post" action="/resume-all" {
+                            button title="Reset the turn count of every held item and give them all back to the agents" { "Return all held to agent" }
+                        }
+                        form.inline method="post" action="/close-all" onsubmit="return confirm('Close every held item without more work?')" {
+                            button title="Close every held item without more work" { "Close all held" }
+                        }
+                    }
+                }
                 table {
                     tr { th { "Item" } th { "State" } th { "" } }
                     @for item in lists.get("inprogress").into_iter().flatten() {
