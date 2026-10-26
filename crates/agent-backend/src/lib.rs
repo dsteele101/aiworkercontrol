@@ -39,5 +39,7 @@ mod usage;
 pub use auth::{AuthStatus, login_invocation, parse_status, status_invocation};
 pub use events::{AgentEvent, parse_line};
 pub use metrics::RunMetrics;
-pub use provider::{Auth, Cli, ConfigError, Invocation, Job, Provider, ProviderConfig};
+pub use provider::{
+    Auth, Cli, ConfigError, Invocation, Job, ModelOption, Provider, ProviderConfig,
+};
 pub use usage::{PlanUsage, UsageWindow};

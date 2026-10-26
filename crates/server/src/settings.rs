@@ -6,7 +6,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use agent_backend::{Auth, ConfigError, Provider, ProviderConfig};
+use agent_backend::{Auth, ConfigError, ModelOption, Provider, ProviderConfig};
 use serde::{Deserialize, Serialize};
 use worker_pool::{Balancing, DEFAULT_STALL_AFTER, PoolConfig, Project, UsageLimits};
 
@@ -101,6 +101,44 @@ pub struct ProviderSettings {
     /// The endpoint, for Deepseek, OpenRouter and OpenAI-compatible.
     #[serde(default)]
     pub base_url: String,
+    /// Other models a worker may be given, chosen per item by an agent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternatives: Vec<ModelOption>,
+}
+
+/// The alternatives as the settings form shows them, one per line:
+/// `model | effort | when to use it`.
+pub fn alternatives_text(alternatives: &[ModelOption]) -> String {
+    let field = |s: &Option<String>| s.clone().unwrap_or_default();
+    alternatives
+        .iter()
+        .map(|a| {
+            format!(
+                "{} | {} | {}",
+                field(&a.model),
+                field(&a.effort),
+                field(&a.description)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Reads the settings form's alternatives, skipping blank lines. A line
+/// that names neither a model nor an effort is skipped too.
+pub fn parse_alternatives(text: &str) -> Vec<ModelOption> {
+    let opt = |s: Option<&str>| s.map(str::trim).filter(|s| !s.is_empty()).map(String::from);
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(3, '|');
+            let option = ModelOption {
+                model: opt(parts.next()),
+                effort: opt(parts.next()),
+                description: opt(parts.next()),
+            };
+            (option.model.is_some() || option.effort.is_some()).then_some(option)
+        })
+        .collect()
 }
 
 impl std::fmt::Debug for ProviderSettings {
@@ -116,6 +154,7 @@ impl std::fmt::Debug for ProviderSettings {
             .field("model", &self.model)
             .field("effort", &self.effort)
             .field("base_url", &self.base_url)
+            .field("alternatives", &self.alternatives)
             .finish()
     }
 }
@@ -130,6 +169,7 @@ impl ProviderSettings {
             model: String::new(),
             effort: String::new(),
             base_url: String::new(),
+            alternatives: Vec::new(),
         }
     }
 
@@ -149,6 +189,7 @@ impl ProviderSettings {
             model: opt(&self.model),
             effort: opt(&self.effort),
             base_url: opt(&self.base_url),
+            alternatives: self.alternatives.clone(),
         }
     }
 }
@@ -345,6 +386,18 @@ mod tests {
             .mode();
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(Settings::load(dir.path()).unwrap(), settings);
+    }
+
+    #[test]
+    fn alternatives_round_trip_through_the_form_text() {
+        let text = "opus | high | hard, cross-cutting changes\n\n | | \nhaiku||docs only";
+        let parsed = parse_alternatives(text);
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].model.as_deref(), Some("opus"));
+        assert_eq!(parsed[0].effort.as_deref(), Some("high"));
+        assert_eq!(parsed[1].effort, None);
+        assert_eq!(parsed[1].description.as_deref(), Some("docs only"));
+        assert_eq!(parse_alternatives(&alternatives_text(&parsed)), parsed);
     }
 
     #[test]
