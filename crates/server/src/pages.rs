@@ -722,6 +722,17 @@ pub(crate) fn settings(
                 "request's latest commit from anyone queue a rework too."
             }
         }
+        form.panel.bar method="post" action="/settings/ci-logs" style="margin-top:12px" {
+            label.check {
+                input type="checkbox" name="follow_ci_logs" checked[settings.follow_ci_logs];
+                "Give the agent the logs of failing CI runs"
+            }
+            button { "Save" }
+            span.muted {
+                "A failing check already queues a rework. With this on, the tail of each failed "
+                "run's log goes with it, so the agent can fix what CI actually reported."
+            }
+        }
 
         h2 { "AI system" }
         form.panel.bar method="post" action="/settings/active" {

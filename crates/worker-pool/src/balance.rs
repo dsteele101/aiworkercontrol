@@ -298,6 +298,7 @@ mod tests {
             stall_after: crate::DEFAULT_STALL_AFTER,
             suggestion_retention: crate::DEFAULT_SUGGESTION_RETENTION,
             follow_all_comments: false,
+            follow_ci_logs: false,
         }
     }
 

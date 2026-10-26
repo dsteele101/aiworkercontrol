@@ -31,6 +31,8 @@ case "$1 $2" in
     if [ -f "$here/gh.view.json" ]; then cat "$here/gh.view.json"
     elif [ -f "$here/gh.merged" ]; then echo '{"state":"MERGED","headRefOid":"","reviews":[]}'
     else echo '{"state":"OPEN","headRefOid":"","reviews":[]}'; fi ;;
+  "run view")
+    if [ -f "$here/gh.runlog.txt" ]; then cat "$here/gh.runlog.txt"; else echo 'no log' >&2; exit 1; fi ;;
   "pr checks")
     case "$*" in *--required*) echo 'no required checks reported on the branch' >&2; exit 1 ;; esac
     if [ -f "$here/gh.checks.json" ]; then cat "$here/gh.checks.json"; exit 1; fi
@@ -207,6 +209,7 @@ fn fixture(items: &[(&str, &str)], workers: usize) -> Fixture {
         stall_after: DEFAULT_STALL_AFTER,
         suggestion_retention: DEFAULT_SUGGESTION_RETENTION,
         follow_all_comments: false,
+        follow_ci_logs: false,
     };
     Fixture {
         _dir: dir,
@@ -1378,6 +1381,48 @@ async fn the_watcher_follows_a_maintainers_conversation_comment_naming_the_head(
     assert!(feedback.contains("Next step: add a test."), "{feedback}");
     assert!(!feedback.contains("Report for head"), "{feedback}");
     assert!(!feedback.contains("old."), "{feedback}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn failing_ci_comes_with_its_logs_when_told_to() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[]}}"#),
+    )
+    .unwrap();
+    fs::write(
+        bin.join("gh.checks.json"),
+        r#"[{"name":"test","bucket":"fail","link":"https://github.com/up/repo/actions/runs/123/job/9"},
+            {"name":"lint","bucket":"fail","link":"https://github.com/up/repo/actions/runs/123/job/10"}]"#,
+    )
+    .unwrap();
+    fs::write(
+        bin.join("gh.runlog.txt"),
+        "test\tbuild\terror[E0308]: mismatched types\n",
+    )
+    .unwrap();
+
+    let mut config = pool.config();
+    config.follow_ci_logs = true;
+    pool.set_config(config);
+    assert_eq!(
+        pool.check_reviews().await.unwrap(),
+        vec![(item.clone(), ReviewChange::ChangesRequested)]
+    );
+    let feedback = pool.meta(State::InReview, &item).unwrap().needs_rework;
+    let feedback = feedback.unwrap();
+    assert!(feedback.contains("- test: https://"), "{feedback}");
+    assert!(feedback.contains("mismatched types"), "{feedback}");
+    // Both checks belong to one run, whose log is given once.
+    assert_eq!(
+        feedback.matches("mismatched types").count(),
+        1,
+        "{feedback}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -70,6 +70,9 @@ pub struct PoolConfig {
     /// Whether the periodic review check also acts on inline comments from
     /// reviews that do not request changes, as a non-maintainer's cannot.
     pub follow_all_comments: bool,
+    /// Whether feedback about failing CI includes the tail of the failed
+    /// runs' logs, not just the names of the checks.
+    pub follow_ci_logs: bool,
 }
 
 /// Owns the workers. Cheap to clone; every clone controls the same pool.

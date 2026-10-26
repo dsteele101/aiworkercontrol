@@ -154,6 +154,7 @@ pub(crate) async fn review_status(
     gh: &Path,
     url: &str,
     any_comments: bool,
+    ci_logs: bool,
 ) -> Result<ReviewStatus, PoolError> {
     let view = json(
         &run(
@@ -266,6 +267,9 @@ pub(crate) async fn review_status(
         for (name, link) in &failing {
             text.push_str(&format!("- {name}: {link}\n"));
         }
+        if ci_logs {
+            text.push_str(&failure_logs(gh, url, &failing).await);
+        }
     }
     Ok(ReviewStatus {
         state,
@@ -329,6 +333,57 @@ async fn failing_checks(gh: &Path, url: &str) -> Result<Vec<(String, String)>, P
         .filter(|c| str_at(c, "bucket") == "fail")
         .map(|c| (str_at(c, "name").to_string(), str_at(c, "link").to_string()))
         .collect())
+}
+
+/// How much of each failed run's log reaches the agent: its last lines, where
+/// the error usually is, within a character budget.
+const LOG_LINES: usize = 80;
+const LOG_CHARS: usize = 6000;
+
+/// The tails of the failed logs of the runs behind `failing`, one section per
+/// run. Best effort: a run whose log cannot be read is left out, since the
+/// check links are feedback enough.
+async fn failure_logs(gh: &Path, url: &str, failing: &[(String, String)]) -> String {
+    let Some((owner, repo, _)) = parse_pr_url(url) else {
+        return String::new();
+    };
+    let mut seen: Vec<&str> = Vec::new();
+    let mut text = String::new();
+    for (name, link) in failing {
+        let Some(run) = run_id(link) else { continue };
+        if seen.contains(&run) {
+            continue;
+        }
+        seen.push(run);
+        let repo_flag = format!("{owner}/{repo}");
+        let args = ["run", "view", run, "-R", &repo_flag, "--log-failed"];
+        let Ok(out) = run_output(gh, &args).await else {
+            continue;
+        };
+        if !out.status.success() {
+            continue;
+        }
+        let log = String::from_utf8_lossy(&out.stdout);
+        let lines: Vec<&str> = log.lines().collect();
+        let tail = lines[lines.len().saturating_sub(LOG_LINES)..].join("\n");
+        let start = tail.len().saturating_sub(LOG_CHARS);
+        let start = (start..=tail.len())
+            .find(|i| tail.is_char_boundary(*i))
+            .unwrap_or(tail.len());
+        let tail = tail[start..].trim();
+        if !tail.is_empty() {
+            text.push_str(&format!(
+                "\n#### Log of the failed run behind {name}\n\n```\n{tail}\n```\n"
+            ));
+        }
+    }
+    text
+}
+
+/// The workflow run id in a check's link, `.../actions/runs/ID/job/JOB`.
+fn run_id(link: &str) -> Option<&str> {
+    let id = link.split("/actions/runs/").nth(1)?.split('/').next()?;
+    (!id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())).then_some(id)
 }
 
 /// The inline review comments made on `head`, one bullet each.

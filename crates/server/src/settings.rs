@@ -52,6 +52,10 @@ pub struct Settings {
     /// make).
     #[serde(default)]
     pub follow_all_comments: bool,
+    /// Give the agent the tail of the failed CI runs' logs along with the
+    /// names of the failing checks.
+    #[serde(default)]
+    pub follow_ci_logs: bool,
 }
 
 /// The default for [`Settings::suggestion_retention_days`].
@@ -163,6 +167,7 @@ impl Default for Settings {
             balancing: Balancing::default(),
             suggestion_retention_days: DEFAULT_RETENTION_DAYS,
             follow_all_comments: false,
+            follow_ci_logs: false,
         }
     }
 }
@@ -291,6 +296,7 @@ impl Settings {
                 u64::from(self.suggestion_retention_days) * 24 * 60 * 60,
             ),
             follow_all_comments: self.follow_all_comments,
+            follow_ci_logs: self.follow_ci_logs,
         }
     }
 }
