@@ -72,6 +72,9 @@ pub struct TurnRecord {
     /// The model the settings asked for; blank means the CLI's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_requested: Option<String>,
+    /// Why the model was chosen, when an agent chose it among several.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_reason: Option<String>,
     /// The models the CLI reported using.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<String>,

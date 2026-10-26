@@ -206,6 +206,7 @@ fn plan(item: &WorkItem, facts: &Facts, known: &[&Entry]) -> Vec<Entry> {
             provider,
             fallback: false,
             model_requested: None,
+            model_reason: None,
             models: log
                 .map(|l| l.models.iter().cloned().collect())
                 .unwrap_or_default(),
