@@ -244,6 +244,8 @@ pub(crate) fn feedback_kinds(feedback: &str) -> Vec<String> {
         ("ci", "### Failing CI checks"),
         ("review", "CHANGES_REQUESTED"),
         ("comments", "### Inline comments"),
+        ("notes", "### Conversation comments"),
+        ("conflicts", "### Merge conflicts"),
     ]
     .into_iter()
     .filter(|(_, marker)| feedback.contains(marker))

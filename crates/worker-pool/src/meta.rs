@@ -43,6 +43,11 @@ pub struct ItemMeta {
     /// reviewer asking again after a rework that pushed nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered_review_at: Option<String>,
+    /// The feedback last handed to a rework on `answered_head`. Different
+    /// feedback on the same commit, such as a new comment or a merge
+    /// conflict, is not answered yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_feedback: Option<String>,
     /// The branch on the push remote that holds the pull request's head, when
     /// it is not the item's own `ai/` branch: set for an imported pull
     /// request, which is pushed to without replacing what is there.

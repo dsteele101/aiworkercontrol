@@ -1173,6 +1173,24 @@ async fn requested_changes_are_reworked_in_the_same_worktree() {
     // The same feedback on the same commit is not acted on twice.
     assert!(pool.check_reviews().await.unwrap().is_empty());
 
+    // A comment that arrives on that commit after the rework is new feedback.
+    fs::write(
+        bin.join("gh.issue_comments.json"),
+        format!(
+            r#"[{{"body":"Held at `{head}`: merge main.","user":{{"login":"maint","type":"User"}}}}]"#
+        ),
+    )
+    .unwrap();
+    let mut config = pool.config();
+    config.follow_all_comments = true;
+    pool.set_config(config);
+    assert_eq!(
+        pool.check_reviews().await.unwrap(),
+        vec![(item.clone(), ReviewChange::ChangesRequested)]
+    );
+    let feedback = pool.meta(State::InReview, &item).unwrap().needs_rework;
+    assert!(feedback.unwrap().contains("merge main."));
+
     let [summary] = pool.history().unwrap().try_into().unwrap();
     assert_eq!((summary.turns, summary.rework_turns), (2, 1));
     assert_eq!(summary.state.as_deref(), Some("inreview"));
