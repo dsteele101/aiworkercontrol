@@ -1875,12 +1875,19 @@ async fn a_failing_rework_retries_from_review_then_holds_and_resumes_there() {
     assert_eq!(held.turns, 3, "first run, then two failed reworks");
     assert!(held.needs_rework.is_some(), "the feedback is kept");
 
-    // Its pull request is still open: back to review, feedback intact.
+    // Its pull request is still open: back to review. A reviewer has since
+    // asked for other changes on the same commit, and the old feedback goes.
+    let view = format!(
+        r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[{{"state":"CHANGES_REQUESTED","author":{{"login":"m"}},"body":"LATER-REVIEW","commit":{{"oid":"{head}"}},"submittedAt":"2026-01-01T10:00:00Z"}}]}}"#
+    );
+    fs::write(fx.root.join("bin/gh.view.json"), view).unwrap();
     pool.resume(&item).await.unwrap();
     assert_eq!(queue.list(State::InReview).unwrap(), vec![item.clone()]);
     let meta = pool.meta(State::InReview, &item).unwrap();
     assert_eq!(meta.turns, 0);
-    assert!(meta.needs_rework.unwrap().contains("FAIL-REWORK"));
+    let feedback = meta.needs_rework.unwrap();
+    assert!(feedback.contains("LATER-REVIEW"), "{feedback}");
+    assert!(!feedback.contains("FAIL-REWORK"), "{feedback}");
     assert_eq!(
         meta.pr_url.as_deref(),
         Some("https://github.com/up/repo/pull/7")

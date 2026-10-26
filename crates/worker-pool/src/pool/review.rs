@@ -232,8 +232,9 @@ impl Supervisor {
     }
 
     /// Returns an item on hold to the agents with a fresh turn count. If its
-    /// pull request is still open it goes back to review, keeping any
-    /// feedback still to be addressed; otherwise it starts over from `open`.
+    /// pull request is still open it goes back to review and its feedback is
+    /// gathered afresh, since the pull request moves on while the item is
+    /// held; otherwise it starts over from `open`.
     pub async fn resume(&self, item: &WorkItem) -> Result<(), PoolError> {
         let queue = self.queue();
         if !queue.list(ItemState::Hold)?.contains(item) {
@@ -252,10 +253,6 @@ impl Supervisor {
                 pr_url: meta.pr_url,
                 pr_title: meta.pr_title,
                 pushed_head: meta.pushed_head,
-                needs_rework: meta.needs_rework,
-                answered_head: meta.answered_head,
-                answered_review_at: meta.answered_review_at,
-                answered_feedback: meta.answered_feedback,
                 remote_branch: meta.remote_branch,
                 ..ItemMeta::default()
             };
@@ -266,6 +263,14 @@ impl Supervisor {
         fresh.save(queue, ItemState::Hold, item)?;
         queue.transition(item, ItemState::Hold, to)?;
         self.shared.record(item, EventKind::Resumed, None);
+        if to == ItemState::InReview {
+            // The feedback kept on hold may be stale: a reviewer can have
+            // asked for changes since. Look at the pull request again.
+            let config = self.config();
+            let gh = github::program(config.cli_dir.as_deref());
+            self.check_item(&gh, item, config.follow_all_comments)
+                .await?;
+        }
         self.shared.changed();
         Ok(())
     }
