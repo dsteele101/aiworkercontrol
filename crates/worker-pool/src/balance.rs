@@ -161,16 +161,20 @@ impl Picker {
                 unavailable.push(format!("{} failed its last run", provider.label()));
                 continue;
             }
-            let used = usage.get(&provider).map_or(0, |u| u.highest_at(now));
-            if !limits.stopped(used) {
+            let hit = usage.get(&provider).and_then(|u| limits.stop_hit(u, now));
+            if let Some(hit) = hit {
+                if !self.overrides.contains(&provider) {
+                    unavailable.push(format!(
+                        "{} at {}% of its {}, past the {}% stop level",
+                        provider.label(),
+                        hit.percent,
+                        hit.span.label(),
+                        hit.level
+                    ));
+                    continue;
+                }
+            } else {
                 self.overrides.remove(&provider);
-            } else if !self.overrides.contains(&provider) {
-                unavailable.push(format!(
-                    "{} at {used}% of its plan, past the {}% stop level",
-                    provider.label(),
-                    limits.stop
-                ));
-                continue;
             }
             available.push(i);
         }
@@ -347,7 +351,7 @@ mod tests {
         let mut picker = Picker::default();
         assert_eq!(
             picker.choose(&config, &usage, 0, None).unwrap_err(),
-            "no provider can run: Anthropic (Claude) at 87% of its plan, past the 85% stop level"
+            "no provider can run: Anthropic (Claude) at 87% of its current window, past the 85% stop level"
         );
         picker.overrides.insert(Provider::Anthropic);
         assert!(picker.choose(&config, &usage, 0, None).is_ok());
@@ -394,7 +398,7 @@ mod tests {
         suspend(&mut picker, Provider::OpenAi);
         assert_eq!(
             picker.choose(&config, &usage, 0, None).unwrap_err(),
-            "no provider can run: Anthropic (Claude) at 100% of its plan, past the 85% \
+            "no provider can run: Anthropic (Claude) at 100% of its current window, past the 85% \
              stop level; Gemini (Antigravity) failed its last run; OpenAI failed its last run"
         );
         // Half an hour on, they get another chance.

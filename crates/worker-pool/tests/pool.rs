@@ -494,7 +494,9 @@ async fn stop_level_pauses_workers_until_overridden() {
     let snapshot = wait_for(&pool, |s| s.limited.is_some()).await;
     assert_eq!(
         snapshot.limited.as_deref(),
-        Some("no provider can run: Anthropic (Claude) at 86% of its plan, past the 85% stop level")
+        Some(
+            "no provider can run: Anthropic (Claude) at 86% of its current window, past the 85% stop level"
+        )
     );
     assert_eq!(queue.list(State::Open).unwrap().len(), 1);
 
@@ -519,7 +521,12 @@ async fn a_run_is_stopped_when_its_provider_goes_past_the_stop_level() {
     // The agent would hang forever; the limit stops it and frees the item.
     let snapshot = wait_for(&pool, |s| s.limited.is_some() && idle(s)).await;
     pool.stop();
-    assert!(snapshot.limited.unwrap().contains("90% of its plan"));
+    assert!(
+        snapshot
+            .limited
+            .unwrap()
+            .contains("90% of its current window")
+    );
     assert_eq!(queue.list(State::Open).unwrap().len(), 1);
     assert!(queue.list(State::Hold).unwrap().is_empty());
     let log = fs::read_to_string(fx.root.join("repo-worktrees/busy.log")).unwrap();

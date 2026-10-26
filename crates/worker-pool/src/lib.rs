@@ -54,7 +54,7 @@ pub use history::{
     Entry, EventKind, ItemEvent, ItemSummary, QuotaSpend, TurnOutcome, TurnReason, TurnRecord,
     summarize,
 };
-pub use limits::UsageLimits;
+pub use limits::{Span, StopHit, UsageLimits};
 pub use meta::ItemMeta;
 pub use pool::{
     BranchOutcome, Cleanup, DEFAULT_STALL_AFTER, DEFAULT_SUGGESTION_RETENTION, PoolConfig,

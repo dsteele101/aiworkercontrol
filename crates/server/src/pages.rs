@@ -8,7 +8,7 @@ use maud::{DOCTYPE, Markup, html};
 use work_queue::{State as ItemState, WorkItem};
 use worker_pool::{
     ActiveJob, Activity, Author, DEFAULT_BUILD_JOBS, NotesVersion, PoolSnapshot,
-    ProjectSuggestions, Scheme, Suggestion, SuggestionStatus, UsageLimits,
+    ProjectSuggestions, Scheme, Span, Suggestion, SuggestionStatus, UsageLimits,
 };
 
 use crate::routes::{MAX_BUILD_JOBS, MAX_RETENTION_DAYS, MAX_TURNS, MAX_WEIGHT, MAX_WORKERS};
@@ -824,12 +824,20 @@ pub(crate) fn settings(
         form.panel method="post" action="/settings/limits" {
             div.fields {
                 div {
-                    label for="warn" { "Warn at (%, comma-separated)" }
+                    label for="warn" { "Current window: warn at (%, comma-separated)" }
                     input #warn type="text" name="warn" value=(settings.limits.warn.iter().map(u8::to_string).collect::<Vec<_>>().join(", "));
                 }
                 div {
-                    label for="stop" { "Stop at (%)" }
+                    label for="stop" { "Current window: stop at (%)" }
                     input #stop type="number" name="stop" min="1" max="100" value=(settings.limits.stop);
+                }
+                div {
+                    label for="week_warn" { "Week: warn at (%, comma-separated)" }
+                    input #week_warn type="text" name="week_warn" value=(settings.limits.week_warn.iter().map(u8::to_string).collect::<Vec<_>>().join(", "));
+                }
+                div {
+                    label for="week_stop" { "Week: stop at (%)" }
+                    input #week_stop type="number" name="week_stop" min="1" max="100" value=(settings.limits.week_stop);
                 }
             }
             label.check {
@@ -1070,23 +1078,23 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
                 table {
                     tr { th { "Provider" } th { "Current window" } th { "Week" } th { "Status" } }
                     @for u in &snapshot.usage {
-                        @let used = u.usage.highest_at(now);
+                        @let hit = limits.stop_hit(&u.usage, now);
                         tr {
                             td { (u.provider.label()) }
-                            td { (usage_window(u.usage.session, now, limits)) }
-                            td { (usage_window(u.usage.weekly, now, limits)) }
+                            td { (usage_window(u.usage.session, Span::Window, now, limits)) }
+                            td { (usage_window(u.usage.weekly, Span::Week, now, limits)) }
                             td {
-                                @if limits.stopped(used) {
+                                @if let Some(hit) = hit {
                                     @if snapshot.overridden.contains(&u.provider) {
-                                        span.warn { "Past the " (limits.stop) "% stop level; overridden until the window resets" }
+                                        span.warn { "Past the " (hit.level) "% " (hit.span.label()) " stop level; overridden until the window resets" }
                                     } @else {
-                                        span.bad { "Stopped at the " (limits.stop) "% level " }
+                                        span.bad { "Stopped at the " (hit.level) "% " (hit.span.label()) " level " }
                                         form.inline method="post" action="/usage/override" {
                                             input type="hidden" name="provider" value=(provider_value(u.provider));
                                             button { "Override" }
                                         }
                                     }
-                                } @else if let Some(level) = limits.warning(used) {
+                                } @else if let Some(level) = limits.plan_warning(&u.usage, now) {
                                     span.warn { "Past the " (level) "% warning" }
                                 } @else {
                                     span.muted { "OK" }
@@ -1100,16 +1108,16 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
     }
 }
 
-fn usage_window(window: Option<UsageWindow>, now: u64, limits: &UsageLimits) -> Markup {
+fn usage_window(window: Option<UsageWindow>, span: Span, now: u64, limits: &UsageLimits) -> Markup {
     html! {
         @match window {
             None => span.muted { "not reported" },
             Some(w) => {
                 @let percent = w.percent_at(now);
-                @let class = if limits.stopped(percent) {
+                @let class = if limits.stopped(span, percent) {
                     Some("bad")
                 } else {
-                    limits.warning(percent).map(|_| "warn")
+                    limits.warning(span, percent).map(|_| "warn")
                 };
                 strong class=[class] { (percent) "%" }
                 @if let Some(reset) = w.resets_at.filter(|r| *r > now) {
