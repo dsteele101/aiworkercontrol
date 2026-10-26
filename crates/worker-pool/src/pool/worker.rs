@@ -172,19 +172,20 @@ impl Shared {
             kind,
             fallback,
         } = claim;
-        let config = self.choose_model(&item, &kind, config).await;
+        let (config, model_reason) = self.choose_model(&item, &kind, config).await;
         self.set_activity(
             id,
-            Activity::Working(ActiveJob {
+            Activity::Working(Box::new(ActiveJob {
                 item: item.clone(),
                 provider: config.provider.provider,
+                model: config.provider.model.clone().unwrap_or_default(),
                 started: SystemTime::now(),
                 events: VecDeque::new(),
                 last_event: SystemTime::now(),
                 status: None,
                 background: Vec::new(),
                 background_since: None,
-            }),
+            })),
         );
 
         let started_at = unix_now();
@@ -274,6 +275,7 @@ impl Shared {
                     refunded,
                     quota_before,
                     quota_after,
+                    model_reason,
                 },
                 trace.into_inner().unwrap_or_else(PoisonError::into_inner),
                 queued_at,
@@ -414,8 +416,9 @@ impl Shared {
             } else if let Some(Activity::Working(job)) = state.workers.get_mut(&id) {
                 match event {
                     AgentEvent::Status(status) => job.status = Some(status),
+                    AgentEvent::Model(model) => job.model = model,
                     // For the work history only; not a step to show.
-                    AgentEvent::Model(_) | AgentEvent::Metrics(_) => {}
+                    AgentEvent::Metrics(_) => {}
                     AgentEvent::Background(tasks) => {
                         job.background_since = match (tasks.is_empty(), job.background_since) {
                             (true, _) => None,
@@ -461,6 +464,7 @@ struct TurnFacts {
     refunded: bool,
     quota_before: Option<PlanUsage>,
     quota_after: Option<PlanUsage>,
+    model_reason: Option<String>,
 }
 
 fn trace_stalled(trace: &Mutex<Trace>) -> bool {
@@ -513,6 +517,7 @@ fn turn_record(
         provider: config.provider.provider,
         fallback: facts.fallback,
         model_requested: non_empty(&config.provider.model),
+        model_reason: facts.model_reason,
         models: trace.models.into_iter().collect(),
         effort: non_empty(&config.provider.effort),
         queued_at: (reason == TurnReason::First).then_some(queued_at).flatten(),

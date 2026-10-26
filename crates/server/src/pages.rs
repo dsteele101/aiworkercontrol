@@ -345,7 +345,7 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                             }
                             Activity::Working(job) => {
                                 h3 { span { "Worker " (worker.id + 1) } span.muted { (elapsed(job.started)) } }
-                                div { strong { (job.item) } " " span.muted { "· " (job.provider.label()) } }
+                                div { strong { (job.item) } " " span.muted { "· " (job.provider.label()) @if !job.model.is_empty() { " · " (job.model) } } }
                                 (now_line(job))
                                 ul.events {
                                     @let skip = job.events.len().saturating_sub(CARD_EVENTS);
