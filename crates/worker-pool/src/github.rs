@@ -209,8 +209,13 @@ pub(crate) async fn review_status(
         .filter(|at| !at.is_empty())
         .max()
         .map(str::to_string);
-    let checks = checks(gh, url).await?;
-    if checks.iter().any(|c| str_at(c, "bucket") == "pending") {
+    // Any check still running holds the item back, required or not: a
+    // repository may require only some of the checks that report failures.
+    if all_checks(gh, url)
+        .await?
+        .iter()
+        .any(|c| str_at(c, "bucket") == "pending")
+    {
         return Ok(ReviewStatus {
             state,
             head,
@@ -219,7 +224,7 @@ pub(crate) async fn review_status(
             ci_running: true,
         });
     }
-    let failing = failing_checks(&checks);
+    let failing = failing_checks(&checks(gh, url).await?);
     let comments = inline_comments(gh, url, &head).await?;
     let notes = if any_comments {
         conversation_comments(gh, url, &head).await?
@@ -343,6 +348,12 @@ async fn checks(gh: &Path, url: &str) -> Result<Vec<Value>, PoolError> {
     }
     // `gh pr checks` exits non-zero while checks fail or are pending; its
     // JSON is what matters. No JSON at all means there are no checks.
+    Ok(serde_json::from_slice::<Vec<Value>>(&out.stdout).unwrap_or_default())
+}
+
+/// Every check on the pull request's latest commit, required or not.
+async fn all_checks(gh: &Path, url: &str) -> Result<Vec<Value>, PoolError> {
+    let out = run_output(gh, &["pr", "checks", url, "--json", "name,bucket,link"]).await?;
     Ok(serde_json::from_slice::<Vec<Value>>(&out.stdout).unwrap_or_default())
 }
 

@@ -34,7 +34,10 @@ case "$1 $2" in
   "run view")
     if [ -f "$here/gh.runlog.txt" ]; then cat "$here/gh.runlog.txt"; else echo 'no log' >&2; exit 1; fi ;;
   "pr checks")
-    case "$*" in *--required*) echo 'no required checks reported on the branch' >&2; exit 1 ;; esac
+    case "$*" in *--required*)
+      if [ -f "$here/gh.required.json" ]; then cat "$here/gh.required.json"; exit 0; fi
+      echo 'no required checks reported on the branch' >&2; exit 1 ;;
+    esac
     if [ -f "$here/gh.checks.json" ]; then cat "$here/gh.checks.json"; exit 1; fi
     echo 'no checks reported on the branch' >&2; exit 1 ;;
   "api --paginate")
@@ -1450,6 +1453,16 @@ async fn feedback_waits_while_ci_is_running() {
     let meta = pool.meta(State::InReview, &item).unwrap();
     assert!(meta.ci_running);
     assert_eq!(meta.needs_rework, None);
+
+    // Checks that are not required still hold the item back while they run.
+    fs::write(
+        bin.join("gh.required.json"),
+        r#"[{"name":"frontend","bucket":"pass","link":""}]"#,
+    )
+    .unwrap();
+    assert!(pool.check_reviews().await.unwrap().is_empty());
+    assert!(pool.meta(State::InReview, &item).unwrap().ci_running);
+    fs::remove_file(bin.join("gh.required.json")).unwrap();
 
     fs::write(
         bin.join("gh.checks.json"),
