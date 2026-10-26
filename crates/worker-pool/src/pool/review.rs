@@ -164,7 +164,7 @@ impl Supervisor {
                 // something new to answer, like a comment or a merge conflict.
                 if meta.answered_head.as_deref() == Some(status.head.as_str())
                     && status.reviewed_at <= meta.answered_review_at
-                    && meta.answered_feedback.as_deref() == Some(feedback.as_str())
+                    && !has_news(&feedback, meta.answered_feedback.as_deref())
                 {
                     return Ok(None);
                 }
@@ -174,7 +174,13 @@ impl Supervisor {
                 if kinds.iter().any(|k| k == "review") {
                     self.learn_from_review(item, &feedback);
                 }
-                meta.answered_feedback = Some(feedback.clone());
+                // On the same commit, what was answered before still counts.
+                meta.answered_feedback = match meta.answered_feedback.take() {
+                    Some(old) if meta.answered_head.as_deref() == Some(status.head.as_str()) => {
+                        Some(format!("{old}\n{feedback}"))
+                    }
+                    _ => Some(feedback.clone()),
+                };
                 meta.needs_rework = Some(feedback);
                 meta.answered_head = Some(status.head.clone());
                 meta.answered_review_at = status.reviewed_at;
@@ -278,4 +284,42 @@ pub(super) fn recover_orphans(queue: &Queue) -> Result<(), PoolError> {
         queue.transition(&item, ItemState::InProgress, to)?;
     }
     Ok(())
+}
+
+/// Whether `feedback` holds anything not already in `answered`: a comment,
+/// a section or a conflict a rework has not seen. Feedback shrinking, as when
+/// failing CI turns green, is not news.
+fn has_news(feedback: &str, answered: Option<&str>) -> bool {
+    let Some(answered) = answered else {
+        return true;
+    };
+    feedback
+        .split("\n- ")
+        .any(|piece| !answered.contains(piece.trim()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const COMMENTS: &str =
+        "### Inline comments\n\n- `a.rs:1` (bot): fix a\n- `b.rs:2` (bot): fix b";
+
+    #[test]
+    fn answered_comments_are_not_news_when_other_sections_come_and_go() {
+        let answered = format!("{COMMENTS}\n\n### Failing CI checks\n\n- test: link");
+        assert!(!has_news(COMMENTS, Some(&answered)));
+        assert!(!has_news(&answered, Some(&answered)));
+    }
+
+    #[test]
+    fn a_new_comment_or_section_is_news() {
+        let more = format!("{COMMENTS}\n- `c.rs:3` (bot): fix c");
+        assert!(has_news(&more, Some(COMMENTS)));
+        assert!(has_news(
+            "### Merge conflicts\\n\\nmerge main",
+            Some(COMMENTS)
+        ));
+        assert!(has_news(COMMENTS, None));
+    }
 }
