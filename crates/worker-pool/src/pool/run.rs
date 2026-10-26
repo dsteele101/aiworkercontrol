@@ -214,19 +214,19 @@ impl Shared {
         })
     }
 
-    /// Whether `provider` is past the stop level, and not allowed to run on
+    /// Whether `provider` is past a stop level, and not allowed to run on
     /// regardless.
     pub(super) fn stopped(&self, provider: Provider) -> bool {
         let stop = self.config.borrow().limits.clone();
         let state = self.lock();
-        let used = state
+        let hit = state
             .usage
             .get(&provider)
-            .map_or(0, |u| u.highest_at(unix_now()));
-        stop.stopped(used) && !state.picker.overrides.contains(&provider)
+            .and_then(|u| stop.stop_hit(u, unix_now()));
+        hit.is_some() && !state.picker.overrides.contains(&provider)
     }
 
-    /// Completes once `provider` goes past the stop level.
+    /// Completes once `provider` goes past a stop level.
     async fn over_limit(&self, provider: Provider) {
         // Subscribed before the check, so no change in between is missed.
         let mut changed = self.version.subscribe();

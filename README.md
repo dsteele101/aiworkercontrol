@@ -45,7 +45,7 @@ with the item.
   tracked.
 - **Load balancing across providers:** priority failover, round robin, weighted
   or pace-based, so work is spread by share or by remaining plan allowance.
-- **Plan usage limits:** warning levels, and a stop level at which the app fails
+- **Plan usage limits:** warning levels, and a stop level, each for the current window and the week, at which the app fails
   over to the next provider or pauses. You can override a stop from the dashboard.
 - **Live dashboard:** per-worker activity with timers, results, and usage.
 - **Safety:** agents that hang are stopped along with their whole process tree,
@@ -150,8 +150,10 @@ base = "main"
 draft = false
 
 [limits]
-warn = [50, 75]              # percent of plan window at which the dashboard warns
-stop = 85                    # percent at which no new runs start
+warn = [50, 75]              # percent of the current window at which the dashboard warns
+stop = 85                    # percent of the current window at which no new runs start
+week_warn = [50, 75]         # the same, for the week
+week_stop = 85
 failover = true              # move to the next fallback instead of pausing
 
 [balancing]

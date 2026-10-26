@@ -173,7 +173,7 @@ async fn stop_level_offers_an_override() {
         body.contains(r#"<strong class="bad">86%</strong>"#),
         "{body}"
     );
-    assert!(body.contains("Stopped at the 85% level"));
+    assert!(body.contains("Stopped at the 85% current window level"));
     assert!(body.contains(r#"action="/usage/override""#));
 
     let status = app.post("/usage/override", "provider=anthropic").await;
@@ -187,18 +187,41 @@ async fn stop_level_offers_an_override() {
 }
 
 #[tokio::test]
+async fn the_week_has_its_own_stop_level() {
+    let app = app();
+    app.post(
+        "/settings/limits",
+        "warn=50&stop=95&week_warn=40&week_stop=60&failover=on",
+    )
+    .await;
+    fs::write(
+        app.dir.path().join("work/usage.json"),
+        r#"{"anthropic":{"session":{"percent":70,"resets_at":4000000000},"weekly":{"percent":61,"resets_at":4000000000}}}"#,
+    )
+    .unwrap();
+    let app = App {
+        state: AppState::new(app.dir.path(), PORT).unwrap(),
+        ..app
+    };
+    let (_, body) = app.get("/").await;
+    assert!(body.contains("Stopped at the 60% week level"), "{body}");
+}
+
+#[tokio::test]
 async fn usage_limits_are_saved_and_checked() {
     let app = app();
     let status = app
         .post(
             "/settings/limits",
-            "warn=70%2C+60%2C+60&stop=90&fallback1=gemini&fallback2=&fallback3=open_ai&fallback4=",
+            "warn=70%2C+60%2C+60&stop=90&week_warn=30&week_stop=60&fallback1=gemini&fallback2=&fallback3=open_ai&fallback4=",
         )
         .await;
     assert_eq!(status, StatusCode::SEE_OTHER);
     let saved = app.saved();
     assert_eq!(saved.limits.warn, vec![60, 70]);
     assert_eq!(saved.limits.stop, 90);
+    assert_eq!(saved.limits.week_warn, vec![30]);
+    assert_eq!(saved.limits.week_stop, 60);
     assert!(!saved.limits.failover, "an unticked box turns failover off");
     assert_eq!(saved.fallbacks, vec![Provider::Gemini, Provider::OpenAi]);
     assert_eq!(app.state.pool().config().limits.stop, 90);
@@ -207,12 +230,17 @@ async fn usage_limits_are_saved_and_checked() {
     assert!(page.contains(r#"value="60, 70""#), "{page}");
 
     // A warning at or above the stop level is refused, and nothing changes.
-    app.post("/settings/limits", "warn=95&stop=90&failover=on")
-        .await;
+    app.post(
+        "/settings/limits",
+        "warn=95&stop=90&week_warn=30&week_stop=60&failover=on",
+    )
+    .await;
     assert_eq!(app.saved().limits.warn, vec![60, 70]);
     let (_, page) = app.get("/settings").await;
     assert!(
-        page.contains("Not saved: warning levels must be above 0 and below the 90% stop level")
+        page.contains(
+            "Not saved: window warning levels must be above 0 and below the 90% stop level"
+        )
     );
 }
 
@@ -221,7 +249,7 @@ async fn balancing_is_saved_with_weights() {
     let app = app();
     app.post(
         "/settings/limits",
-        "warn=50&stop=85&failover=on&fallback1=gemini",
+        "warn=50&stop=85&week_warn=50&week_stop=85&failover=on&fallback1=gemini",
     )
     .await;
     let (_, page) = app.get("/settings").await;
@@ -604,8 +632,18 @@ async fn in_review_items_show_their_pull_request_and_status() {
         r#"{"turns": 1, "pr_url": "https://github.com/up/repo/pull/8"}"#,
     )
     .unwrap();
+    fs::write(review.join("c.txt"), "item").unwrap();
+    fs::write(
+        review.join("c.meta.json"),
+        r#"{"turns": 1, "pr_url": "https://github.com/up/repo/pull/9", "ci_running": true}"#,
+    )
+    .unwrap();
 
     let (_, page) = app.get("/").await;
+    assert!(
+        page.contains("waiting for CI to finish (1 of 3 turns used)"),
+        "{page}"
+    );
     assert!(
         page.contains("changes requested; waiting for a worker (2 of 3 turns used)"),
         "{page}"

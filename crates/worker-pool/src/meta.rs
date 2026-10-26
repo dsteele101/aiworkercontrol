@@ -48,6 +48,10 @@ pub struct ItemMeta {
     /// conflict, is not answered yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub answered_feedback: Option<String>,
+    /// Whether checks were still running on the pull request's latest commit
+    /// when it was last read, so its feedback is waiting for them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ci_running: bool,
     /// The branch on the push remote that holds the pull request's head, when
     /// it is not the item's own `ai/` branch: set for an imported pull
     /// request, which is pushed to without replacing what is there.

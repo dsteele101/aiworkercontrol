@@ -545,6 +545,8 @@ async fn set_max_turns(State(app): State<AppState>, Form(f): Form<MaxTurnsForm>)
 struct LimitsForm {
     warn: String,
     stop: u8,
+    week_warn: String,
+    week_stop: u8,
     #[serde(default)]
     failover: Option<String>,
     // Blank when the select is left on "none".
@@ -558,29 +560,38 @@ struct LimitsForm {
     fallback4: String,
 }
 
+/// Parses a comma-separated list of warning levels, each above 0 and below
+/// `stop`.
+fn warn_levels(text: &str, stop: u8, what: &str) -> Result<Vec<u8>, String> {
+    if !(1..=100).contains(&stop) {
+        return Err(format!("the {what} stop level must be between 1 and 100%"));
+    }
+    let mut warn = Vec::new();
+    for level in text.split(',').map(str::trim).filter(|l| !l.is_empty()) {
+        let level: u8 = level
+            .trim_end_matches('%')
+            .parse()
+            .map_err(|_| format!("{level:?} is not a warning level"))?;
+        if level == 0 || level >= stop {
+            return Err(format!(
+                "{what} warning levels must be above 0 and below the {stop}% stop level"
+            ));
+        }
+        warn.push(level);
+    }
+    warn.sort_unstable();
+    warn.dedup();
+    Ok(warn)
+}
+
 async fn set_limits(State(app): State<AppState>, Form(f): Form<LimitsForm>) -> Redirect {
     let saved = app.update_settings(|s| {
-        if !(1..=100).contains(&f.stop) {
-            return Err("the stop level must be between 1 and 100%".into());
-        }
-        let mut warn = Vec::new();
-        for level in f.warn.split(',').map(str::trim).filter(|l| !l.is_empty()) {
-            let level: u8 = level
-                .trim_end_matches('%')
-                .parse()
-                .map_err(|_| format!("{level:?} is not a warning level"))?;
-            if level == 0 || level >= f.stop {
-                return Err(format!(
-                    "warning levels must be above 0 and below the {}% stop level",
-                    f.stop
-                ));
-            }
-            warn.push(level);
-        }
-        warn.sort_unstable();
-        warn.dedup();
+        let warn = warn_levels(&f.warn, f.stop, "window")?;
+        let week_warn = warn_levels(&f.week_warn, f.week_stop, "week")?;
         s.limits.warn = warn;
         s.limits.stop = f.stop;
+        s.limits.week_warn = week_warn;
+        s.limits.week_stop = f.week_stop;
         s.limits.failover = f.failover.is_some();
         s.fallbacks = [&f.fallback1, &f.fallback2, &f.fallback3, &f.fallback4]
             .into_iter()

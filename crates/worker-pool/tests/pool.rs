@@ -34,7 +34,10 @@ case "$1 $2" in
   "run view")
     if [ -f "$here/gh.runlog.txt" ]; then cat "$here/gh.runlog.txt"; else echo 'no log' >&2; exit 1; fi ;;
   "pr checks")
-    case "$*" in *--required*) echo 'no required checks reported on the branch' >&2; exit 1 ;; esac
+    case "$*" in *--required*)
+      if [ -f "$here/gh.required.json" ]; then cat "$here/gh.required.json"; exit 0; fi
+      echo 'no required checks reported on the branch' >&2; exit 1 ;;
+    esac
     if [ -f "$here/gh.checks.json" ]; then cat "$here/gh.checks.json"; exit 1; fi
     echo 'no checks reported on the branch' >&2; exit 1 ;;
   "api --paginate")
@@ -491,7 +494,9 @@ async fn stop_level_pauses_workers_until_overridden() {
     let snapshot = wait_for(&pool, |s| s.limited.is_some()).await;
     assert_eq!(
         snapshot.limited.as_deref(),
-        Some("no provider can run: Anthropic (Claude) at 86% of its plan, past the 85% stop level")
+        Some(
+            "no provider can run: Anthropic (Claude) at 86% of its current window, past the 85% stop level"
+        )
     );
     assert_eq!(queue.list(State::Open).unwrap().len(), 1);
 
@@ -516,7 +521,12 @@ async fn a_run_is_stopped_when_its_provider_goes_past_the_stop_level() {
     // The agent would hang forever; the limit stops it and frees the item.
     let snapshot = wait_for(&pool, |s| s.limited.is_some() && idle(s)).await;
     pool.stop();
-    assert!(snapshot.limited.unwrap().contains("90% of its plan"));
+    assert!(
+        snapshot
+            .limited
+            .unwrap()
+            .contains("90% of its current window")
+    );
     assert_eq!(queue.list(State::Open).unwrap().len(), 1);
     assert!(queue.list(State::Hold).unwrap().is_empty());
     let log = fs::read_to_string(fx.root.join("repo-worktrees/busy.log")).unwrap();
@@ -1423,6 +1433,57 @@ async fn failing_ci_comes_with_its_logs_when_told_to() {
         1,
         "{feedback}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn feedback_waits_while_ci_is_running() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(
+            r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[
+                {{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"Rename it.","commit":{{"oid":"{head}"}}}}]}}"#
+        ),
+    )
+    .unwrap();
+    fs::write(
+        bin.join("gh.checks.json"),
+        r#"[{"name":"build","bucket":"pending","link":""},
+            {"name":"lint","bucket":"fail","link":""}]"#,
+    )
+    .unwrap();
+
+    assert!(pool.check_reviews().await.unwrap().is_empty());
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert!(meta.ci_running);
+    assert_eq!(meta.needs_rework, None);
+
+    // Checks that are not required still hold the item back while they run.
+    fs::write(
+        bin.join("gh.required.json"),
+        r#"[{"name":"frontend","bucket":"pass","link":""}]"#,
+    )
+    .unwrap();
+    assert!(pool.check_reviews().await.unwrap().is_empty());
+    assert!(pool.meta(State::InReview, &item).unwrap().ci_running);
+    fs::remove_file(bin.join("gh.required.json")).unwrap();
+
+    fs::write(
+        bin.join("gh.checks.json"),
+        r#"[{"name":"build","bucket":"pass","link":""},
+            {"name":"lint","bucket":"fail","link":""}]"#,
+    )
+    .unwrap();
+    assert_eq!(
+        pool.check_reviews().await.unwrap(),
+        vec![(item.clone(), ReviewChange::ChangesRequested)]
+    );
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert!(!meta.ci_running);
+    assert!(meta.needs_rework.unwrap().contains("Rename it."));
 }
 
 #[tokio::test(flavor = "multi_thread")]
