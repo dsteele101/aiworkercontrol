@@ -41,6 +41,8 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/workers", post(set_workers))
         .route("/resume", post(resume))
         .route("/close", post(close))
+        .route("/resume-all", post(resume_all))
+        .route("/close-all", post(close_all))
         .route("/import", post(import_pull_request))
         .route("/review/check", post(check_review))
         .route("/review/rework", post(rework_review))
@@ -237,6 +239,43 @@ async fn close(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect
         app.notify(message);
     }
     Redirect::to("/")
+}
+
+async fn resume_all(State(app): State<AppState>) -> Redirect {
+    let held = app.pool().queue().list(ItemState::Hold).unwrap_or_default();
+    let (mut done, mut failed) = (0, 0);
+    for item in &held {
+        match app.pool().resume(item).await {
+            Ok(()) => done += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    app.notify(bulk_message("Returned", "to the agents", done, failed));
+    Redirect::to("/")
+}
+
+async fn close_all(State(app): State<AppState>) -> Redirect {
+    let held = app.pool().queue().list(ItemState::Hold).unwrap_or_default();
+    let (mut done, mut failed) = (0, 0);
+    for item in &held {
+        match app.pool().close(item) {
+            Ok(()) => done += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    app.notify(bulk_message("Closed", "", done, failed));
+    Redirect::to("/")
+}
+
+fn bulk_message(verb: &str, suffix: &str, done: usize, failed: usize) -> String {
+    let mut message = format!("{verb} {done} held item(s) {suffix}")
+        .trim_end()
+        .to_string();
+    message.push('.');
+    if failed > 0 {
+        message.push_str(&format!(" {failed} could not be changed."));
+    }
+    message
 }
 
 #[derive(Deserialize)]
