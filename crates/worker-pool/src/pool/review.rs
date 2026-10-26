@@ -78,6 +78,7 @@ impl Supervisor {
         }
         meta.answered_head = None;
         meta.answered_review_at = None;
+        meta.answered_feedback = None;
         meta.save(queue, ItemState::InReview, item)?;
         self.check_review(item).await
     }
@@ -153,9 +154,11 @@ impl Supervisor {
                     return Ok(None);
                 };
                 // Feedback on a commit already reworked is left alone, unless a
-                // reviewer has asked for changes again since.
+                // reviewer has asked for changes again since or there is
+                // something new to answer, like a comment or a merge conflict.
                 if meta.answered_head.as_deref() == Some(status.head.as_str())
                     && status.reviewed_at <= meta.answered_review_at
+                    && meta.answered_feedback.as_deref() == Some(feedback.as_str())
                 {
                     return Ok(None);
                 }
@@ -165,6 +168,7 @@ impl Supervisor {
                 if kinds.iter().any(|k| k == "review") {
                     self.learn_from_review(item, &feedback);
                 }
+                meta.answered_feedback = Some(feedback.clone());
                 meta.needs_rework = Some(feedback);
                 meta.answered_head = Some(status.head.clone());
                 meta.answered_review_at = status.reviewed_at;
@@ -239,6 +243,7 @@ impl Supervisor {
                 needs_rework: meta.needs_rework,
                 answered_head: meta.answered_head,
                 answered_review_at: meta.answered_review_at,
+                answered_feedback: meta.answered_feedback,
                 remote_branch: meta.remote_branch,
                 ..ItemMeta::default()
             };
