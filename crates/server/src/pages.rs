@@ -431,6 +431,11 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                                     (max_turns) " turns used)"
                                     @if let Some(error) = &m.last_error { "; last run: " (error) }
                                 }
+                            } @else if m.ci_running {
+                                td.warn {
+                                    "waiting for CI to finish (" (m.turns) " of " (max_turns)
+                                    " turns used)"
+                                }
                             } @else {
                                 td.warn { "in review (" (m.turns) " of " (max_turns) " turns used)" }
                             }

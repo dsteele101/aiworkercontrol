@@ -578,8 +578,18 @@ async fn in_review_items_show_their_pull_request_and_status() {
         r#"{"turns": 1, "pr_url": "https://github.com/up/repo/pull/8"}"#,
     )
     .unwrap();
+    fs::write(review.join("c.txt"), "item").unwrap();
+    fs::write(
+        review.join("c.meta.json"),
+        r#"{"turns": 1, "pr_url": "https://github.com/up/repo/pull/9", "ci_running": true}"#,
+    )
+    .unwrap();
 
     let (_, page) = app.get("/").await;
+    assert!(
+        page.contains("waiting for CI to finish (1 of 3 turns used)"),
+        "{page}"
+    );
     assert!(
         page.contains("changes requested; waiting for a worker (2 of 3 turns used)"),
         "{page}"

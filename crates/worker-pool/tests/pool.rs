@@ -1426,6 +1426,47 @@ async fn failing_ci_comes_with_its_logs_when_told_to() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn feedback_waits_while_ci_is_running() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(
+            r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[
+                {{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"Rename it.","commit":{{"oid":"{head}"}}}}]}}"#
+        ),
+    )
+    .unwrap();
+    fs::write(
+        bin.join("gh.checks.json"),
+        r#"[{"name":"build","bucket":"pending","link":""},
+            {"name":"lint","bucket":"fail","link":""}]"#,
+    )
+    .unwrap();
+
+    assert!(pool.check_reviews().await.unwrap().is_empty());
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert!(meta.ci_running);
+    assert_eq!(meta.needs_rework, None);
+
+    fs::write(
+        bin.join("gh.checks.json"),
+        r#"[{"name":"build","bucket":"pass","link":""},
+            {"name":"lint","bucket":"fail","link":""}]"#,
+    )
+    .unwrap();
+    assert_eq!(
+        pool.check_reviews().await.unwrap(),
+        vec![(item.clone(), ReviewChange::ChangesRequested)]
+    );
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert!(!meta.ci_running);
+    assert!(meta.needs_rework.unwrap().contains("Rename it."));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn bumping_pushes_an_empty_commit_to_the_pull_request() {
     let mut fx = fixture(&[("good.txt", "Fix it")], 1);
     let bare = with_pull_requests(&mut fx);

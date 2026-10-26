@@ -141,9 +141,14 @@ pub(crate) struct ReviewStatus {
     pub feedback: Option<String>,
     /// When the latest review requesting changes on `head` was submitted.
     pub reviewed_at: Option<String>,
+    /// Whether checks are still running on `head`. Feedback is held back
+    /// until they finish, so it can include what they report.
+    pub ci_running: bool,
 }
 
-/// Reads where the pull request at `url` stands. Feedback is gathered when
+/// Reads where the pull request at `url` stands. While checks are running on
+/// its latest commit there is no feedback yet; see [`ReviewStatus::ci_running`].
+/// Feedback is gathered when
 /// its latest commit has a review requesting changes, or failing CI: the
 /// required checks, or every check when the repository requires none. With
 /// `any_comments`, inline review comments on the latest commit count too,
@@ -182,6 +187,7 @@ pub(crate) async fn review_status(
             head,
             feedback: None,
             reviewed_at: None,
+            ci_running: false,
         });
     }
 
@@ -203,7 +209,17 @@ pub(crate) async fn review_status(
         .filter(|at| !at.is_empty())
         .max()
         .map(str::to_string);
-    let failing = failing_checks(gh, url).await?;
+    let checks = checks(gh, url).await?;
+    if checks.iter().any(|c| str_at(c, "bucket") == "pending") {
+        return Ok(ReviewStatus {
+            state,
+            head,
+            feedback: None,
+            reviewed_at: None,
+            ci_running: true,
+        });
+    }
+    let failing = failing_checks(&checks);
     let comments = inline_comments(gh, url, &head).await?;
     let notes = if any_comments {
         conversation_comments(gh, url, &head).await?
@@ -226,6 +242,7 @@ pub(crate) async fn review_status(
             head,
             feedback: None,
             reviewed_at: None,
+            ci_running: false,
         });
     }
 
@@ -276,6 +293,7 @@ pub(crate) async fn review_status(
         head,
         feedback: Some(text.trim().to_string()),
         reviewed_at,
+        ci_running: false,
     })
 }
 
@@ -314,9 +332,9 @@ pub(crate) async fn pr_info(gh: &Path, url: &str) -> Result<PrInfo, PoolError> {
     })
 }
 
-/// Names and links of the failing checks on the pull request's latest
-/// commit: the required ones, or all of them if none are required.
-async fn failing_checks(gh: &Path, url: &str) -> Result<Vec<(String, String)>, PoolError> {
+/// The checks on the pull request's latest commit: the required ones, or all
+/// of them if none are required.
+async fn checks(gh: &Path, url: &str) -> Result<Vec<Value>, PoolError> {
     let fields = "name,bucket,link";
     let mut out = run_output(gh, &["pr", "checks", url, "--required", "--json", fields]).await?;
     if serde_json::from_slice::<Value>(&out.stdout).is_err() {
@@ -325,14 +343,16 @@ async fn failing_checks(gh: &Path, url: &str) -> Result<Vec<(String, String)>, P
     }
     // `gh pr checks` exits non-zero while checks fail or are pending; its
     // JSON is what matters. No JSON at all means there are no checks.
-    let Ok(checks) = serde_json::from_slice::<Vec<Value>>(&out.stdout) else {
-        return Ok(Vec::new());
-    };
-    Ok(checks
+    Ok(serde_json::from_slice::<Vec<Value>>(&out.stdout).unwrap_or_default())
+}
+
+/// Names and links of the failing checks among `checks`.
+fn failing_checks(checks: &[Value]) -> Vec<(String, String)> {
+    checks
         .iter()
         .filter(|c| str_at(c, "bucket") == "fail")
         .map(|c| (str_at(c, "name").to_string(), str_at(c, "link").to_string()))
-        .collect())
+        .collect()
 }
 
 /// How much of each failed run's log reaches the agent: its last lines, where

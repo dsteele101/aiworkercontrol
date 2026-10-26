@@ -151,6 +151,11 @@ impl Supervisor {
                 ReviewChange::ClosedUnmerged
             }
             PrState::Open => {
+                if meta.ci_running != status.ci_running {
+                    meta.ci_running = status.ci_running;
+                    meta.save(queue, ItemState::InReview, item)?;
+                    self.shared.changed();
+                }
                 let Some(feedback) = status.feedback else {
                     return Ok(None);
                 };
