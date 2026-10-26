@@ -52,7 +52,7 @@ pub enum Activity {
     /// Waiting for an item.
     Idle,
     /// Carrying out an item.
-    Working(ActiveJob),
+    Working(Box<ActiveJob>),
 }
 
 /// An item a worker is carrying out.
@@ -62,6 +62,9 @@ pub struct ActiveJob {
     pub item: WorkItem,
     /// The provider running it.
     pub provider: Provider,
+    /// The model running it: the one configured, until the agent reports the
+    /// one it actually uses. Empty when the CLI picks its own default.
+    pub model: String,
     /// When the worker picked it up.
     pub started: SystemTime,
     /// The agent's most recent events, oldest first.

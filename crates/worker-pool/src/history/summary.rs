@@ -324,6 +324,7 @@ mod tests {
             provider: Provider::Anthropic,
             fallback: false,
             model_requested: None,
+            model_reason: None,
             models: vec!["opus".into()],
             effort: Some("medium".into()),
             queued_at: (reason == TurnReason::First).then_some(started_at - 30),

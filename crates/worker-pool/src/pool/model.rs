@@ -14,25 +14,28 @@ const EXCERPT_CHARS: usize = 8000;
 #[derive(Debug, Deserialize)]
 struct Choice {
     choice: usize,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 impl Shared {
     /// With several models configured for the run's provider, has an agent
     /// read the item (and a rework's feedback) and pick the one that suits
-    /// it; `config` then runs that model alone. Any trouble choosing leaves
-    /// the provider's default model: the choice is a nicety, not the work.
+    /// it; `config` then runs that model alone, and the agent's reason for
+    /// the pick comes back for the history. Any trouble choosing leaves the
+    /// provider's default model: the choice is a nicety, not the work.
     pub(super) async fn choose_model(
         &self,
         item: &WorkItem,
         kind: &Kind,
         config: PoolConfig,
-    ) -> PoolConfig {
+    ) -> (PoolConfig, Option<String>) {
         let options = config.provider.options();
         if options.len() < 2 || self.stopped(config.provider.provider) {
-            return config;
+            return (config, None);
         }
         let Ok(body) = self.queue.read(ItemState::InProgress, item) else {
-            return config;
+            return (config, None);
         };
         let feedback = match kind {
             Kind::Rework { feedback, .. } => Some(feedback.as_str()),
@@ -45,11 +48,14 @@ impl Shared {
             Err(_) => None,
         };
         match picked {
-            Some(i) => PoolConfig {
-                provider: config.provider.with_option(&options[i]),
-                ..config
-            },
-            None => config,
+            Some((i, reason)) => (
+                PoolConfig {
+                    provider: config.provider.with_option(&options[i]),
+                    ..config
+                },
+                reason,
+            ),
+            None => (config, None),
         }
     }
 }
@@ -102,17 +108,21 @@ fn model_prompt(
         prompt.push_str(&format!("{i}. {}{note}\n", option.label()));
     }
     prompt
-        .push_str("\nAnswer with a single JSON object and nothing else: {\"choice\": <number>}\n");
+        .push_str("\nAnswer with a single JSON object and nothing else: {\"choice\": <number>, \"reason\": \"<one sentence on why>\"}\n");
     prompt
 }
 
 /// The option number in the agent's final message, if it names one that
-/// exists.
-fn parse_choice(message: &str, options: usize) -> Option<usize> {
+/// exists, with the reason it gave.
+fn parse_choice(message: &str, options: usize) -> Option<(usize, Option<String>)> {
     let start = message.find('{')?;
     let end = message.rfind('}')?;
     let choice: Choice = serde_json::from_str(message.get(start..=end)?).ok()?;
-    (choice.choice < options).then_some(choice.choice)
+    let reason = choice
+        .reason
+        .map(|r| r.trim().to_string())
+        .filter(|r| !r.is_empty());
+    (choice.choice < options).then_some((choice.choice, reason))
 }
 
 #[cfg(test)]
@@ -124,7 +134,11 @@ mod tests {
 
     #[test]
     fn reads_a_choice_in_range_only() {
-        assert_eq!(parse_choice("```json\n{\"choice\": 1}\n```", 2), Some(1));
+        assert_eq!(
+            parse_choice("```json\n{\"choice\": 1, \"reason\": \" hard \"}\n```", 2),
+            Some((1, Some("hard".into())))
+        );
+        assert_eq!(parse_choice("{\"choice\": 0}", 2), Some((0, None)));
         assert_eq!(parse_choice("{\"choice\": 2}", 2), None);
         assert_eq!(parse_choice("no idea", 2), None);
     }
