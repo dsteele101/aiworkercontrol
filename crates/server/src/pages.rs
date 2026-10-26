@@ -811,6 +811,18 @@ pub(crate) fn settings(
                                     }
                                 }
                             }
+                            @if p.provider.cli() != Cli::Vibe {
+                                div style="grid-column:1/-1" {
+                                    label { "Other models" }
+                                    textarea name="alternatives" rows="3"
+                                        placeholder="model | effort | when to use it" {
+                                        (crate::settings::alternatives_text(&p.alternatives))
+                                    }
+                                    p.muted style="margin:4px 0 0" {
+                                        "One per line; effort and description are optional. With any listed, an agent reads each item (and each rework) and picks from these and the model above."
+                                    }
+                                }
+                            }
                             @if matches!(p.provider, Provider::Deepseek | Provider::OpenRouter | Provider::OpenAiCompatible) {
                                 div {
                                     label { "Base URL" }

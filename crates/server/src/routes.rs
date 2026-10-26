@@ -763,6 +763,8 @@ struct ProviderForm {
     effort: String,
     #[serde(default)]
     base_url: String,
+    #[serde(default)]
+    alternatives: String,
 }
 
 async fn save_provider(State(app): State<AppState>, Form(f): Form<ProviderForm>) -> Redirect {
@@ -779,6 +781,7 @@ async fn save_provider(State(app): State<AppState>, Form(f): Form<ProviderForm>)
         p.model = f.model.trim().to_string();
         p.effort = f.effort.trim().to_string();
         p.base_url = f.base_url.trim().to_string();
+        p.alternatives = crate::settings::parse_alternatives(&f.alternatives);
         Ok(())
     });
     if saved.is_ok() {

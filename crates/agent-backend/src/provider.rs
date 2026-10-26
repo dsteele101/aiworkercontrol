@@ -163,6 +163,31 @@ impl fmt::Debug for Auth {
     }
 }
 
+/// A model (and effort) a provider's worker may be given, and what it suits.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelOption {
+    /// The model to request; the CLI's default when `None`.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The effort level; the CLI's default when `None`.
+    #[serde(default)]
+    pub effort: Option<String>,
+    /// When to use it, for the agent that chooses between the options.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+impl ModelOption {
+    /// A short name: the model and effort, or "default".
+    pub fn label(&self) -> String {
+        let model = non_empty(&self.model).unwrap_or("default model");
+        match non_empty(&self.effort) {
+            Some(effort) => format!("{model}, {effort} effort"),
+            None => model.to_string(),
+        }
+    }
+}
+
 /// Settings for one provider.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderConfig {
@@ -180,6 +205,10 @@ pub struct ProviderConfig {
     /// The endpoint, for Deepseek and OpenRouter (optional) and OpenAI-compatible (required).
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Other models a worker may be given instead of `model` when the work
+    /// suits them better.
+    #[serde(default)]
+    pub alternatives: Vec<ModelOption>,
 }
 
 /// A provider configuration that cannot be run.
@@ -293,6 +322,34 @@ impl ProviderConfig {
             model: None,
             effort: None,
             base_url: None,
+            alternatives: Vec::new(),
+        }
+    }
+
+    /// Every model a worker may be given: `model` and `effort` first, then
+    /// the alternatives. `vibe` takes its model from its own config, so it
+    /// has only the one.
+    pub fn options(&self) -> Vec<ModelOption> {
+        let default = ModelOption {
+            model: self.model.clone(),
+            effort: self.effort.clone(),
+            description: None,
+        };
+        if self.provider.cli() == Cli::Vibe {
+            return vec![default];
+        }
+        std::iter::once(default)
+            .chain(self.alternatives.iter().cloned())
+            .collect()
+    }
+
+    /// This configuration set to run `option` alone.
+    pub fn with_option(&self, option: &ModelOption) -> Self {
+        Self {
+            model: option.model.clone(),
+            effort: option.effort.clone(),
+            alternatives: Vec::new(),
+            ..self.clone()
         }
     }
 
@@ -315,10 +372,14 @@ impl ProviderConfig {
             }
             _ => {}
         }
-        if let Some(effort) = non_empty(&self.effort)
-            && !provider.cli().effort_levels().contains(&effort)
-        {
-            return Err(ConfigError::UnsupportedEffort(provider, effort.to_string()));
+        let efforts =
+            std::iter::once(&self.effort).chain(self.alternatives.iter().map(|a| &a.effort));
+        for effort in efforts {
+            if let Some(effort) = non_empty(effort)
+                && !provider.cli().effort_levels().contains(&effort)
+            {
+                return Err(ConfigError::UnsupportedEffort(provider, effort.to_string()));
+            }
         }
         if provider == Provider::OpenAiCompatible {
             if non_empty(&self.base_url).is_none() {
@@ -576,6 +637,44 @@ mod tests {
         assert_eq!(config.validate(), Ok(()));
         config.effort = Some("minimal".into());
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn options_start_with_the_default_and_run_alone() {
+        let mut config = ProviderConfig::new(Provider::Anthropic, Auth::Plan);
+        config.model = Some("sonnet".into());
+        let big = ModelOption {
+            model: Some("opus".into()),
+            effort: Some("high".into()),
+            description: Some("hard changes".into()),
+        };
+        config.alternatives.push(big.clone());
+        let options = config.options();
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].label(), "sonnet");
+        assert_eq!(options[1].label(), "opus, high effort");
+
+        let run = config.with_option(&big).invocation(&job()).unwrap();
+        assert!(run.args.windows(2).any(|w| w == ["--model", "opus"]));
+        assert!(config.with_option(&big).alternatives.is_empty());
+    }
+
+    #[test]
+    fn alternative_efforts_are_checked_and_vibe_has_one_option() {
+        let mut config = ProviderConfig::new(Provider::OpenAi, Auth::Plan);
+        config.alternatives.push(ModelOption {
+            model: None,
+            effort: Some("max".into()),
+            description: None,
+        });
+        assert!(config.validate().is_err());
+        let mut vibe = ProviderConfig::new(Provider::Mistral, Auth::Plan);
+        vibe.alternatives.push(ModelOption {
+            model: Some("x".into()),
+            effort: None,
+            description: None,
+        });
+        assert_eq!(vibe.options().len(), 1);
     }
 
     #[test]

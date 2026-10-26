@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use agent_backend::{Auth, PlanUsage, Provider, ProviderConfig, UsageWindow};
+use agent_backend::{Auth, ModelOption, PlanUsage, Provider, ProviderConfig, UsageWindow};
 use work_queue::{Queue, State, WorkItem};
 use worker_pool::{
     Activity, Author, Balancing, BranchOutcome, Cleanup, DEFAULT_STALL_AFTER,
@@ -53,8 +53,15 @@ esac
 /// directory and reports success, unless the prompt asks it to fail.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 prompt=$(cat)
+echo "$@" >> "$(dirname "$0")/claude.calls"
 echo '{"type":"system","subtype":"init","model":"claude-test-1"}'
 case "$prompt" in
+  *"Choose which AI model"*)
+    case "$prompt" in
+      *"<work-item"*"HARD"*"</work-item>"*) echo '{"type":"result","is_error":false,"result":"{\"choice\": 1}"}' ;;
+      *) echo '{"type":"result","is_error":false,"result":"{\"choice\": 0}"}' ;;
+    esac
+    exit 0 ;;
   *"An AI coding agent failed a work item"*)
     echo '{"type":"result","is_error":false,"result":"```json\n{\"verdict\":\"suggest\",\"suggestion\":\"Run the tests before committing.\"}\n```"}'
     exit 0 ;;
@@ -343,6 +350,43 @@ async fn closes_successful_items_and_holds_failed_ones() {
         Some("agent failed: could not do it")
     );
     assert_eq!(summary("idle.txt").failures["no_commits"], 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_picks_the_model_for_each_item() {
+    let mut fx = fixture(
+        &[("easy.txt", "Fix a typo"), ("hard.txt", "HARD rewrite")],
+        1,
+    );
+    fx.config.provider.model = Some("small".into());
+    fx.config.provider.alternatives = vec![ModelOption {
+        model: Some("big".into()),
+        effort: Some("high".into()),
+        description: Some("hard changes".into()),
+    }];
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.start();
+    wait_for(&pool, |s| {
+        queue.list(State::Closed).unwrap().len() == 2 && idle(s)
+    })
+    .await;
+    pool.stop();
+
+    let history = pool.history().unwrap();
+    let efforts = |file: &str| {
+        history
+            .iter()
+            .find(|s| s.item == file)
+            .unwrap()
+            .efforts
+            .clone()
+    };
+    assert!(efforts("easy.txt").is_empty());
+    assert_eq!(efforts("hard.txt"), vec!["high"]);
+    let calls = fs::read_to_string(fx.root.join("bin/claude.calls")).unwrap();
+    assert!(calls.contains("--model big"), "{calls}");
+    assert!(calls.contains("--model small"), "{calls}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

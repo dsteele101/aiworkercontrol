@@ -3,6 +3,7 @@
 mod backfill;
 mod cleanup;
 mod import;
+mod model;
 mod review;
 mod run;
 mod suggest;

@@ -172,6 +172,7 @@ impl Shared {
             kind,
             fallback,
         } = claim;
+        let config = self.choose_model(&item, &kind, config).await;
         self.set_activity(
             id,
             Activity::Working(ActiveJob {

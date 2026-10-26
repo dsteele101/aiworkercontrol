@@ -417,6 +417,18 @@ impl Shared {
         prompt: &str,
         name: &str,
     ) -> Result<Response, PoolError> {
+        let message = self.ask_message(config, prompt, name).await?;
+        Response::parse(&message)
+            .ok_or_else(|| PoolError::BadAnswer(message.chars().take(200).collect()))
+    }
+
+    /// Like [`Shared::ask`], but returns the agent's final message as is.
+    pub(super) async fn ask_message(
+        &self,
+        config: &PoolConfig,
+        prompt: &str,
+        name: &str,
+    ) -> Result<String, PoolError> {
         let dir = self.notes_dir().join(".run");
         tokio::fs::create_dir_all(&dir)
             .await
@@ -449,9 +461,7 @@ impl Shared {
             let reason = outcome.summary().unwrap_or(&outcome.stderr_tail);
             return Err(PoolError::AgentFailed(reason.to_string()));
         }
-        let message = outcome.summary().unwrap_or_default();
-        Response::parse(message)
-            .ok_or_else(|| PoolError::BadAnswer(message.chars().take(200).collect()))
+        Ok(outcome.summary().unwrap_or_default().to_string())
     }
 }
 
