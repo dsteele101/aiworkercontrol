@@ -55,6 +55,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/settings/max-turns", post(set_max_turns))
         .route("/settings/suggestion-retention", post(set_retention))
         .route("/settings/review-comments", post(set_review_comments))
+        .route("/settings/ci-logs", post(set_ci_logs))
         .route("/settings/limits", post(set_limits))
         .route("/settings/balancing", post(set_balancing))
         .route("/usage/override", post(override_stop))
@@ -455,6 +456,29 @@ async fn set_review_comments(
             "Review comments are followed even when no changes are requested."
         } else {
             "Only reviews requesting changes are followed."
+        });
+    }
+    report(&app, saved);
+    Redirect::to("/settings")
+}
+
+#[derive(Deserialize)]
+struct CiLogsForm {
+    #[serde(default)]
+    follow_ci_logs: Option<String>,
+}
+
+async fn set_ci_logs(State(app): State<AppState>, Form(f): Form<CiLogsForm>) -> Redirect {
+    let follow = f.follow_ci_logs.is_some();
+    let saved = app.update_settings(|s| {
+        s.follow_ci_logs = follow;
+        Ok(())
+    });
+    if saved.is_ok() {
+        app.notify(if follow {
+            "Failing CI checks come with the tail of their logs."
+        } else {
+            "Failing CI checks are named, without their logs."
         });
     }
     report(&app, saved);

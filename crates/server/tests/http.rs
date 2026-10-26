@@ -772,6 +772,16 @@ async fn following_all_review_comments_is_saved() {
 }
 
 #[tokio::test]
+async fn following_ci_logs_is_saved() {
+    let app = app();
+    assert!(!app.saved().follow_ci_logs);
+    app.post("/settings/ci-logs", "follow_ci_logs=on").await;
+    assert!(app.saved().follow_ci_logs);
+    app.post("/settings/ci-logs", "").await;
+    assert!(!app.saved().follow_ci_logs);
+}
+
+#[tokio::test]
 async fn suggestions_have_their_own_page_and_not_a_dashboard_section() {
     let app = app_with_suggestion();
     let (_, dashboard) = app.get("/").await;
