@@ -12,7 +12,7 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 use work_queue::{RESULT_SUFFIX, State as ItemState, WorkItem};
 use worker_pool::{
-    Balancing, BranchOutcome, PoolError, Project, PullRequests, ReviewChange, Scheme,
+    Balancing, BranchOutcome, ClaimOrder, PoolError, Project, PullRequests, ReviewChange, Scheme,
 };
 
 use crate::{AppState, login, pages};
@@ -58,6 +58,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/settings/suggestion-retention", post(set_retention))
         .route("/settings/review-comments", post(set_review_comments))
         .route("/settings/ci-logs", post(set_ci_logs))
+        .route("/settings/claim-order", post(set_claim_order))
         .route("/settings/limits", post(set_limits))
         .route("/settings/balancing", post(set_balancing))
         .route("/usage/override", post(override_stop))
@@ -519,6 +520,26 @@ async fn set_ci_logs(State(app): State<AppState>, Form(f): Form<CiLogsForm>) -> 
         } else {
             "Failing CI checks are named, without their logs."
         });
+    }
+    report(&app, saved);
+    Redirect::to("/settings")
+}
+
+#[derive(Deserialize)]
+struct ClaimOrderForm {
+    order: ClaimOrder,
+}
+
+async fn set_claim_order(State(app): State<AppState>, Form(f): Form<ClaimOrderForm>) -> Redirect {
+    let saved = app.update_settings(|s| {
+        s.claim_order = f.order;
+        Ok(())
+    });
+    if saved.is_ok() {
+        app.notify(format!(
+            "Workers now take new items in {} order.",
+            f.order.label()
+        ));
     }
     report(&app, saved);
     Redirect::to("/settings")

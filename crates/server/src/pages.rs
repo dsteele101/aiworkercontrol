@@ -7,7 +7,7 @@ use agent_backend::{AgentEvent, AuthStatus, Cli, Provider, UsageWindow};
 use maud::{DOCTYPE, Markup, html};
 use work_queue::{State as ItemState, WorkItem};
 use worker_pool::{
-    ActiveJob, Activity, Author, DEFAULT_BUILD_JOBS, NotesVersion, PoolSnapshot,
+    ActiveJob, Activity, Author, ClaimOrder, DEFAULT_BUILD_JOBS, NotesVersion, PoolSnapshot,
     ProjectSuggestions, Scheme, Span, Suggestion, SuggestionStatus, UsageLimits,
 };
 
@@ -748,6 +748,19 @@ pub(crate) fn settings(
                 "run's log goes with it, so the agent can fix what CI actually reported."
             }
         }
+        form.panel.bar method="post" action="/settings/claim-order" style="margin-top:12px" {
+            label for="order" { "Take new items" }
+            select #order name="order" style="width:auto" {
+                @for order in ClaimOrder::ALL {
+                    option value=(claim_order_value(order)) selected[order == settings.claim_order] { (order.label()) }
+                }
+            }
+            button { "Save" }
+            span.muted {
+                "Alphanumeric goes by project, then file name. The others go by when the item "
+                "file was last changed. Reworks of items in review always come first."
+            }
+        }
 
         h2 { "AI system" }
         form.panel.bar method="post" action="/settings/active" {
@@ -1255,6 +1268,14 @@ fn clock(secs: u64) -> String {
 }
 
 /// The form value of a scheme, matching its serde name.
+fn claim_order_value(order: ClaimOrder) -> &'static str {
+    match order {
+        ClaimOrder::Alphanumeric => "alphanumeric",
+        ClaimOrder::Fifo => "fifo",
+        ClaimOrder::Lifo => "lifo",
+    }
+}
+
 fn scheme_value(scheme: Scheme) -> &'static str {
     match scheme {
         Scheme::Priority => "priority",

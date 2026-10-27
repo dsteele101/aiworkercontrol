@@ -4,6 +4,8 @@ use std::fs;
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::{QueueError, State, WorkItem};
 
 /// Suffix of an item's result file, a report of its latest run.
@@ -12,6 +14,33 @@ pub const RESULT_SUFFIX: &str = ".result.md";
 pub const META_SUFFIX: &str = ".meta.json";
 /// Files that sit beside an item and move with it.
 const SIDECARS: [&str; 2] = [RESULT_SUFFIX, META_SUFFIX];
+
+/// The order in which open items are claimed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimOrder {
+    /// By project, then file name.
+    #[default]
+    Alphanumeric,
+    /// Oldest first, by the item file's modification time.
+    Fifo,
+    /// Newest first, by the item file's modification time.
+    Lifo,
+}
+
+impl ClaimOrder {
+    /// Every order, in display order.
+    pub const ALL: [ClaimOrder; 3] = [ClaimOrder::Alphanumeric, ClaimOrder::Fifo, ClaimOrder::Lifo];
+
+    /// A human-readable name.
+    pub fn label(self) -> &'static str {
+        match self {
+            ClaimOrder::Alphanumeric => "Alphanumeric",
+            ClaimOrder::Fifo => "Oldest first (FIFO)",
+            ClaimOrder::Lifo => "Newest first (LIFO)",
+        }
+    }
+}
 
 /// A work queue rooted at a directory holding `open/`, `inprogress/` and `closed/`.
 #[derive(Debug, Clone)]
@@ -111,7 +140,35 @@ impl Queue {
         &self,
         skip: impl Fn(&WorkItem) -> bool,
     ) -> Result<Option<WorkItem>, QueueError> {
-        for item in self.list(State::Open)? {
+        self.claim_next_by(ClaimOrder::Alphanumeric, skip)
+    }
+
+    /// [`claim_next`](Self::claim_next), taking open items in `order`.
+    /// Items with the same modification time fall back to name order.
+    pub fn claim_next_by(
+        &self,
+        order: ClaimOrder,
+        skip: impl Fn(&WorkItem) -> bool,
+    ) -> Result<Option<WorkItem>, QueueError> {
+        let mut items = self.list(State::Open)?;
+        if order != ClaimOrder::Alphanumeric {
+            // An item that vanishes mid-listing was claimed by another worker.
+            let mut aged: Vec<_> = items
+                .into_iter()
+                .filter_map(|item| {
+                    let modified = fs::metadata(self.path(State::Open, &item))
+                        .and_then(|m| m.modified())
+                        .ok()?;
+                    Some((modified, item))
+                })
+                .collect();
+            aged.sort_by(|a, b| match order {
+                ClaimOrder::Lifo => b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)),
+                _ => a.cmp(b),
+            });
+            items = aged.into_iter().map(|(_, item)| item).collect();
+        }
+        for item in items {
             if skip(&item) {
                 continue;
             }
@@ -280,6 +337,24 @@ mod tests {
         let (_dir, queue) = queue_with(&["open/p/a.txt", "open/p/b.txt"]);
         let item = queue.claim_next(|i| i.file == "a.txt").unwrap();
         assert_eq!(item, Some(WorkItem::new("p", "b.txt")));
+    }
+
+    #[test]
+    fn claim_next_by_orders_on_age() {
+        let (dir, queue) = queue_with(&["open/p/a.txt", "open/p/b.txt", "open/p/c.txt"]);
+        let epoch = std::time::SystemTime::UNIX_EPOCH;
+        for (file, secs) in [("a.txt", 300), ("b.txt", 100), ("c.txt", 200)] {
+            let f = fs::File::options()
+                .write(true)
+                .open(dir.path().join("open/p").join(file))
+                .unwrap();
+            f.set_modified(epoch + std::time::Duration::from_secs(secs))
+                .unwrap();
+        }
+        let claim = |order| queue.claim_next_by(order, |_| false).unwrap().unwrap().file;
+        assert_eq!(claim(ClaimOrder::Fifo), "b.txt");
+        assert_eq!(claim(ClaimOrder::Lifo), "a.txt");
+        assert_eq!(claim(ClaimOrder::Alphanumeric), "c.txt");
     }
 
     #[test]

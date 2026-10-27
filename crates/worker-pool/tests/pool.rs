@@ -11,7 +11,7 @@ use std::time::Duration;
 use agent_backend::{Auth, ModelOption, PlanUsage, Provider, ProviderConfig, UsageWindow};
 use work_queue::{Queue, State, WorkItem};
 use worker_pool::{
-    Activity, Author, Balancing, BranchOutcome, Cleanup, DEFAULT_STALL_AFTER,
+    Activity, Author, Balancing, BranchOutcome, ClaimOrder, Cleanup, DEFAULT_STALL_AFTER,
     DEFAULT_SUGGESTION_RETENTION, NOTES_FILE, PoolConfig, PoolError, PoolSnapshot, Project,
     ProviderUsage, PullRequests, ReviewChange, Suggestion, SuggestionStatus, Supervisor,
     TurnOutcome, TurnReason, UsageLimits,
@@ -220,6 +220,7 @@ fn fixture(items: &[(&str, &str)], workers: usize) -> Fixture {
         suggestion_retention: DEFAULT_SUGGESTION_RETENTION,
         follow_all_comments: false,
         follow_ci_logs: false,
+        claim_order: ClaimOrder::default(),
     };
     Fixture {
         _dir: dir,

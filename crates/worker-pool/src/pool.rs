@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use agent_backend::{Provider, ProviderConfig};
 use tokio::sync::{Notify, watch};
-use work_queue::{Queue, State as ItemState, WorkItem};
+use work_queue::{ClaimOrder, Queue, State as ItemState, WorkItem};
 
 use crate::agent;
 use crate::balance::Picker;
@@ -74,6 +74,8 @@ pub struct PoolConfig {
     /// Whether feedback about failing CI includes the tail of the failed
     /// runs' logs, not just the names of the checks.
     pub follow_ci_logs: bool,
+    /// The order in which workers take new items from `open`.
+    pub claim_order: ClaimOrder,
 }
 
 /// Owns the workers. Cheap to clone; every clone controls the same pool.
