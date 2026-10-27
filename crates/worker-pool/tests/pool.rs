@@ -1438,6 +1438,57 @@ async fn the_watcher_follows_a_maintainers_conversation_comment_naming_the_head(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn comments_with_an_ignored_marker_are_not_feedback() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    fx.config.projects[0].ignore_comments = vec!["pr-review-deferred".into()];
+    fx.config.follow_all_comments = true;
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[]}}"#),
+    )
+    .unwrap();
+    fs::write(
+        bin.join("gh.issue_comments.json"),
+        format!(
+            r#"[{{"body":"<!-- pr-review-deferred -->\nDeferred at `{head}`.","user":{{"login":"maint","type":"User"}}}}]"#
+        ),
+    )
+    .unwrap();
+    fs::write(
+        bin.join("gh.comments.json"),
+        format!(
+            r#"[{{"commit_id":"{head}","path":"fixed.txt","line":1,"body":"<!-- pr-review-deferred --> later","user":{{"login":"maint"}}}}]"#
+        ),
+    )
+    .unwrap();
+    assert_eq!(pool.check_review(&item).await.unwrap(), None);
+
+    // A comment without the marker is still feedback.
+    fs::write(
+        bin.join("gh.comments.json"),
+        format!(
+            r#"[{{"commit_id":"{head}","path":"fixed.txt","line":1,"body":"<!-- pr-review-deferred --> later","user":{{"login":"maint"}}}},
+                {{"commit_id":"{head}","path":"fixed.txt","line":2,"body":"Rename this.","user":{{"login":"maint"}}}}]"#
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        pool.check_review(&item).await.unwrap(),
+        Some(ReviewChange::ChangesRequested)
+    );
+    let feedback = pool
+        .meta(State::InReview, &item)
+        .unwrap()
+        .needs_rework
+        .unwrap();
+    assert!(feedback.contains("Rename this."), "{feedback}");
+    assert!(!feedback.contains("deferred"), "{feedback}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn failing_ci_comes_with_its_logs_when_told_to() {
     let mut fx = fixture(&[("good.txt", "Fix it")], 1);
     with_pull_requests(&mut fx);
@@ -1617,6 +1668,45 @@ async fn comments_that_need_no_change_send_the_item_back_to_review() {
     assert_eq!(meta.needs_rework, None);
     assert_eq!(meta.last_error, None);
     // The answered head keeps the same comments from queueing another turn.
+    assert_eq!(pool.check_review(&item).await.unwrap(), None);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn requested_changes_that_need_no_change_send_the_item_back_to_review() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(
+            r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[
+                {{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"ALREADY-ADDRESSED","commit":{{"oid":"{head}"}}}}]}}"#
+        ),
+    )
+    .unwrap();
+
+    assert_eq!(
+        pool.check_review(&item).await.unwrap(),
+        Some(ReviewChange::ChangesRequested)
+    );
+    pool.start();
+    let queue = pool.queue().clone();
+    wait_for(&pool, |s| {
+        idle(s)
+            && queue.list(State::InReview).unwrap().len() == 1
+            && pool.meta(State::InReview, &item).unwrap().turns == 2
+    })
+    .await;
+    pool.stop();
+
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert_eq!(meta.pushed_head.as_deref(), Some(head.as_str()));
+    assert_eq!(meta.needs_rework, None);
+    assert_eq!(meta.last_error, None);
+    // The agent's explanation is kept with the item.
+    let report = fs::read_to_string(fx.root.join("work/inreview/demo/good.result.md")).unwrap();
+    assert!(report.contains("Nothing left to change"), "{report}");
     assert_eq!(pool.check_review(&item).await.unwrap(), None);
 }
 
