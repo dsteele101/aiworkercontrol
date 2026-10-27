@@ -1853,6 +1853,33 @@ async fn a_merged_pull_request_closes_the_item_and_frees_the_worktree() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_merged_pull_request_closes_an_item_with_rework_queued() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    fs::write(
+        fx.root.join("bin/gh.view.json"),
+        format!(
+            r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[
+                {{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"Rename it.","commit":{{"oid":"{head}"}}}}]}}"#
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        pool.check_reviews().await.unwrap(),
+        vec![(item.clone(), ReviewChange::ChangesRequested)]
+    );
+
+    fs::remove_file(fx.root.join("bin/gh.view.json")).unwrap();
+    fs::write(fx.root.join("bin/gh.merged"), "").unwrap();
+    assert_eq!(
+        pool.rework_again(&item).await.unwrap(),
+        Some(ReviewChange::Merged)
+    );
+    assert_eq!(pool.queue().list(State::Closed).unwrap(), vec![item]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_failing_rework_retries_from_review_then_holds_and_resumes_there() {
     let mut fx = fixture(&[("good.txt", "Fix it")], 1);
     fx.config.max_turns = 3;
