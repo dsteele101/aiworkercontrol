@@ -445,6 +445,20 @@ async fn projects_are_validated() {
     )
     .await;
     assert_eq!(app.saved().projects[0].build_jobs, 8);
+    app.post(
+        "/settings/projects",
+        "name=demo&spec_dir=spec/demo&repo=repo&ignore_comments=pr-review-deferred%0D%0A%0D%0A+skip-me+",
+    )
+    .await;
+    assert_eq!(
+        app.saved().projects[0].ignore_comments,
+        vec!["pr-review-deferred", "skip-me"]
+    );
+    app.post(
+        "/settings/projects",
+        "name=demo&spec_dir=spec/demo&repo=repo&build_jobs=8",
+    )
+    .await;
     // Out of range is rejected, keeping the last settings.
     app.post(
         "/settings/projects",

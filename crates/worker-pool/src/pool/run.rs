@@ -12,7 +12,6 @@ use work_queue::{State as ItemState, WorkItem};
 use super::trace::Trace;
 use super::worker::PR_LINE;
 use super::{PoolConfig, Shared, unix_now};
-use crate::history::feedback_kinds;
 use crate::{PoolError, Project, PullRequests, agent, git, github, prompt};
 
 /// Which kind of run an item gets.
@@ -52,9 +51,12 @@ pub(super) enum Finish {
     Hold { report: String, reason: String },
 }
 
-/// Whether the run is a rework whose feedback is inline comments alone.
-fn comments_only(kind: &Kind) -> bool {
-    matches!(kind, Kind::Rework { feedback, .. } if feedback_kinds(feedback) == ["comments"])
+/// Whether the run may end without adding a commit. A rework may: the
+/// feedback can be wrong, already addressed, or beyond the branch (a CI
+/// outage), and the agent then rightly changes nothing. It must say so in a
+/// summary, though; silence is indistinguishable from work left uncommitted.
+fn may_leave_unchanged(kind: &Kind, outcome: &agent::Outcome) -> bool {
+    matches!(kind, Kind::Rework { .. }) && outcome.summary().is_some_and(|s| !s.trim().is_empty())
 }
 
 impl Shared {
@@ -117,12 +119,11 @@ impl Shared {
             return Err(PoolError::AgentFailed(reason));
         }
         // A run must add commits: to the base on a first attempt, to the
-        // pushed head on a rework. The exception is a rework that only
-        // answers inline comments: they may all be addressed already, and
-        // the agent then has nothing to change.
+        // pushed head on a rework. The exception is a rework whose agent
+        // explains why it has nothing to change.
         let added = git::commits_since(&worktree, &since).await?;
         let unchanged = added.is_empty();
-        if unchanged && !comments_only(kind) {
+        if unchanged && !may_leave_unchanged(kind, &outcome) {
             return Err(PoolError::NoCommits(branch));
         }
         if !unchanged {

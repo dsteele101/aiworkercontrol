@@ -30,6 +30,11 @@ pub struct Project {
     /// passed as `CARGO_BUILD_JOBS`.
     #[serde(default = "default_build_jobs")]
     pub build_jobs: u32,
+    /// Text that marks a pull request comment or review as not feedback, such
+    /// as the hidden tag of a bot's "deferred" notice: one containing any of
+    /// these is left to no rework.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ignore_comments: Vec<String>,
 }
 
 /// How finished work is published: pushed to a remote, then proposed in a
@@ -76,6 +81,7 @@ impl Project {
             setup: None,
             pr: None,
             build_jobs: DEFAULT_BUILD_JOBS,
+            ignore_comments: Vec::new(),
         }
     }
 

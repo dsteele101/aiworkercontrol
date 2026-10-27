@@ -134,7 +134,11 @@ impl Supervisor {
             return Ok(None);
         };
         let ci_logs = self.config().follow_ci_logs;
-        let status = github::review_status(gh, &url, any_comments, ci_logs).await?;
+        let ignore = self
+            .project(item)
+            .map(|p| p.ignore_comments)
+            .unwrap_or_default();
+        let status = github::review_status(gh, &url, any_comments, ci_logs, &ignore).await?;
         let change = match status.state {
             PrState::Merged => {
                 meta.needs_rework = None;
@@ -250,7 +254,10 @@ impl Supervisor {
         let pr_open = match &meta.pr_url {
             Some(url) => {
                 let gh = github::program(self.config().cli_dir.as_deref());
-                github::review_status(&gh, url, false, false).await?.state == PrState::Open
+                github::review_status(&gh, url, false, false, &[])
+                    .await?
+                    .state
+                    == PrState::Open
             }
             None => false,
         };

@@ -154,12 +154,14 @@ pub(crate) struct ReviewStatus {
 /// `any_comments`, inline review comments on the latest commit count too,
 /// whatever kind of review they came in, as does a comment-only review with
 /// a body, and a non-bot conversation comment naming the head. A merge conflict with the base
-/// branch is feedback too.
+/// branch is feedback too. A review or comment containing one of `ignore`
+/// is not feedback.
 pub(crate) async fn review_status(
     gh: &Path,
     url: &str,
     any_comments: bool,
     ci_logs: bool,
+    ignore: &[String],
 ) -> Result<ReviewStatus, PoolError> {
     let view = json(
         &run(
@@ -197,6 +199,7 @@ pub(crate) async fn review_status(
         .into_iter()
         .flatten()
         .filter(|r| r.pointer("/commit/oid").and_then(Value::as_str) == Some(head.as_str()))
+        .filter(|r| !ignored(str_at(r, "body"), ignore))
         .collect();
     let requests: Vec<&&Value> = on_head
         .iter()
@@ -225,9 +228,9 @@ pub(crate) async fn review_status(
         });
     }
     let failing = failing_checks(&checks(gh, url).await?);
-    let comments = inline_comments(gh, url, &head).await?;
+    let comments = inline_comments(gh, url, &head, ignore).await?;
     let notes = if any_comments {
-        conversation_comments(gh, url, &head).await?
+        conversation_comments(gh, url, &head, ignore).await?
     } else {
         String::new()
     };
@@ -418,7 +421,12 @@ fn run_id(link: &str) -> Option<&str> {
 }
 
 /// The inline review comments made on `head`, one bullet each.
-async fn inline_comments(gh: &Path, url: &str, head: &str) -> Result<String, PoolError> {
+async fn inline_comments(
+    gh: &Path,
+    url: &str,
+    head: &str,
+    ignore: &[String],
+) -> Result<String, PoolError> {
     let Some((owner, repo, number)) = parse_pr_url(url) else {
         return Ok(String::new());
     };
@@ -436,7 +444,7 @@ async fn inline_comments(gh: &Path, url: &str, head: &str) -> Result<String, Poo
         .flatten();
     let mut text = String::new();
     for c in comments {
-        if str_at(c, "commit_id") != head {
+        if str_at(c, "commit_id") != head || ignored(str_at(c, "body"), ignore) {
             continue;
         }
         let line = c
@@ -458,7 +466,12 @@ async fn inline_comments(gh: &Path, url: &str, head: &str) -> Result<String, Poo
 /// The pull request conversation comments that name `head`, one bullet each:
 /// a maintainer's note on where a commit stands, which no review carries.
 /// Bots are left out, since their reports name the head too.
-async fn conversation_comments(gh: &Path, url: &str, head: &str) -> Result<String, PoolError> {
+async fn conversation_comments(
+    gh: &Path,
+    url: &str,
+    head: &str,
+    ignore: &[String],
+) -> Result<String, PoolError> {
     let Some((owner, repo, number)) = parse_pr_url(url) else {
         return Ok(String::new());
     };
@@ -480,7 +493,7 @@ async fn conversation_comments(gh: &Path, url: &str, head: &str) -> Result<Strin
     for c in comments {
         let body = str_at(c, "body").trim();
         let bot = c.pointer("/user/type").and_then(Value::as_str) == Some("Bot");
-        if bot || !body.contains(head) {
+        if bot || !body.contains(head) || ignored(body, ignore) {
             continue;
         }
         text.push_str(&format!(
@@ -492,6 +505,12 @@ async fn conversation_comments(gh: &Path, url: &str, head: &str) -> Result<Strin
         ));
     }
     Ok(text)
+}
+
+/// Whether `body` carries one of the `ignore` markers: a note that is not
+/// asking for anything, such as a maintainer bot's "deferred" notice.
+fn ignored(body: &str, ignore: &[String]) -> bool {
+    ignore.iter().any(|marker| body.contains(marker.as_str()))
 }
 
 /// `(owner, repo, number)` from `https://github.com/OWNER/REPO/pull/N`.

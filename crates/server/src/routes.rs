@@ -810,6 +810,8 @@ struct ProjectForm {
     pr_draft: Option<String>,
     #[serde(default)]
     build_jobs: String,
+    #[serde(default)]
+    ignore_comments: String,
 }
 
 async fn add_project(State(app): State<AppState>, Form(f): Form<ProjectForm>) -> Redirect {
@@ -831,6 +833,13 @@ async fn add_project(State(app): State<AppState>, Form(f): Form<ProjectForm>) ->
                 project.base_ref = f.base_ref.trim().to_string();
             }
             project.setup = Some(f.setup.trim().to_string()).filter(|s| !s.is_empty());
+            project.ignore_comments = f
+                .ignore_comments
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect();
             if !f.build_jobs.trim().is_empty() {
                 project.build_jobs = f
                     .build_jobs

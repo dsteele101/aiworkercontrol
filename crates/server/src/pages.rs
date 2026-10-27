@@ -981,6 +981,12 @@ pub(crate) fn settings(
                 }
                 label { "Worktree setup command (optional)" }
                 input type="text" name="setup" placeholder="e.g. cp \"$AIWC_REPO\"/data/*.json data/";
+                label { "Ignored comment markers (optional, one per line)" }
+                textarea name="ignore_comments" rows="2" placeholder="pr-review-deferred" {}
+                p.muted {
+                    "A pull request comment or review containing any of these is not feedback, so it queues no rework. "
+                    "Use it for a bot's notice that asks for nothing."
+                }
                 p.muted {
                     "Each item gets a fresh git worktree on its own " code { "ai/<item>" } " branch, beside the repo in "
                     code { "<repo>-worktrees/" } ". This command runs there with " code { "sh -c" } " before the agent "
