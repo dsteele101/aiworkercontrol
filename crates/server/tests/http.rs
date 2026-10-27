@@ -860,6 +860,17 @@ async fn following_ci_logs_is_saved() {
 }
 
 #[tokio::test]
+async fn claim_order_is_saved() {
+    let app = app();
+    assert_eq!(
+        app.saved().claim_order,
+        worker_pool::ClaimOrder::Alphanumeric
+    );
+    app.post("/settings/claim-order", "order=lifo").await;
+    assert_eq!(app.saved().claim_order, worker_pool::ClaimOrder::Lifo);
+}
+
+#[tokio::test]
 async fn suggestions_have_their_own_page_and_not_a_dashboard_section() {
     let app = app_with_suggestion();
     let (_, dashboard) = app.get("/").await;

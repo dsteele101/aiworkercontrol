@@ -66,3 +66,4 @@ pub use suggestions::{
     Author, NOTES_FILE, NotesVersion, ProjectSuggestions, Remark, Suggestion, SuggestionStatus,
 };
 pub use usage::ProviderUsage;
+pub use work_queue::ClaimOrder;

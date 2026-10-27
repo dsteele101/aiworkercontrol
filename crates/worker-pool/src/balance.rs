@@ -303,6 +303,7 @@ mod tests {
             suggestion_retention: crate::DEFAULT_SUGGESTION_RETENTION,
             follow_all_comments: false,
             follow_ci_logs: false,
+            claim_order: crate::ClaimOrder::default(),
         }
     }
 

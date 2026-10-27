@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use agent_backend::{Auth, ConfigError, ModelOption, Provider, ProviderConfig};
 use serde::{Deserialize, Serialize};
-use worker_pool::{Balancing, DEFAULT_STALL_AFTER, PoolConfig, Project, UsageLimits};
+use worker_pool::{Balancing, ClaimOrder, DEFAULT_STALL_AFTER, PoolConfig, Project, UsageLimits};
 
 use crate::ServerError;
 
@@ -56,6 +56,9 @@ pub struct Settings {
     /// names of the failing checks.
     #[serde(default)]
     pub follow_ci_logs: bool,
+    /// The order in which new items are taken from `open`.
+    #[serde(default)]
+    pub claim_order: ClaimOrder,
 }
 
 /// The default for [`Settings::suggestion_retention_days`].
@@ -209,6 +212,7 @@ impl Default for Settings {
             suggestion_retention_days: DEFAULT_RETENTION_DAYS,
             follow_all_comments: false,
             follow_ci_logs: false,
+            claim_order: ClaimOrder::default(),
         }
     }
 }
@@ -338,6 +342,7 @@ impl Settings {
             ),
             follow_all_comments: self.follow_all_comments,
             follow_ci_logs: self.follow_ci_logs,
+            claim_order: self.claim_order,
         }
     }
 }

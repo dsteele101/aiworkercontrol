@@ -29,4 +29,4 @@ mod queue;
 
 pub use error::QueueError;
 pub use item::{State, WorkItem};
-pub use queue::{META_SUFFIX, Queue, RESULT_SUFFIX};
+pub use queue::{ClaimOrder, META_SUFFIX, Queue, RESULT_SUFFIX};

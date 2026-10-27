@@ -115,7 +115,9 @@ impl Shared {
                 return Ok(Some(self.claimed(item, project, &config, kind, pick)));
             }
         }
-        let item = self.queue.claim_next(|item| project_of(item).is_none())?;
+        let item = self
+            .queue
+            .claim_next_by(config.claim_order, |item| project_of(item).is_none())?;
         Ok(item.and_then(|item| {
             let project = project_of(&item)?;
             Some(self.claimed(item, project, &config, Kind::New, general))
