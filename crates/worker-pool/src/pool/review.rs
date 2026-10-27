@@ -74,7 +74,11 @@ impl Supervisor {
         }
         let mut meta = ItemMeta::load(queue, ItemState::InReview, item)?;
         if meta.needs_rework.is_some() {
-            return Err(PoolError::ReworkQueued(item.clone()));
+            // The pull request may have been merged or closed since.
+            return match self.check_review(item).await? {
+                Some(change) => Ok(Some(change)),
+                None => Err(PoolError::ReworkQueued(item.clone())),
+            };
         }
         meta.answered_head = None;
         meta.answered_review_at = None;
@@ -129,13 +133,11 @@ impl Supervisor {
         let Some(url) = meta.pr_url.clone() else {
             return Ok(None);
         };
-        if meta.needs_rework.is_some() {
-            return Ok(None);
-        }
         let ci_logs = self.config().follow_ci_logs;
         let status = github::review_status(gh, &url, any_comments, ci_logs).await?;
         let change = match status.state {
             PrState::Merged => {
+                meta.needs_rework = None;
                 meta.save(queue, ItemState::InReview, item)?;
                 queue.transition(item, ItemState::InReview, ItemState::Closed)?;
                 self.shared.record(item, EventKind::Merged, None);
@@ -151,6 +153,10 @@ impl Supervisor {
                 ReviewChange::ClosedUnmerged
             }
             PrState::Open => {
+                // A worker is about to rework the item; leave it be.
+                if meta.needs_rework.is_some() {
+                    return Ok(None);
+                }
                 if meta.ci_running != status.ci_running {
                     meta.ci_running = status.ci_running;
                     meta.save(queue, ItemState::InReview, item)?;
