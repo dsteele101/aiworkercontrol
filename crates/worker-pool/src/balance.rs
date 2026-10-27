@@ -161,7 +161,9 @@ impl Picker {
                 unavailable.push(format!("{} failed its last run", provider.label()));
                 continue;
             }
-            let hit = usage.get(&provider).and_then(|u| limits.stop_hit(u, now));
+            let hit = usage
+                .get(&provider)
+                .and_then(|u| limits.for_provider(provider).stop_hit(u, now));
             if let Some(hit) = hit {
                 if !self.overrides.contains(&provider) {
                     unavailable.push(format!(

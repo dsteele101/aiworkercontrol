@@ -208,6 +208,45 @@ async fn the_week_has_its_own_stop_level() {
 }
 
 #[tokio::test]
+async fn a_provider_can_override_the_global_limits() {
+    let app = app();
+    app.post(
+        "/settings/limits",
+        "warn=50&stop=85&week_warn=50&week_stop=85&failover=on",
+    )
+    .await;
+    let (active, name) = (Provider::Gemini, "gemini");
+    app.post(
+        "/settings/provider-limits",
+        &format!("{name}_warn=&{name}_stop=95&{name}_week_warn=20&{name}_week_stop="),
+    )
+    .await;
+    let own = app.saved().limits.providers[&active].clone();
+    assert_eq!((own.warn, own.stop), (None, Some(95)));
+    assert_eq!((own.week_warn, own.week_stop), (Some(vec![20]), None));
+    assert_eq!(
+        app.state.pool().config().limits.for_provider(active).stop,
+        95
+    );
+
+    // A stop level at or below the global warning levels is refused.
+    app.post(
+        "/settings/provider-limits",
+        &format!("{name}_warn=&{name}_stop=40&{name}_week_warn=&{name}_week_stop="),
+    )
+    .await;
+    assert_eq!(app.saved().limits.providers[&active].stop, Some(95));
+
+    // Clearing every field goes back to the global levels.
+    app.post(
+        "/settings/provider-limits",
+        &format!("{name}_warn=&{name}_stop=&{name}_week_warn=&{name}_week_stop="),
+    )
+    .await;
+    assert!(app.saved().limits.providers.is_empty());
+}
+
+#[tokio::test]
 async fn usage_limits_are_saved_and_checked() {
     let app = app();
     let status = app

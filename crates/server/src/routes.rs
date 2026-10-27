@@ -12,7 +12,8 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 use work_queue::{RESULT_SUFFIX, State as ItemState, WorkItem};
 use worker_pool::{
-    Balancing, BranchOutcome, ClaimOrder, PoolError, Project, PullRequests, ReviewChange, Scheme,
+    Balancing, BranchOutcome, ClaimOrder, PoolError, Project, ProviderLimits, PullRequests,
+    ReviewChange, Scheme,
 };
 
 use crate::{AppState, login, pages};
@@ -60,6 +61,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/settings/ci-logs", post(set_ci_logs))
         .route("/settings/claim-order", post(set_claim_order))
         .route("/settings/limits", post(set_limits))
+        .route("/settings/provider-limits", post(set_provider_limits))
         .route("/settings/balancing", post(set_balancing))
         .route("/usage/override", post(override_stop))
         .route("/cleanup", post(clean_up))
@@ -626,6 +628,87 @@ async fn set_limits(State(app): State<AppState>, Form(f): Form<LimitsForm>) -> R
     });
     if saved.is_ok() {
         app.notify("Saved the plan usage limits.");
+    }
+    report(&app, saved);
+    Redirect::to("/settings")
+}
+
+/// Every field is text, so the per-provider `<provider>_<level>` fields can
+/// be gathered by `flatten`.
+#[derive(Deserialize)]
+struct ProviderLimitsForm {
+    #[serde(flatten)]
+    fields: HashMap<String, String>,
+}
+
+/// A stop level from a field left blank to follow the global one.
+fn optional_stop(text: &str, what: &str) -> Result<Option<u8>, String> {
+    let text = text.trim().trim_end_matches('%');
+    if text.is_empty() {
+        return Ok(None);
+    }
+    text.parse()
+        .ok()
+        .filter(|l| (1..=100).contains(l))
+        .map(Some)
+        .ok_or_else(|| format!("{what} stop level must be between 1 and 100%"))
+}
+
+async fn set_provider_limits(
+    State(app): State<AppState>,
+    Form(f): Form<ProviderLimitsForm>,
+) -> Redirect {
+    let saved = app.update_settings(|s| {
+        // Only the listed providers have fields; others keep their levels.
+        for p in Provider::ALL {
+            let field = |level: &str| {
+                f.fields
+                    .get(&format!("{}_{level}", pages::provider_value(p)))
+            };
+            if field("stop").is_none() {
+                continue;
+            }
+            let label = p.label();
+            let get = |level: &str| field(level).map_or("", String::as_str);
+            let stop = optional_stop(get("stop"), &format!("{label}'s window"))?;
+            let week_stop = optional_stop(get("week_stop"), &format!("{label}'s week"))?;
+            let levels = |text: &str, stop: Option<u8>, global: &[u8], global_stop, what: &str| {
+                let what = format!("{label}'s {what}");
+                let stop = stop.unwrap_or(global_stop);
+                if text.trim().is_empty() {
+                    if global.iter().any(|w| *w >= stop) {
+                        return Err(format!(
+                            "{what} stop level must be above the global warning levels"
+                        ));
+                    }
+                    return Ok(None);
+                }
+                warn_levels(text, stop, &what).map(Some)
+            };
+            let warn = levels(get("warn"), stop, &s.limits.warn, s.limits.stop, "window")?;
+            let week_warn = levels(
+                get("week_warn"),
+                week_stop,
+                &s.limits.week_warn,
+                s.limits.week_stop,
+                "week",
+            )?;
+            let own = ProviderLimits {
+                warn,
+                stop,
+                week_warn,
+                week_stop,
+            };
+            if own.is_empty() {
+                s.limits.providers.remove(&p);
+            } else {
+                s.limits.providers.insert(p, own);
+            }
+        }
+        Ok(())
+    });
+    if saved.is_ok() {
+        app.notify("Saved the per-provider usage limits.");
     }
     report(&app, saved);
     Redirect::to("/settings")

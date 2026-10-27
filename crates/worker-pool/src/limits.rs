@@ -1,7 +1,9 @@
 //! Plan-usage levels: when to warn, and when to stop starting runs on a
 //! provider.
 
-use agent_backend::PlanUsage;
+use std::collections::HashMap;
+
+use agent_backend::{PlanUsage, Provider};
 use serde::{Deserialize, Serialize};
 
 /// Which of a provider's usage windows a level applies to.
@@ -57,6 +59,34 @@ pub struct UsageLimits {
     /// rather than pausing the workers.
     #[serde(default = "default_failover")]
     pub failover: bool,
+    /// Levels that replace the ones above for individual providers.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub providers: HashMap<Provider, ProviderLimits>,
+}
+
+/// One provider's own plan-usage levels. A level left `None` follows the
+/// global one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderLimits {
+    /// Warn levels for the current window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warn: Option<Vec<u8>>,
+    /// Stop level for the current window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<u8>,
+    /// Warn levels for the week.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub week_warn: Option<Vec<u8>>,
+    /// Stop level for the week.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub week_stop: Option<u8>,
+}
+
+impl ProviderLimits {
+    /// Whether every level follows the global one.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 fn default_warn() -> Vec<u8> {
@@ -79,11 +109,26 @@ impl Default for UsageLimits {
             week_warn: default_warn(),
             week_stop: default_stop(),
             failover: default_failover(),
+            providers: HashMap::new(),
         }
     }
 }
 
 impl UsageLimits {
+    /// The levels that apply to `provider`: its own where set, the global
+    /// ones otherwise.
+    pub fn for_provider(&self, provider: Provider) -> Self {
+        let own = self.providers.get(&provider).cloned().unwrap_or_default();
+        Self {
+            warn: own.warn.unwrap_or_else(|| self.warn.clone()),
+            stop: own.stop.unwrap_or(self.stop),
+            week_warn: own.week_warn.unwrap_or_else(|| self.week_warn.clone()),
+            week_stop: own.week_stop.unwrap_or(self.week_stop),
+            failover: self.failover,
+            providers: HashMap::new(),
+        }
+    }
+
     /// The stop level for `span`.
     pub fn stop_at(&self, span: Span) -> u8 {
         match span {
@@ -188,6 +233,26 @@ mod tests {
             weekly: None,
         };
         assert_eq!(limits.stop_hit(&usage, 0).unwrap().span, Span::Window);
+    }
+
+    #[test]
+    fn a_provider_overrides_only_the_levels_it_sets() {
+        let mut limits = UsageLimits::default();
+        limits.providers.insert(
+            Provider::Gemini,
+            ProviderLimits {
+                stop: Some(95),
+                week_warn: Some(vec![20]),
+                ..ProviderLimits::default()
+            },
+        );
+        let gemini = limits.for_provider(Provider::Gemini);
+        assert_eq!((gemini.stop, gemini.week_stop), (95, 85));
+        assert_eq!((gemini.warn, gemini.week_warn), (vec![50, 75], vec![20]));
+        assert_eq!(
+            limits.for_provider(Provider::Anthropic),
+            UsageLimits::default()
+        );
     }
 
     #[test]
