@@ -16,6 +16,9 @@ const OPENROUTER_MODEL: &str = "anthropic/claude-sonnet-4.5";
 /// Env var carrying an OpenAI-compatible endpoint's key into `codex`.
 const COMPATIBLE_KEY_ENV: &str = "AIWC_PROVIDER_API_KEY";
 
+/// The model used for Cloudflare Workers AI when none is set.
+const CLOUDFLARE_MODEL: &str = "@cf/openai/gpt-oss-120b";
+
 /// An AI system a worker can use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -34,11 +37,13 @@ pub enum Provider {
     OpenAiCompatible,
     /// Mistral.
     Mistral,
+    /// Cloudflare Workers AI.
+    Cloudflare,
 }
 
 impl Provider {
     /// Every provider, in display order.
-    pub const ALL: [Provider; 7] = [
+    pub const ALL: [Provider; 8] = [
         Provider::Anthropic,
         Provider::Gemini,
         Provider::OpenAi,
@@ -46,6 +51,7 @@ impl Provider {
         Provider::OpenRouter,
         Provider::OpenAiCompatible,
         Provider::Mistral,
+        Provider::Cloudflare,
     ];
 
     /// A human-readable name.
@@ -58,6 +64,7 @@ impl Provider {
             Provider::OpenRouter => "OpenRouter",
             Provider::OpenAiCompatible => "OpenAI-compatible",
             Provider::Mistral => "Mistral (Vibe)",
+            Provider::Cloudflare => "Cloudflare Workers AI",
         }
     }
 
@@ -65,7 +72,7 @@ impl Provider {
     pub fn cli(self) -> Cli {
         match self {
             Provider::Anthropic | Provider::Deepseek | Provider::OpenRouter => Cli::Claude,
-            Provider::OpenAi | Provider::OpenAiCompatible => Cli::Codex,
+            Provider::OpenAi | Provider::OpenAiCompatible | Provider::Cloudflare => Cli::Codex,
             Provider::Gemini => Cli::Antigravity,
             Provider::Mistral => Cli::Vibe,
         }
@@ -202,7 +209,8 @@ pub struct ProviderConfig {
     /// default when `None`.
     #[serde(default)]
     pub effort: Option<String>,
-    /// The endpoint, for Deepseek and OpenRouter (optional) and OpenAI-compatible (required).
+    /// The endpoint, for Deepseek and OpenRouter (optional) and OpenAI-compatible
+    /// and Cloudflare (required; Cloudflare's holds the account ID).
     #[serde(default)]
     pub base_url: Option<String>,
     /// Other models a worker may be given instead of `model` when the work
@@ -221,8 +229,8 @@ pub enum ConfigError {
     #[error("{} needs an API key", .0.label())]
     MissingKey(Provider),
     /// An OpenAI-compatible endpoint needs a base URL.
-    #[error("OpenAI-compatible provider needs a base URL")]
-    MissingBaseUrl,
+    #[error("{} needs a base URL", .0.label())]
+    MissingBaseUrl(Provider),
     /// An OpenAI-compatible endpoint needs a model name.
     #[error("OpenAI-compatible provider needs a model")]
     MissingModel,
@@ -381,13 +389,13 @@ impl ProviderConfig {
                 return Err(ConfigError::UnsupportedEffort(provider, effort.to_string()));
             }
         }
-        if provider == Provider::OpenAiCompatible {
-            if non_empty(&self.base_url).is_none() {
-                return Err(ConfigError::MissingBaseUrl);
-            }
-            if non_empty(&self.model).is_none() {
-                return Err(ConfigError::MissingModel);
-            }
+        if matches!(provider, Provider::OpenAiCompatible | Provider::Cloudflare)
+            && non_empty(&self.base_url).is_none()
+        {
+            return Err(ConfigError::MissingBaseUrl(provider));
+        }
+        if provider == Provider::OpenAiCompatible && non_empty(&self.model).is_none() {
+            return Err(ConfigError::MissingModel);
         }
         Ok(())
     }
@@ -476,19 +484,26 @@ impl ProviderConfig {
         for dir in job.extra_dirs.iter().chain(job.writable_dirs) {
             run.arg("--add-dir").arg(dir.display().to_string());
         }
-        if let Some(model) = non_empty(&self.model) {
+        let default_model = (self.provider == Provider::Cloudflare).then_some(CLOUDFLARE_MODEL);
+        if let Some(model) = non_empty(&self.model).or(default_model) {
             run.arg("--model").arg(model);
         }
         if let Some(effort) = non_empty(&self.effort) {
             run.arg("-c")
                 .arg(format!("model_reasoning_effort={}", toml_string(effort)));
         }
-        if self.provider == Provider::OpenAiCompatible {
+        if matches!(
+            self.provider,
+            Provider::OpenAiCompatible | Provider::Cloudflare
+        ) {
             let base_url = non_empty(&self.base_url).unwrap_or_default();
             run.arg("-c")
                 .arg("model_provider=\"aiwc\"")
                 .arg("-c")
-                .arg("model_providers.aiwc.name=\"OpenAI-compatible\"")
+                .arg(format!(
+                    "model_providers.aiwc.name={}",
+                    toml_string(self.provider.label())
+                ))
                 .arg("-c")
                 .arg(format!(
                     "model_providers.aiwc.base_url={}",
@@ -617,7 +632,10 @@ mod tests {
     fn compatible_needs_base_url_and_model() {
         let key = Auth::ApiKey { key: "k".into() };
         let mut config = ProviderConfig::new(Provider::OpenAiCompatible, key);
-        assert_eq!(config.validate(), Err(ConfigError::MissingBaseUrl));
+        assert_eq!(
+            config.validate(),
+            Err(ConfigError::MissingBaseUrl(Provider::OpenAiCompatible))
+        );
         config.base_url = Some("http://x".into());
         assert_eq!(config.validate(), Err(ConfigError::MissingModel));
     }

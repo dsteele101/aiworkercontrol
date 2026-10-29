@@ -172,6 +172,21 @@ fn openai_compatible_defines_a_responses_provider() {
 }
 
 #[test]
+fn cloudflare_defines_a_responses_provider_with_a_default_model() {
+    let mut config = ProviderConfig::new(Provider::Cloudflare, key());
+    config.base_url = Some("https://api.cloudflare.com/client/v4/accounts/abc/ai/v1".into());
+    let run = run(&config);
+    assert_eq!(run.program, "codex");
+    assert!(has_pair(
+        &run,
+        "-c",
+        "model_providers.aiwc.base_url=\"https://api.cloudflare.com/client/v4/accounts/abc/ai/v1\""
+    ));
+    assert!(has_pair(&run, "--model", "@cf/openai/gpt-oss-120b"));
+    assert_eq!(run.env_value("AIWC_PROVIDER_API_KEY"), Some("sk-test"));
+}
+
+#[test]
 fn openai_compatible_without_key_sets_no_env_key() {
     let mut config = ProviderConfig::new(
         Provider::OpenAiCompatible,
