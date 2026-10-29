@@ -104,6 +104,9 @@ pub struct ProviderSettings {
     /// The endpoint, for Deepseek, OpenRouter, OpenAI-compatible and Cloudflare.
     #[serde(default)]
     pub base_url: String,
+    /// A token that can read the account's analytics, for Cloudflare's usage.
+    #[serde(default)]
+    pub analytics_token: String,
     /// Other models a worker may be given, chosen per item by an agent.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternatives: Vec<ModelOption>,
@@ -157,6 +160,14 @@ impl std::fmt::Debug for ProviderSettings {
             .field("model", &self.model)
             .field("effort", &self.effort)
             .field("base_url", &self.base_url)
+            .field(
+                "analytics_token",
+                &if self.analytics_token.is_empty() {
+                    ""
+                } else {
+                    "<set>"
+                },
+            )
             .field("alternatives", &self.alternatives)
             .finish()
     }
@@ -172,6 +183,7 @@ impl ProviderSettings {
             model: String::new(),
             effort: String::new(),
             base_url: String::new(),
+            analytics_token: String::new(),
             alternatives: Vec::new(),
         }
     }
@@ -192,6 +204,7 @@ impl ProviderSettings {
             model: opt(&self.model),
             effort: opt(&self.effort),
             base_url: opt(&self.base_url),
+            analytics_token: opt(&self.analytics_token),
             alternatives: self.alternatives.clone(),
         }
     }

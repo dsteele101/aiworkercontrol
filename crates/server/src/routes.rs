@@ -868,6 +868,10 @@ struct ProviderForm {
     #[serde(default)]
     base_url: String,
     #[serde(default)]
+    analytics_token: String,
+    #[serde(default)]
+    clear_analytics_token: Option<String>,
+    #[serde(default)]
     alternatives: String,
 }
 
@@ -885,6 +889,11 @@ async fn save_provider(State(app): State<AppState>, Form(f): Form<ProviderForm>)
         p.model = f.model.trim().to_string();
         p.effort = f.effort.trim().to_string();
         p.base_url = f.base_url.trim().to_string();
+        if f.clear_analytics_token.is_some() {
+            p.analytics_token.clear();
+        } else if !f.analytics_token.trim().is_empty() {
+            p.analytics_token = f.analytics_token.trim().to_string();
+        }
         p.alternatives = crate::settings::parse_alternatives(&f.alternatives);
         Ok(())
     });

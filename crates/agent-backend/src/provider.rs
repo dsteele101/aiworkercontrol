@@ -196,7 +196,7 @@ impl ModelOption {
 }
 
 /// Settings for one provider.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderConfig {
     /// Which provider this configures.
     pub provider: Provider,
@@ -213,10 +213,31 @@ pub struct ProviderConfig {
     /// and Cloudflare (required; Cloudflare's holds the account ID).
     #[serde(default)]
     pub base_url: Option<String>,
+    /// A token that may read the account's analytics, for Cloudflare: the
+    /// inference key cannot, and Workers AI reports usage only there.
+    #[serde(default)]
+    pub analytics_token: Option<String>,
     /// Other models a worker may be given instead of `model` when the work
     /// suits them better.
     #[serde(default)]
     pub alternatives: Vec<ModelOption>,
+}
+
+impl fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("provider", &self.provider)
+            .field("auth", &self.auth)
+            .field("model", &self.model)
+            .field("effort", &self.effort)
+            .field("base_url", &self.base_url)
+            .field(
+                "analytics_token",
+                &self.analytics_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("alternatives", &self.alternatives)
+            .finish()
+    }
 }
 
 /// A provider configuration that cannot be run.
@@ -330,6 +351,7 @@ impl ProviderConfig {
             model: None,
             effort: None,
             base_url: None,
+            analytics_token: None,
             alternatives: Vec::new(),
         }
     }
