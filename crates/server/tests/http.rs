@@ -247,6 +247,17 @@ async fn a_provider_can_override_the_global_limits() {
 }
 
 #[tokio::test]
+async fn every_provider_has_limit_fields_active_or_not() {
+    let app = app();
+    let (_, page) = app.get("/settings").await;
+    for p in Provider::ALL {
+        let value = serde_json::to_string(&p).unwrap();
+        let name = format!(r#"name="{}_week_stop""#, value.trim_matches('"'));
+        assert!(page.contains(&name), "{name} missing: {page}");
+    }
+}
+
+#[tokio::test]
 async fn usage_limits_are_saved_and_checked() {
     let app = app();
     let status = app
