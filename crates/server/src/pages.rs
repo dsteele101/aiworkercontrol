@@ -904,6 +904,29 @@ pub(crate) fn settings(
             }
         }
 
+        h2 { "Per-provider usage limits" }
+        form.panel method="post" action="/settings/provider-limits" {
+            p.muted style="margin-top:0" {
+                "Overrides the plan usage limits above for one provider. Leave a field blank to follow the global level."
+            }
+            table {
+                tr { th { "Provider" } th { "Window: warn at" } th { "Window: stop at" } th { "Week: warn at" } th { "Week: stop at" } }
+                @for p in std::iter::once(settings.active).chain(settings.fallbacks.iter().copied().filter(|p| *p != settings.active && settings.is_enabled(*p))) {
+                    @let own = settings.limits.providers.get(&p).cloned().unwrap_or_default();
+                    @let levels = |l: &Option<Vec<u8>>| l.iter().flatten().map(u8::to_string).collect::<Vec<_>>().join(", ");
+                    @let name = |level: &str| format!("{}_{level}", provider_value(p));
+                    tr {
+                        td { (p.label()) }
+                        td { input type="text" name=(name("warn")) value=(levels(&own.warn)) placeholder=(settings.limits.warn.iter().map(u8::to_string).collect::<Vec<_>>().join(", ")); }
+                        td { input type="number" name=(name("stop")) min="1" max="100" value=[own.stop] placeholder=(settings.limits.stop); }
+                        td { input type="text" name=(name("week_warn")) value=(levels(&own.week_warn)) placeholder=(settings.limits.week_warn.iter().map(u8::to_string).collect::<Vec<_>>().join(", ")); }
+                        td { input type="number" name=(name("week_stop")) min="1" max="100" value=[own.week_stop] placeholder=(settings.limits.week_stop); }
+                    }
+                }
+            }
+            p.bar { button { "Save" } }
+        }
+
         h2 { "Load balancing" }
         form.panel method="post" action="/settings/balancing" {
             p.muted style="margin-top:0" {
@@ -1119,6 +1142,7 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
                 table {
                     tr { th { "Provider" } th { "Current window" } th { "Week" } th { "Status" } }
                     @for u in &snapshot.usage {
+                        @let limits = &limits.for_provider(u.provider);
                         @let hit = limits.stop_hit(&u.usage, now);
                         tr {
                             td { (u.provider.label()) }

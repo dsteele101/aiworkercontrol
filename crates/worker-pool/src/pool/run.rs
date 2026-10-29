@@ -218,7 +218,7 @@ impl Shared {
     /// Whether `provider` is past a stop level, and not allowed to run on
     /// regardless.
     pub(super) fn stopped(&self, provider: Provider) -> bool {
-        let stop = self.config.borrow().limits.clone();
+        let stop = self.config.borrow().limits.for_provider(provider);
         let state = self.lock();
         let hit = state
             .usage
