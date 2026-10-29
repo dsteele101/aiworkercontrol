@@ -836,11 +836,11 @@ pub(crate) fn settings(
                                     }
                                 }
                             }
-                            @if matches!(p.provider, Provider::Deepseek | Provider::OpenRouter | Provider::OpenAiCompatible) {
+                            @if matches!(p.provider, Provider::Deepseek | Provider::OpenRouter | Provider::OpenAiCompatible | Provider::Cloudflare) {
                                 div {
                                     label { "Base URL" }
                                     input type="text" name="base_url" value=(p.base_url)
-                                        placeholder=(if p.provider == Provider::Deepseek { "https://api.deepseek.com/anthropic" } else if p.provider == Provider::OpenRouter { "https://openrouter.ai/api" } else { "http://localhost:8000/v1 (Responses API)" });
+                                        placeholder=(if p.provider == Provider::Deepseek { "https://api.deepseek.com/anthropic" } else if p.provider == Provider::OpenRouter { "https://openrouter.ai/api" } else if p.provider == Provider::Cloudflare { "https://api.cloudflare.com/client/v4/accounts/<account id>/ai/v1" } else { "http://localhost:8000/v1 (Responses API)" });
                                 }
                             }
                         }
@@ -1319,6 +1319,7 @@ pub(crate) fn provider_value(provider: Provider) -> &'static str {
         Provider::OpenRouter => "open_router",
         Provider::OpenAiCompatible => "open_ai_compatible",
         Provider::Mistral => "mistral",
+        Provider::Cloudflare => "cloudflare",
     }
 }
 
