@@ -372,6 +372,48 @@ async fn worker_count_is_saved_and_applied() {
 }
 
 #[tokio::test]
+async fn analytics_token_is_saved_but_never_shown() {
+    let app = app();
+    app.post(
+        "/settings/provider",
+        "provider=cloudflare&api_key=k&analytics_token=cf-secret",
+    )
+    .await;
+    let saved = app.saved();
+    let cloudflare = saved.provider(Provider::Cloudflare).unwrap();
+    assert_eq!(cloudflare.analytics_token, "cf-secret");
+    assert_eq!(
+        cloudflare.config().analytics_token.as_deref(),
+        Some("cf-secret")
+    );
+    let (_, page) = app.get("/settings").await;
+    assert!(!page.contains("cf-secret"));
+    assert!(page.contains("Remove analytics token"));
+
+    // A blank field keeps the token; the checkbox removes it.
+    app.post("/settings/provider", "provider=cloudflare&analytics_token=")
+        .await;
+    let kept = app.saved();
+    assert_eq!(
+        kept.provider(Provider::Cloudflare).unwrap().analytics_token,
+        "cf-secret"
+    );
+    app.post(
+        "/settings/provider",
+        "provider=cloudflare&clear_analytics_token=on",
+    )
+    .await;
+    let cleared = app.saved();
+    assert!(
+        cleared
+            .provider(Provider::Cloudflare)
+            .unwrap()
+            .analytics_token
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn api_key_is_saved_but_never_shown() {
     let app = app();
     let status = app

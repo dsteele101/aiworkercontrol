@@ -23,6 +23,14 @@ const CODEX_USAGE_ANSWER: &str = r#""id":2,"#;
 /// environment, not the arguments, so `ps` does not show it.
 const OPENROUTER_USAGE_SCRIPT: &str = r#"curl -sf --max-time 30 -H "Authorization: Bearer $OPENROUTER_API_KEY" "$OPENROUTER_KEY_URL""#;
 
+/// The script behind Cloudflare's usage read: today's Workers AI neurons
+/// from the GraphQL Analytics API. The token travels in the environment, not
+/// the arguments, so `ps` does not show it.
+const CLOUDFLARE_USAGE_SCRIPT: &str = r#"curl -sf --max-time 30 -H "Authorization: Bearer $CLOUDFLARE_ANALYTICS_TOKEN" -H "Content-Type: application/json" -d '{"query":"query($a:string!,$d:Date!){viewer{accounts(filter:{accountTag:$a}){aiInferenceAdaptiveGroups(filter:{date_geq:$d},limit:1){sum{totalNeurons}}}}}","variables":{"a":"'"$CLOUDFLARE_ACCOUNT_ID"'","d":"'"$(date -u +%F)"'"}}' https://api.cloudflare.com/client/v4/graphql"#;
+
+/// The Workers AI neurons Cloudflare allows free per UTC day.
+const CLOUDFLARE_FREE_NEURONS: f64 = 10_000.0;
+
 /// A plan's usage in its rate-limit windows. A window the CLI did not report
 /// is `None`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,13 +92,29 @@ impl ProviderConfig {
                 .is_some_and(|m| m.trim().ends_with(":free"))
     }
 
+    /// The account ID in a Cloudflare base URL, `…/accounts/<id>/ai/v1`.
+    fn cloudflare_account(&self) -> Option<&str> {
+        let id = self
+            .base_url
+            .as_deref()?
+            .split_once("/accounts/")?
+            .1
+            .split('/')
+            .next()?;
+        (!id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric())).then_some(id)
+    }
+
     /// A run that reports the plan's usage without starting an agent, read
     /// with [`ProviderConfig::parse_usage_report`]. `agy` has its `/usage`
     /// command, and `codex` answers the app-server request behind its
     /// `/status`; neither spends quota. `None` for `claude`, which reports
     /// usage only during runs, and for API keys.
     ///
-    /// The exception is an OpenRouter key on a `:free` model: OpenRouter
+    /// An exception is a Cloudflare key with an analytics token: Workers AI
+    /// gives 10,000 neurons free per UTC day, and the GraphQL Analytics API
+    /// reports the day's count.
+    ///
+    /// The other is an OpenRouter key on a `:free` model: OpenRouter
     /// counts those requests per UTC day (50, or 1000 once the account has
     /// bought credits) and refuses more, and `GET /api/v1/key` reports the
     /// count.
@@ -110,6 +134,20 @@ impl ProviderConfig {
                 (
                     "OPENROUTER_KEY_URL".to_string(),
                     format!("{}/v1/key", base.trim_end_matches('/')),
+                ),
+            ];
+            return Some(run);
+        }
+        if self.provider == Provider::Cloudflare {
+            let token = self.analytics_token.as_deref().filter(|t| !t.is_empty())?;
+            let mut run = Invocation::new(Cli::Claude);
+            run.program = "sh".to_string();
+            run.args = vec!["-c".to_string(), CLOUDFLARE_USAGE_SCRIPT.to_string()];
+            run.env = vec![
+                ("CLOUDFLARE_ANALYTICS_TOKEN".to_string(), token.to_string()),
+                (
+                    "CLOUDFLARE_ACCOUNT_ID".to_string(),
+                    self.cloudflare_account()?.to_string(),
                 ),
             ];
             return Some(run);
@@ -145,6 +183,10 @@ impl ProviderConfig {
         if self.provider == Provider::OpenRouter {
             let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
             return openrouter_usage(output, now);
+        }
+        if self.provider == Provider::Cloudflare {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+            return cloudflare_usage(output, now);
         }
         if self.provider.cli() == Cli::Codex {
             return codex_usage(output);
@@ -196,6 +238,30 @@ fn openrouter_usage(output: &str, now: u64) -> Option<PlanUsage> {
         session: Some(UsageWindow {
             // Clamped, so the cast cannot truncate.
             percent: (used / limit * 100.0).round().clamp(0.0, 100.0) as u8,
+            resets_at: Some((now / 86_400 + 1) * 86_400),
+        }),
+        weekly: None,
+    })
+}
+
+/// The neurons in the Cloudflare GraphQL answer, as a daily window that
+/// resets at the next UTC midnight (`now` is Unix seconds). A day without
+/// inference has no row, which is no usage.
+fn cloudflare_usage(output: &str, now: u64) -> Option<PlanUsage> {
+    let report: Value = serde_json::from_str(output).ok()?;
+    let groups = report
+        .pointer("/data/viewer/accounts/0/aiInferenceAdaptiveGroups")?
+        .as_array()?;
+    let used = match groups.first() {
+        Some(group) => group.pointer("/sum/totalNeurons").and_then(Value::as_f64)?,
+        None => 0.0,
+    };
+    Some(PlanUsage {
+        session: Some(UsageWindow {
+            // Clamped, so the cast cannot truncate.
+            percent: (used / CLOUDFLARE_FREE_NEURONS * 100.0)
+                .round()
+                .clamp(0.0, 100.0) as u8,
             resets_at: Some((now / 86_400 + 1) * 86_400),
         }),
         weekly: None,
@@ -402,6 +468,66 @@ mod tests {
         let mut unset = openrouter("x/y:free");
         unset.model = None;
         assert!(unset.usage_invocation().is_none());
+    }
+
+    fn cloudflare(token: Option<&str>) -> ProviderConfig {
+        let mut config =
+            ProviderConfig::new(Provider::Cloudflare, Auth::ApiKey { key: "k".into() });
+        config.base_url = Some("https://api.cloudflare.com/client/v4/accounts/abc123/ai/v1".into());
+        config.analytics_token = token.map(String::from);
+        config
+    }
+
+    #[test]
+    fn cloudflare_neurons_are_read_from_the_graphql_answer() {
+        let report = |groups: &str| {
+            format!(
+                r#"{{"data":{{"viewer":{{"accounts":[{{"aiInferenceAdaptiveGroups":{groups}}}]}}}},"errors":null}}"#
+            )
+        };
+        assert_eq!(
+            cloudflare_usage(&report(r#"[{"sum":{"totalNeurons":2500}}]"#), 90_000),
+            Some(PlanUsage {
+                session: Some(UsageWindow {
+                    percent: 25,
+                    resets_at: Some(172_800),
+                }),
+                weekly: None,
+            })
+        );
+        let over = cloudflare_usage(&report(r#"[{"sum":{"totalNeurons":15000}}]"#), 0);
+        assert_eq!(over.unwrap().session.unwrap().percent, 100);
+        let idle = cloudflare_usage(&report("[]"), 0);
+        assert_eq!(idle.unwrap().session.unwrap().percent, 0);
+        assert_eq!(cloudflare_usage(&report("[{}]"), 0), None);
+        assert_eq!(
+            cloudflare_usage(r#"{"data":null,"errors":[{"message":"denied"}]}"#, 0),
+            None
+        );
+        assert!(
+            cloudflare(Some("t"))
+                .parse_usage_report(&report("[]"))
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn cloudflare_is_polled_only_with_a_token_and_an_account() {
+        let run = cloudflare(Some("tok")).usage_invocation().unwrap();
+        assert_eq!(run.program, "sh");
+        assert!(run.args.iter().all(|a| !a.contains("tok")));
+        assert!(
+            run.env
+                .contains(&("CLOUDFLARE_ACCOUNT_ID".to_string(), "abc123".to_string()))
+        );
+        assert!(cloudflare(None).usage_invocation().is_none());
+        assert!(cloudflare(Some("")).usage_invocation().is_none());
+        let mut no_account = cloudflare(Some("tok"));
+        no_account.base_url = Some("https://example.com/v1".into());
+        assert!(no_account.usage_invocation().is_none());
+        let mut hostile = cloudflare(Some("tok"));
+        hostile.base_url = Some("https://x/accounts/a\"b/ai/v1".into());
+        assert!(hostile.usage_invocation().is_none());
     }
 
     #[test]

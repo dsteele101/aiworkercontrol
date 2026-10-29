@@ -843,11 +843,24 @@ pub(crate) fn settings(
                                         placeholder=(if p.provider == Provider::Deepseek { "https://api.deepseek.com/anthropic" } else if p.provider == Provider::OpenRouter { "https://openrouter.ai/api" } else if p.provider == Provider::Cloudflare { "https://api.cloudflare.com/client/v4/accounts/<account id>/ai/v1" } else { "http://localhost:8000/v1 (Responses API)" });
                                 }
                             }
+                            @if p.provider == Provider::Cloudflare {
+                                div {
+                                    label { "Analytics token" }
+                                    input type="password" name="analytics_token" autocomplete="off"
+                                        placeholder=(if p.analytics_token.is_empty() { "not set — usage is not shown" } else { "saved — leave blank to keep" });
+                                    p.muted style="margin:4px 0 0" {
+                                        "An API token with Account Analytics: Read. It lets the dashboard show today's Workers AI neurons against the 10,000 free per day."
+                                    }
+                                }
+                            }
                         }
                         p.bar {
                             button { "Save" }
                             @if !p.api_key.is_empty() {
                                 label.check { input type="checkbox" name="clear_key"; "Remove saved key" }
+                            }
+                            @if !p.analytics_token.is_empty() {
+                                label.check { input type="checkbox" name="clear_analytics_token"; "Remove analytics token" }
                             }
                         }
                     }
@@ -899,7 +912,7 @@ pub(crate) fn settings(
                     "Levels apply to each window a provider reports, the current one and the week. "
                     "At the stop level no new run starts on that provider; running agents finish their item. "
                     "Each fallback uses the model and effort on its card above, and is skipped unless it is set up. "
-                    "Plan logins report their usage; a provider on an API key doesn't (except OpenRouter on a free model, which reports its daily free-request allowance), so it is never stopped."
+                    "Plan logins report their usage; a provider on an API key doesn't (except OpenRouter on a free model, which reports its daily free-request allowance, and Cloudflare with an analytics token, which reports its daily free neurons), so it is never stopped."
                 }
             }
         }
@@ -1137,7 +1150,7 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
                 }
             }
             @if snapshot.usage.is_empty() {
-                p.muted { "No usage reported yet. Claude reports its plan usage during each run, and Antigravity, Codex and an OpenRouter key on a free model are asked for theirs every five minutes (OpenRouter's is its daily free-request allowance)." }
+                p.muted { "No usage reported yet. Claude reports its plan usage during each run, and Antigravity, Codex, an OpenRouter key on a free model and Cloudflare with an analytics token are asked for theirs every five minutes (OpenRouter's is its daily free-request allowance, Cloudflare's its daily free neurons)." }
             } @else {
                 table {
                     tr { th { "Provider" } th { "Current window" } th { "Week" } th { "Status" } }
