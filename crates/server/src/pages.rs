@@ -907,11 +907,11 @@ pub(crate) fn settings(
         h2 { "Per-provider usage limits" }
         form.panel method="post" action="/settings/provider-limits" {
             p.muted style="margin-top:0" {
-                "Overrides the plan usage limits above for one provider. Leave a field blank to follow the global level."
+                "Overrides the plan usage limits above for one provider, whether or not it is active. Leave a field blank to follow the global level."
             }
             table {
                 tr { th { "Provider" } th { "Window: warn at" } th { "Window: stop at" } th { "Week: warn at" } th { "Week: stop at" } }
-                @for p in std::iter::once(settings.active).chain(settings.fallbacks.iter().copied().filter(|p| *p != settings.active && settings.is_enabled(*p))) {
+                @for p in Provider::ALL {
                     @let own = settings.limits.providers.get(&p).cloned().unwrap_or_default();
                     @let levels = |l: &Option<Vec<u8>>| l.iter().flatten().map(u8::to_string).collect::<Vec<_>>().join(", ");
                     @let name = |level: &str| format!("{}_{level}", provider_value(p));
