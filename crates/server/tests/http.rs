@@ -952,6 +952,37 @@ async fn following_ci_logs_is_saved() {
 }
 
 #[tokio::test]
+async fn project_issue_source_is_saved_and_validated() {
+    let app = app();
+    fs::create_dir_all(app.dir.path().join("spec/demo")).unwrap();
+    fs::create_dir_all(app.dir.path().join("repo/.git")).unwrap();
+    let base = "name=demo&spec_dir=spec/demo&repo=repo&issues_url=https%3A%2F%2Fgitlab.com%2Fg%2Fp%2Fissues";
+    app.post(
+        "/settings/projects",
+        &format!("{base}&issues_limit=3&issues_order=random&issues_token=+tok+"),
+    )
+    .await;
+    let source = app.saved().projects[0].issues.clone().unwrap();
+    assert_eq!(source.url, "https://gitlab.com/g/p/issues");
+    assert_eq!(source.limit, 3);
+    assert_eq!(source.order, worker_pool::IssueOrder::Random);
+    assert_eq!(source.token.as_deref(), Some("tok"));
+
+    // A missing or out-of-range batch size is rejected, keeping the last settings.
+    app.post("/settings/projects", &format!("{base}&issues_limit=0"))
+        .await;
+    assert_eq!(app.saved().projects[0].issues.as_ref().unwrap().limit, 3);
+
+    // Saving without a link turns the source off.
+    app.post(
+        "/settings/projects",
+        "name=demo&spec_dir=spec/demo&repo=repo",
+    )
+    .await;
+    assert_eq!(app.saved().projects[0].issues, None);
+}
+
+#[tokio::test]
 async fn claim_order_is_saved() {
     let app = app();
     assert_eq!(

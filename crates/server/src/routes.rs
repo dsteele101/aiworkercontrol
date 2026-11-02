@@ -12,8 +12,8 @@ use axum::routing::{get, post};
 use serde::Deserialize;
 use work_queue::{RESULT_SUFFIX, State as ItemState, WorkItem};
 use worker_pool::{
-    Balancing, BranchOutcome, ClaimOrder, PoolError, Project, ProviderLimits, PullRequests,
-    ReviewChange, Scheme,
+    Balancing, BranchOutcome, ClaimOrder, IssueOrder, IssueSource, PoolError, Project,
+    ProviderLimits, PullRequests, ReviewChange, Scheme,
 };
 
 use crate::{AppState, login, pages};
@@ -28,6 +28,7 @@ pub(crate) const MAX_RETENTION_DAYS: u32 = 365;
 pub(crate) const MAX_WEIGHT: u32 = 100;
 /// The most build jobs a project's agents may run at once.
 pub(crate) const MAX_BUILD_JOBS: u32 = 64;
+pub(crate) const MAX_ISSUE_BATCH: u32 = 100;
 
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -925,6 +926,14 @@ struct ProjectForm {
     build_jobs: String,
     #[serde(default)]
     ignore_comments: String,
+    #[serde(default)]
+    issues_url: String,
+    #[serde(default)]
+    issues_limit: String,
+    #[serde(default)]
+    issues_order: IssueOrder,
+    #[serde(default)]
+    issues_token: String,
 }
 
 async fn add_project(State(app): State<AppState>, Form(f): Form<ProjectForm>) -> Redirect {
@@ -963,6 +972,23 @@ async fn add_project(State(app): State<AppState>, Form(f): Form<ProjectForm>) ->
                     .ok_or(format!(
                         "Build jobs must be a number from 1 to {MAX_BUILD_JOBS}."
                     ))?;
+            }
+            if !f.issues_url.trim().is_empty() {
+                let limit = f
+                    .issues_limit
+                    .trim()
+                    .parse()
+                    .ok()
+                    .filter(|n| (1..=MAX_ISSUE_BATCH).contains(n))
+                    .ok_or(format!(
+                        "Issues at a time must be a number from 1 to {MAX_ISSUE_BATCH}."
+                    ))?;
+                project.issues = Some(IssueSource {
+                    url: f.issues_url.trim().to_string(),
+                    limit,
+                    order: f.issues_order,
+                    token: Some(f.issues_token.trim().to_string()).filter(|t| !t.is_empty()),
+                });
             }
             let (remote, repo) = (f.pr_remote.trim(), f.pr_repo.trim());
             project.pr = match (remote.is_empty(), repo.is_empty()) {

@@ -21,6 +21,9 @@ const CLEANUP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300
 /// How often providers that can report plan usage between runs are asked.
 const USAGE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
 
+/// How often projects' issue sources are asked for issues to top up the queue.
+const ISSUES_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let (root, port) = parse_args(std::env::args().skip(1))?;
@@ -44,6 +47,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(clean_up_merged(state.clone()));
     tokio::spawn(watch_reviews(state.clone()));
     tokio::spawn(refresh_usage(state.clone()));
+    tokio::spawn(import_issues(state.clone()));
     axum::serve(listener, server::router(state))
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -99,6 +103,22 @@ async fn refresh_usage(state: server::AppState) {
         every.tick().await;
         for e in state.pool().refresh_usage().await {
             eprintln!("usage: {e}");
+        }
+    }
+}
+
+/// Every few minutes, tops the queue up with issues from the projects' issue
+/// sources.
+async fn import_issues(state: server::AppState) {
+    let mut every = tokio::time::interval(ISSUES_INTERVAL);
+    loop {
+        every.tick().await;
+        let (items, errors) = state.pool().import_issues().await;
+        for item in items {
+            println!("imported issue as {item}");
+        }
+        for e in errors {
+            eprintln!("issues: {e}");
         }
     }
 }

@@ -39,6 +39,7 @@ mod error;
 mod git;
 mod github;
 mod history;
+mod issues;
 mod limits;
 mod meta;
 mod pool;
@@ -54,6 +55,7 @@ pub use history::{
     Entry, EventKind, ItemEvent, ItemSummary, QuotaSpend, TurnOutcome, TurnReason, TurnRecord,
     summarize,
 };
+pub use issues::{IssueOrder, IssueSource};
 pub use limits::{ProviderLimits, Span, StopHit, UsageLimits};
 pub use meta::ItemMeta;
 pub use pool::{

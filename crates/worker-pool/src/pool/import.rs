@@ -6,7 +6,8 @@ use work_queue::{State as ItemState, WorkItem};
 use super::Supervisor;
 use crate::github::{self, PrState};
 use crate::history::EventKind;
-use crate::{ItemMeta, PoolError, Project, git};
+use crate::issues;
+use crate::{IssueSource, ItemMeta, PoolError, Project, git};
 
 impl Supervisor {
     /// Adds the open pull request at `link` to the queue, in review, as the
@@ -90,6 +91,81 @@ impl Supervisor {
         self.shared.changed();
         Ok(item)
     }
+
+    /// Tops up each project's open items with issues from its issue source:
+    /// as many as it takes to have the source's `limit` imported issues
+    /// waiting, chosen in its order and added as `issue-<number>.txt`. An
+    /// issue already in the queue in any state is not brought in again.
+    /// Returns the new items, and why any project's issues could not be read.
+    pub async fn import_issues(&self) -> (Vec<WorkItem>, Vec<PoolError>) {
+        let mut added = Vec::new();
+        let mut errors = Vec::new();
+        for project in self.config().projects {
+            let Some(source) = &project.issues else {
+                continue;
+            };
+            match self.import_project_issues(&project.name, source).await {
+                Ok(items) => added.extend(items),
+                Err(e) => errors.push(e),
+            }
+        }
+        if !added.is_empty() {
+            self.shared.changed();
+        }
+        (added, errors)
+    }
+
+    async fn import_project_issues(
+        &self,
+        project: &str,
+        source: &IssueSource,
+    ) -> Result<Vec<WorkItem>, PoolError> {
+        let queue = self.queue();
+        let waiting = queue
+            .list(ItemState::Open)?
+            .iter()
+            .filter(|i| i.project == project && i.file.starts_with(ISSUE_PREFIX))
+            .count();
+        let room = (source.limit as usize).saturating_sub(waiting);
+        if room == 0 {
+            return Ok(Vec::new());
+        }
+        let mut known = std::collections::HashSet::new();
+        for state in ItemState::ALL {
+            known.extend(
+                queue
+                    .list(state)?
+                    .into_iter()
+                    .filter(|i| i.project == project)
+                    .map(|i| i.file),
+            );
+        }
+        let mut open = issues::fetch_open(source).await?;
+        open.retain(|issue| !known.contains(&issue_file(issue.number)));
+        let mut added = Vec::new();
+        for issue in issues::ordered(open, source.order).into_iter().take(room) {
+            let item = WorkItem::new(project, issue_file(issue.number));
+            let body = format!(
+                "Resolve issue #{number}: {title}\n\n{url}\n\n{description}\n",
+                number = issue.number,
+                title = issue.title,
+                url = issue.url,
+                description = issue.body.trim(),
+            );
+            queue.add(ItemState::Open, &item, &body)?;
+            self.shared
+                .record(&item, EventKind::Imported, Some(issue.url));
+            added.push(item);
+        }
+        Ok(added)
+    }
+}
+
+/// What names the items made from issues.
+const ISSUE_PREFIX: &str = "issue-";
+
+fn issue_file(number: u64) -> String {
+    format!("{ISSUE_PREFIX}{number}.txt")
 }
 
 /// `(url, owner, repo, number)` of a pull request link, with any trailing
