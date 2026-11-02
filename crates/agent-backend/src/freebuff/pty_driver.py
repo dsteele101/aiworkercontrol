@@ -73,10 +73,64 @@ if report:
     stop(True, None, quiet=True)
 emit(type="started")
 
+# The TUI cannot be read, but freebuff saves the chat as it goes, as
+# structured messages. Follow that file to report text and tool calls.
+chats = os.path.expanduser(
+    "~/.config/manicode/projects/%s/chats" % os.path.basename(os.path.normpath(cwd))
+)
+began = time.time() - 5
+chat_file = None
+reported = {}  # message id -> number of its blocks already reported
+
+
+def detail(tool_input):
+    """The salient argument of a tool call: a command, a path, a query."""
+    if not isinstance(tool_input, dict):
+        return ""
+    for key in ("command", "path", "pattern", "query", "url", "directory"):
+        if isinstance(tool_input.get(key), str):
+            return tool_input[key]
+    paths = tool_input.get("paths")
+    if isinstance(paths, list) and paths:
+        first = paths[0]
+        return first.get("path", "") if isinstance(first, dict) else str(first)
+    return ""
+
+
+def follow():
+    global chat_file
+    if chat_file is None:
+        try:
+            fresh = [
+                d for d in (os.path.join(chats, n) for n in os.listdir(chats))
+                if os.path.getmtime(d) >= began
+            ]
+            chat_file = os.path.join(max(fresh, key=os.path.getmtime), "chat-messages.json")
+        except (OSError, ValueError):
+            return
+    try:
+        with open(chat_file) as f:
+            messages = json.load(f)
+    except (OSError, ValueError):
+        return  # not written yet, or caught mid-write
+    for message in messages:
+        if message.get("variant") != "ai":
+            continue
+        blocks = message.get("blocks") or []
+        done = reported.get(message.get("id"), 0)
+        for block in blocks[done:]:
+            if block.get("type") == "text" and block.get("content", "").strip():
+                emit(type="text", text=block["content"])
+            elif block.get("type") == "tool":
+                emit(type="tool", name=block.get("toolName", ""), detail=detail(block.get("input")))
+        reported[message.get("id")] = len(blocks)
+
+
 # While working it redraws a spinner and elapsed time every second, so a
 # quiet terminal means it is waiting for the next message: the task is done.
 last = time.time()
 while time.time() - last < idle:
+    follow()
     if select.select([fd], [], [], 0.5)[0]:
         try:
             if not os.read(fd, 65536):
@@ -84,4 +138,5 @@ while time.time() - last < idle:
             last = time.time()
         except OSError:
             stop(False, "freebuff exited mid-run")
+follow()
 stop(True, None)
