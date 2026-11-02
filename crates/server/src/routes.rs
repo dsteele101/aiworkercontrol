@@ -144,6 +144,7 @@ async fn static_file(Path(name): Path<String>) -> Response {
     let body = match name.as_str() {
         "chart.umd.js" => include_str!("../assets/chart.umd.js"),
         "history.js" => include_str!("../assets/history.js"),
+        "fallbacks.js" => include_str!("../assets/fallbacks.js"),
         _ => return (StatusCode::NOT_FOUND, "no such file").into_response(),
     };
     (
@@ -567,25 +568,6 @@ async fn set_max_turns(State(app): State<AppState>, Form(f): Form<MaxTurnsForm>)
     Redirect::to("/settings")
 }
 
-#[derive(Deserialize)]
-struct LimitsForm {
-    warn: String,
-    stop: u8,
-    week_warn: String,
-    week_stop: u8,
-    #[serde(default)]
-    failover: Option<String>,
-    // Blank when the select is left on "none".
-    #[serde(default)]
-    fallback1: String,
-    #[serde(default)]
-    fallback2: String,
-    #[serde(default)]
-    fallback3: String,
-    #[serde(default)]
-    fallback4: String,
-}
-
 /// Parses a comma-separated list of warning levels, each above 0 and below
 /// `stop`.
 fn warn_levels(text: &str, stop: u8, what: &str) -> Result<Vec<u8>, String> {
@@ -610,18 +592,40 @@ fn warn_levels(text: &str, stop: u8, what: &str) -> Result<Vec<u8>, String> {
     Ok(warn)
 }
 
-async fn set_limits(State(app): State<AppState>, Form(f): Form<LimitsForm>) -> Redirect {
+/// A level from the limits form, which is read as plain text because the
+/// number of `fallback<N>` fields is open-ended.
+fn limits_level(fields: &HashMap<String, String>, name: &str) -> Result<u8, String> {
+    fields
+        .get(name)
+        .and_then(|v| v.trim().parse().ok())
+        .ok_or_else(|| format!("{name} must be a number"))
+}
+
+async fn set_limits(
+    State(app): State<AppState>,
+    Form(f): Form<HashMap<String, String>>,
+) -> Redirect {
     let saved = app.update_settings(|s| {
-        let warn = warn_levels(&f.warn, f.stop, "window")?;
-        let week_warn = warn_levels(&f.week_warn, f.week_stop, "week")?;
+        let text = |name: &str| f.get(name).map_or("", String::as_str);
+        let stop = limits_level(&f, "stop")?;
+        let week_stop = limits_level(&f, "week_stop")?;
+        let warn = warn_levels(text("warn"), stop, "window")?;
+        let week_warn = warn_levels(text("week_warn"), week_stop, "week")?;
         s.limits.warn = warn;
-        s.limits.stop = f.stop;
+        s.limits.stop = stop;
         s.limits.week_warn = week_warn;
-        s.limits.week_stop = f.week_stop;
-        s.limits.failover = f.failover.is_some();
-        s.fallbacks = [&f.fallback1, &f.fallback2, &f.fallback3, &f.fallback4]
+        s.limits.week_stop = week_stop;
+        s.limits.failover = f.contains_key("failover");
+        // `fallback1`, `fallback2`, ...: as many as the form sent, in number
+        // order; a blank one is dropped.
+        let mut chosen: Vec<(u32, &String)> = f
+            .iter()
+            .filter_map(|(k, v)| Some((k.strip_prefix("fallback")?.parse().ok()?, v)))
+            .collect();
+        chosen.sort_unstable_by_key(|(n, _)| *n);
+        s.fallbacks = chosen
             .into_iter()
-            .filter_map(|v| {
+            .filter_map(|(_, v)| {
                 Provider::ALL
                     .into_iter()
                     .find(|p| pages::provider_value(*p) == v)
