@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use work_queue::WorkItem;
 
+use crate::IssueSource;
+
 /// A project whose work items sit in `work/<state>/<name>/`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Project {
@@ -35,6 +37,9 @@ pub struct Project {
     /// these is left to no rework.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ignore_comments: Vec<String>,
+    /// Where to take issues from as new work items; none are when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issues: Option<IssueSource>,
 }
 
 /// How finished work is published: pushed to a remote, then proposed in a
@@ -82,6 +87,7 @@ impl Project {
             pr: None,
             build_jobs: DEFAULT_BUILD_JOBS,
             ignore_comments: Vec::new(),
+            issues: None,
         }
     }
 

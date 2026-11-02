@@ -7,11 +7,13 @@ use agent_backend::{AgentEvent, AuthStatus, Cli, Provider, UsageWindow};
 use maud::{DOCTYPE, Markup, html};
 use work_queue::{State as ItemState, WorkItem};
 use worker_pool::{
-    ActiveJob, Activity, Author, ClaimOrder, DEFAULT_BUILD_JOBS, NotesVersion, PoolSnapshot,
-    ProjectSuggestions, Scheme, Span, Suggestion, SuggestionStatus, UsageLimits,
+    ActiveJob, Activity, Author, ClaimOrder, DEFAULT_BUILD_JOBS, IssueOrder, NotesVersion,
+    PoolSnapshot, ProjectSuggestions, Scheme, Span, Suggestion, SuggestionStatus, UsageLimits,
 };
 
-use crate::routes::{MAX_BUILD_JOBS, MAX_RETENTION_DAYS, MAX_TURNS, MAX_WEIGHT, MAX_WORKERS};
+use crate::routes::{
+    MAX_BUILD_JOBS, MAX_ISSUE_BATCH, MAX_RETENTION_DAYS, MAX_TURNS, MAX_WEIGHT, MAX_WORKERS,
+};
 use crate::{AppState, Settings};
 
 /// Agent events shown per worker card.
@@ -985,7 +987,7 @@ pub(crate) fn settings(
             }
             @if !settings.projects.is_empty() {
                 table {
-                    tr { th { "Name" } th { "Spec directory" } th { "Repository" } th { "Branch from" } th { "Worktree setup" } th { "Build jobs" } th { "Pull requests" } th {} }
+                    tr { th { "Name" } th { "Spec directory" } th { "Repository" } th { "Branch from" } th { "Worktree setup" } th { "Build jobs" } th { "Pull requests" } th { "Issues" } th {} }
                     @for project in &settings.projects {
                         tr {
                             td { (project.name) }
@@ -1002,6 +1004,12 @@ pub(crate) fn settings(
                                     "push to " code { (pr.push_remote) } ", open against "
                                     code { (pr.repo) " " (pr.base) }
                                     @if pr.draft { " (draft)" }
+                                } @else { span.muted { "off" } }
+                            }
+                            td {
+                                @if let Some(issues) = &project.issues {
+                                    code { (issues.url) } ", " (issues.limit) " at a time, "
+                                    (issues.order.label())
                                 } @else { span.muted { "off" } }
                             }
                             td {
@@ -1027,6 +1035,24 @@ pub(crate) fn settings(
                     div { label { "Open pull request against" } input type="text" name="pr_repo" placeholder="phase-rs/phase"; }
                     div { label { "Pull request base branch" } input type="text" name="pr_base" placeholder="main"; }
                     div { label.check style="margin-top:26px" { input type="checkbox" name="pr_draft"; "Open as draft" } }
+                }
+                div.fields {
+                    div { label { "Issues link (optional)" } input type="text" name="issues_url" placeholder="https://github.com/phase-rs/phase/issues"; }
+                    div { label { "Issues at a time" } input type="number" name="issues_limit" min="1" max=(MAX_ISSUE_BATCH) placeholder="5"; }
+                    div {
+                        label { "Take issues" }
+                        select name="issues_order" {
+                            @for order in IssueOrder::ALL {
+                                option value=(order.value()) { (order.label()) }
+                            }
+                        }
+                    }
+                    div { label { "Access token (optional)" } input type="password" name="issues_token" autocomplete="off"; }
+                }
+                p.muted {
+                    "Open issues of a GitHub, GitLab, Bitbucket or Gitea/Forgejo repository become work items "
+                    code { "issue-<number>.txt" } ", a few at a time: that many are kept waiting in "
+                    code { "open" } ", and more follow as workers take them. The token is only needed for private repositories."
                 }
                 label { "Worktree setup command (optional)" }
                 input type="text" name="setup" placeholder="e.g. cp \"$AIWC_REPO\"/data/*.json data/";

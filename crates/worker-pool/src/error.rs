@@ -118,6 +118,14 @@ pub enum PoolError {
         /// The item that has it.
         item: work_queue::WorkItem,
     },
+    /// A project's issues could not be read.
+    #[error("could not read the issues at {url}: {reason}")]
+    Issues {
+        /// The issues link.
+        url: String,
+        /// What went wrong.
+        reason: String,
+    },
     /// The agent reported failure or exited unsuccessfully.
     #[error("agent failed: {0}")]
     AgentFailed(String),
