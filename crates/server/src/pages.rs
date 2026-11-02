@@ -93,6 +93,11 @@ input[type=text], input[type=password], input[type=number], select, textarea {
 label { display: block; margin: 8px 0 2px; font-size: 13px; color: var(--muted); }
 label.check { display: flex; gap: 6px; align-items: center; color: var(--text); }
 label.check input { width: auto; }
+#fallbacks { list-style: none; padding: 0; margin: 0 0 8px; }
+#fallbacks li { display: flex; gap: 10px; align-items: center; padding: 6px 0; }
+#fallbacks li.dragging { opacity: .4; }
+#fallbacks .handle { cursor: grab; color: var(--muted); }
+#fallbacks select { width: auto; min-width: 12em; }
 .fields { display: grid; gap: 4px 12px;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
 .stack > * + * { margin-top: 12px; }
@@ -139,6 +144,22 @@ details.comment textarea { margin: 8px 0; min-height: 4.5em; }
 /// whose content changed. A section is left alone while a field in it has
 /// focus or an open menu, so nothing is replaced under the user's hands. It
 /// also closes an open menu when the user clicks outside it.
+/// One draggable row of the fallback list; a blank one is the template that
+/// "Add provider" clones.
+fn fallback_row(chosen: Option<Provider>) -> Markup {
+    html! {
+        li draggable="true" {
+            span.handle title="Drag to reorder" { "⠿" }
+            select name="fallback" {
+                @for p in Provider::ALL {
+                    option value=(provider_value(p)) selected[chosen == Some(p)] { (p.label()) }
+                }
+            }
+            button type="button" .remove { "Remove" }
+        }
+    }
+}
+
 const LIVE_SCRIPT: &str = r#"
 (() => {
   const url = location.pathname + "?live=1";
@@ -894,29 +915,24 @@ pub(crate) fn settings(
                 input type="checkbox" name="failover" checked[settings.limits.failover];
                 "At the stop level, fail over to the next provider below (priority failover; the other balancing schemes always share work across all of them)"
             }
-            div.fields {
-                @for (i, name) in ["fallback1", "fallback2", "fallback3", "fallback4"].iter().enumerate() {
-                    @let chosen = settings.fallbacks.get(i).copied();
-                    div {
-                        label for=(name) { "Fallback " (i + 1) }
-                        select id=(name) name=(name) {
-                            option value="" selected[chosen.is_none()] { "none" }
-                            @for p in Provider::ALL {
-                                option value=(provider_value(p)) selected[chosen == Some(p)] { (p.label()) }
-                            }
-                        }
-                    }
+            h3 style="margin-bottom:6px" { "Fallback providers, in order" }
+            ul #fallbacks {
+                @for chosen in settings.fallbacks.iter().copied() {
+                    (fallback_row(Some(chosen)))
                 }
             }
+            template #fallback-template { (fallback_row(None)) }
+            p { button type="button" #add-fallback { "Add provider" } }
             p.bar {
                 button { "Save" }
                 span.muted {
                     "Levels apply to each window a provider reports, the current one and the week. "
                     "At the stop level no new run starts on that provider; running agents finish their item. "
-                    "Each fallback uses the model and effort on its card above, and is skipped unless it is set up. "
+                    "Each fallback uses the model and effort on its card above, and is skipped unless it is set up. Drag a row by its handle to reorder; nothing changes until you save. "
                     "Plan logins report their usage; a provider on an API key doesn't (except OpenRouter on a free model, which reports its daily free-request allowance, and Cloudflare with an analytics token, which reports its daily free neurons), so it is never stopped."
                 }
             }
+            script src="/static/fallbacks.js" {}
         }
 
         h2 { "Per-provider usage limits" }
