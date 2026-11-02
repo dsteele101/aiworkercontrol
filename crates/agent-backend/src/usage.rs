@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::provider::OPENROUTER_BASE_URL;
+use crate::provider::{OPENROUTER_BASE_URL, freebuff_driver_args};
 use crate::{Auth, Cli, Invocation, Provider, ProviderConfig};
 
 /// The app-server requests behind `codex`'s `/status`: the handshake, then
@@ -170,6 +170,14 @@ impl ProviderConfig {
                 run.answer_marker = Some(CODEX_USAGE_ANSWER.to_string());
                 Some(run)
             }
+            Cli::Freebuff => {
+                // The free tier's allowance shows in `/model`, which the
+                // driver opens; the model list there is not read.
+                let mut run = Invocation::new(Cli::Freebuff);
+                run.program = "/usr/bin/env".to_string();
+                run.args = freebuff_driver_args("/tmp", true);
+                Some(run)
+            }
             _ => None,
         }
     }
@@ -190,6 +198,10 @@ impl ProviderConfig {
         }
         if self.provider.cli() == Cli::Codex {
             return codex_usage(output);
+        }
+        if self.provider == Provider::Freebuff {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+            return freebuff_usage(output, now);
         }
         let report: Value = serde_json::from_str(output).ok()?;
         let group = report
@@ -324,6 +336,42 @@ fn unix_seconds(text: &str) -> Option<u64> {
     u64::try_from(days * 86_400 + hour * 3_600 + min * 60 + sec).ok()
 }
 
+/// Freebuff's free allowance from the lines `/model` shows, such as
+/// `FREE · 28.5/30 hours daily · resets in 12h 46m`: hours left of the day's
+/// total, and when the day resets. The count is a daily window, so it is
+/// reported as the session.
+fn freebuff_usage(output: &str, now: u64) -> Option<PlanUsage> {
+    let line = output.lines().rev().find(|l| l.contains("hours daily"))?;
+    let (left, total) = line
+        .split_whitespace()
+        .find_map(|word| word.split_once('/'))
+        .and_then(|(l, t)| Some((l.parse::<f64>().ok()?, t.parse::<f64>().ok()?)))
+        .filter(|(_, total)| *total > 0.0)?;
+    let percent = ((1.0 - left / total) * 100.0).round().clamp(0.0, 100.0) as u8;
+    let resets_at = line.split_once("resets in ").map(|(_, rest)| {
+        let secs: u64 = rest
+            .split_whitespace()
+            .filter_map(|part| {
+                let (n, unit) = part.split_at(part.len().checked_sub(1)?);
+                let n: u64 = n.parse().ok()?;
+                Some(
+                    n * match unit {
+                        "d" => 86_400,
+                        "h" => 3_600,
+                        "m" => 60,
+                        _ => 0,
+                    },
+                )
+            })
+            .sum();
+        now + secs
+    });
+    Some(PlanUsage {
+        session: Some(UsageWindow { percent, resets_at }),
+        weekly: None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     // Test code asserts rather than propagating; see Rust code review.
@@ -355,6 +403,20 @@ mod tests {
             })
         );
         assert_eq!(agy().parse_usage_report("not json"), None);
+    }
+
+    #[test]
+    fn freebuff_allowance_from_the_model_screen() {
+        // Captured from `/model` in freebuff 0.2.35, a fresh day.
+        let screen =
+            "30/30 hours remaining\nearn hours\nFREE · 30/30 hours daily · resets in 12h 46m\n";
+        let usage = freebuff_usage(screen, 1_000).unwrap();
+        let window = usage.session.unwrap();
+        assert_eq!(window.percent, 0);
+        assert_eq!(window.resets_at, Some(1_000 + 12 * 3_600 + 46 * 60));
+        let used = freebuff_usage("FREE · 7.5/30 hours daily · resets in 1d", 0).unwrap();
+        assert_eq!(used.session.unwrap().percent, 75);
+        assert_eq!(freebuff_usage("no allowance here", 0), None);
     }
 
     #[test]

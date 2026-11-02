@@ -44,6 +44,11 @@ with the item.
   OpenAI, Gemini and Mistral can run on your plan login instead of an API key.
   Mistral's model comes from Vibe's own config, and its usage limits are not
   tracked.
+  Freebuff has no headless mode, so on its free login it is run by typing the
+  prompt into its TUI through a pseudo-terminal (needs `python3`); it is taken
+  as done once the TUI goes quiet for 30 seconds, and reports no progress in
+  between. With a `CODEBUFF_API_KEY` it runs through the Codebuff SDK instead
+  (needs `bun`).
 - **Load balancing across providers:** priority failover, round robin, weighted
   or pace-based, so work is spread by share or by remaining plan allowance.
 - **Plan usage limits:** warning levels, and a stop level, each for the current window and the week, at which the app fails
@@ -61,7 +66,7 @@ with the item.
 - At least one agent CLI on your `PATH`, signed in or with an API key set in
   the app: [`claude`](https://docs.claude.com/en/docs/claude-code) (also used
   for Deepseek and OpenRouter), `codex` (OpenAI, Cloudflare and OpenAI-compatible), `agy` (Gemini), or
-  [`vibe`](https://github.com/mistralai/mistral-vibe) (Mistral).
+  [`vibe`](https://github.com/mistralai/mistral-vibe) (Mistral), or `freebuff`.
   Setting `cli_dir` in the settings file looks them up elsewhere.
 - [`gh`](https://cli.github.com/), signed in, if you want pull requests opened.
 - Optional, for development: [`just`](https://github.com/casey/just),
@@ -124,7 +129,7 @@ and git-ignored). You can also edit it by hand while the app is stopped.
 
 ```toml
 workers = 2                  # parallel workers
-active = "anthropic"         # anthropic | gemini | open_ai | deepseek | open_router | open_ai_compatible | mistral
+active = "anthropic"         # anthropic | gemini | open_ai | deepseek | open_router | open_ai_compatible | mistral | freebuff
 max_turns = 3                # agent runs an item may use before going on hold
 fallbacks = ["gemini"]       # providers to fail over to, or to share work with
 # cli_dir = "/opt/agents/bin"  # where claude/codex/agy/vibe/gh live; PATH when unset
