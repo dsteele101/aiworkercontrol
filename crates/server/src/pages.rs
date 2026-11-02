@@ -8,7 +8,8 @@ use maud::{DOCTYPE, Markup, html};
 use work_queue::{State as ItemState, WorkItem};
 use worker_pool::{
     ActiveJob, Activity, Author, ClaimOrder, DEFAULT_BUILD_JOBS, IssueOrder, NotesVersion,
-    PoolSnapshot, ProjectSuggestions, Scheme, Span, Suggestion, SuggestionStatus, UsageLimits,
+    PoolSnapshot, Project, ProjectSuggestions, Scheme, Span, Suggestion, SuggestionStatus,
+    UsageLimits,
 };
 
 use crate::routes::{
@@ -699,6 +700,7 @@ fn utc(secs: u64) -> String {
 pub(crate) fn settings(
     app: &AppState,
     settings: &Settings,
+    editing: Option<&Project>,
     status: impl Fn(Cli) -> AuthStatus,
     notice: Option<String>,
 ) -> Markup {
@@ -1013,6 +1015,7 @@ pub(crate) fn settings(
                                 } @else { span.muted { "off" } }
                             }
                             td {
+                                a href={ "/settings?edit=" (project.name) "#project-form" } { "Edit" } " "
                                 form.inline method="post" action="/settings/projects/delete" {
                                     input type="hidden" name="name" value=(project.name);
                                     button { "Remove" }
@@ -1022,32 +1025,33 @@ pub(crate) fn settings(
                     }
                 }
             }
-            form method="post" action="/settings/projects" {
+            form #project-form method="post" action="/settings/projects" {
+                @if let Some(p) = editing { p { "Editing " b { (p.name) } ". " a href="/settings" { "Cancel" } } }
                 div.fields {
-                    div { label { "Name" } input type="text" name="name" placeholder="phase" required; }
-                    div { label { "Spec directory" } input type="text" name="spec_dir" placeholder="spec/phase" required; }
-                    div { label { "Repository" } input type="text" name="repo" placeholder="/home/me/dev/phase or ../phase" required; }
-                    div { label { "Branch from" } input type="text" name="base_ref" placeholder="main"; }
-                    div { label { "Build jobs" } input type="number" name="build_jobs" min="1" max=(MAX_BUILD_JOBS) placeholder=(DEFAULT_BUILD_JOBS); }
+                    div { label { "Name" } input type="text" name="name" placeholder="phase" value=[editing.map(|p| p.name.as_str())] readonly[editing.is_some()] required; }
+                    div { label { "Spec directory" } input type="text" name="spec_dir" placeholder="spec/phase" value=[editing.map(|p| p.spec_dir.display().to_string())] required; }
+                    div { label { "Repository" } input type="text" name="repo" placeholder="/home/me/dev/phase or ../phase" value=[editing.map(|p| p.repo.display().to_string())] required; }
+                    div { label { "Branch from" } input type="text" name="base_ref" placeholder="main" value=[editing.map(|p| p.base_ref.as_str())]; }
+                    div { label { "Build jobs" } input type="number" name="build_jobs" min="1" max=(MAX_BUILD_JOBS) placeholder=(DEFAULT_BUILD_JOBS) value=[editing.map(|p| p.build_jobs)]; }
                 }
                 div.fields {
-                    div { label { "Push to remote (optional)" } input type="text" name="pr_remote" placeholder="fork"; }
-                    div { label { "Open pull request against" } input type="text" name="pr_repo" placeholder="phase-rs/phase"; }
-                    div { label { "Pull request base branch" } input type="text" name="pr_base" placeholder="main"; }
-                    div { label.check style="margin-top:26px" { input type="checkbox" name="pr_draft"; "Open as draft" } }
+                    div { label { "Push to remote (optional)" } input type="text" name="pr_remote" placeholder="fork" value=[editing.and_then(|p| p.pr.as_ref()).map(|pr| pr.push_remote.as_str())]; }
+                    div { label { "Open pull request against" } input type="text" name="pr_repo" placeholder="phase-rs/phase" value=[editing.and_then(|p| p.pr.as_ref()).map(|pr| pr.repo.as_str())]; }
+                    div { label { "Pull request base branch" } input type="text" name="pr_base" placeholder="main" value=[editing.and_then(|p| p.pr.as_ref()).map(|pr| pr.base.as_str())]; }
+                    div { label.check style="margin-top:26px" { input type="checkbox" name="pr_draft" checked[editing.and_then(|p| p.pr.as_ref()).is_some_and(|pr| pr.draft)]; "Open as draft" } }
                 }
                 div.fields {
-                    div { label { "Issues link (optional)" } input type="text" name="issues_url" placeholder="https://github.com/phase-rs/phase/issues"; }
-                    div { label { "Issues at a time" } input type="number" name="issues_limit" min="1" max=(MAX_ISSUE_BATCH) placeholder="5"; }
+                    div { label { "Issues link (optional)" } input type="text" name="issues_url" placeholder="https://github.com/phase-rs/phase/issues" value=[editing.and_then(|p| p.issues.as_ref()).map(|i| i.url.as_str())]; }
+                    div { label { "Issues at a time" } input type="number" name="issues_limit" min="1" max=(MAX_ISSUE_BATCH) placeholder="5" value=[editing.and_then(|p| p.issues.as_ref()).map(|i| i.limit)]; }
                     div {
                         label { "Take issues" }
                         select name="issues_order" {
                             @for order in IssueOrder::ALL {
-                                option value=(order.value()) { (order.label()) }
+                                option value=(order.value()) selected[editing.and_then(|p| p.issues.as_ref()).is_some_and(|i| i.order == order)] { (order.label()) }
                             }
                         }
                     }
-                    div { label { "Access token (optional)" } input type="password" name="issues_token" autocomplete="off"; }
+                    div { label { "Access token (optional)" } input type="password" name="issues_token" autocomplete="off" placeholder=(if editing.and_then(|p| p.issues.as_ref()).is_some_and(|i| i.token.is_some()) { "saved; leave blank to keep" } else { "" }); }
                 }
                 p.muted {
                     "Open issues of a GitHub, GitLab, Bitbucket or Gitea/Forgejo repository become work items "
@@ -1055,9 +1059,9 @@ pub(crate) fn settings(
                     code { "open" } ", and more follow as workers take them. The token is only needed for private repositories."
                 }
                 label { "Worktree setup command (optional)" }
-                input type="text" name="setup" placeholder="e.g. cp \"$AIWC_REPO\"/data/*.json data/";
+                input type="text" name="setup" placeholder="e.g. cp \"$AIWC_REPO\"/data/*.json data/" value=[editing.and_then(|p| p.setup.as_deref())];
                 label { "Ignored comment markers (optional, one per line)" }
-                textarea name="ignore_comments" rows="2" placeholder="pr-review-deferred" {}
+                textarea name="ignore_comments" rows="2" placeholder="pr-review-deferred" { @if let Some(p) = editing { (p.ignore_comments.join("\n")) } }
                 p.muted {
                     "A pull request comment or review containing any of these is not feedback, so it queues no rework. "
                     "Use it for a bot's notice that asks for nothing."
@@ -1071,9 +1075,9 @@ pub(crate) fn settings(
                     code { "CARGO_BUILD_JOBS" } " set to the build jobs. "
                     "With a push remote set, finished work is pushed there and a pull request opened with "
                     code { "gh" } " (your GitHub login), titled and described by the agent following the repo's PR template. "
-                    "To change a project, add it again under the same name."
+                    "Use Edit on a project to change it."
                 }
-                p { button { "Add project" } }
+                p { button { @if editing.is_some() { "Save project" } @else { "Add project" } } }
             }
         }
     };

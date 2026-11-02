@@ -973,6 +973,19 @@ async fn project_issue_source_is_saved_and_validated() {
         .await;
     assert_eq!(app.saved().projects[0].issues.as_ref().unwrap().limit, 3);
 
+    // Editing shows the saved values, and a blank token keeps the saved one.
+    let (_, page) = app.get("/settings?edit=demo").await;
+    assert!(page.contains("Editing"), "{page}");
+    assert!(
+        page.contains(r#"value="https://gitlab.com/g/p/issues""#),
+        "{page}"
+    );
+    assert!(!page.contains("tok\""), "{page}");
+    app.post("/settings/projects", &format!("{base}&issues_limit=4"))
+        .await;
+    let source = app.saved().projects[0].issues.clone().unwrap();
+    assert_eq!((source.limit, source.token.as_deref()), (4, Some("tok")));
+
     // Saving without a link turns the source off.
     app.post(
         "/settings/projects",

@@ -92,7 +92,16 @@ async fn dashboard(State(app): State<AppState>, Query(q): Query<DashboardQuery>)
     Html(pages::dashboard(&app, notice).into_string())
 }
 
-async fn settings_page(State(app): State<AppState>) -> Html<String> {
+#[derive(Deserialize)]
+struct SettingsQuery {
+    /// The project to edit.
+    edit: Option<String>,
+}
+
+async fn settings_page(
+    State(app): State<AppState>,
+    Query(q): Query<SettingsQuery>,
+) -> Html<String> {
     let notice = app.take_notice();
     let settings = app.settings();
     let cli_dir = settings.cli_dir.as_deref();
@@ -108,7 +117,10 @@ async fn settings_page(State(app): State<AppState>) -> Html<String> {
         Cli::Antigravity => antigravity,
         Cli::Vibe => vibe,
     };
-    Html(pages::settings(&app, &settings, status, notice).into_string())
+    let editing = q
+        .edit
+        .and_then(|name| settings.projects.iter().find(|p| p.name == name));
+    Html(pages::settings(&app, &settings, editing, status, notice).into_string())
 }
 
 async fn history_page(State(app): State<AppState>) -> Html<String> {
@@ -983,11 +995,20 @@ async fn add_project(State(app): State<AppState>, Form(f): Form<ProjectForm>) ->
                     .ok_or(format!(
                         "Issues at a time must be a number from 1 to {MAX_ISSUE_BATCH}."
                     ))?;
+                // A blank token keeps the one already saved, which the form never shows.
+                let token = Some(f.issues_token.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .or_else(|| {
+                        s.projects
+                            .iter()
+                            .find(|p| p.name == name)
+                            .and_then(|p| p.issues.as_ref()?.token.clone())
+                    });
                 project.issues = Some(IssueSource {
                     url: f.issues_url.trim().to_string(),
                     limit,
                     order: f.issues_order,
-                    token: Some(f.issues_token.trim().to_string()).filter(|t| !t.is_empty()),
+                    token,
                 });
             }
             let (remote, repo) = (f.pr_remote.trim(), f.pr_repo.trim());
