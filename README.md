@@ -46,8 +46,8 @@ with the item.
   tracked.
   Freebuff has no headless mode, so on its free login it is run by typing the
   prompt into its TUI through a pseudo-terminal (needs `python3`); it is taken
-  as done once the TUI goes quiet for 30 seconds, and reports no progress in
-  between. With a `CODEBUFF_API_KEY` it runs through the Codebuff SDK instead
+  as done once the TUI goes quiet for 30 seconds. Its messages and tool calls
+  are read from the chat file it saves under `~/.config/manicode`. With a `CODEBUFF_API_KEY` it runs through the Codebuff SDK instead
   (needs `bun`).
 - **Load balancing across providers:** priority failover, round robin, weighted
   or pace-based, so work is spread by share or by remaining plan allowance.
