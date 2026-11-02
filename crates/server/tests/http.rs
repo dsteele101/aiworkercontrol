@@ -996,6 +996,30 @@ async fn project_issue_source_is_saved_and_validated() {
 }
 
 #[tokio::test]
+async fn issues_can_be_checked_now_and_errors_are_shown() {
+    let app = app();
+    fs::create_dir_all(app.dir.path().join("spec/demo")).unwrap();
+    fs::create_dir_all(app.dir.path().join("repo/.git")).unwrap();
+    let (_, page) = app.get("/").await;
+    assert!(!page.contains("Check issues now"));
+
+    // A link that names no repository fails without touching the network.
+    app.post(
+        "/settings/projects",
+        "name=demo&spec_dir=spec/demo&repo=repo&issues_url=https%3A%2F%2Fgithub.com%2Fonly&issues_limit=2",
+    )
+    .await;
+    let (_, page) = app.get("/").await;
+    assert!(page.contains("Check issues now"), "{page}");
+    app.post("/issues/import", "").await;
+    let (_, page) = app.get("/").await;
+    assert!(
+        page.contains("Issues of demo: could not read the issues"),
+        "{page}"
+    );
+}
+
+#[tokio::test]
 async fn claim_order_is_saved() {
     let app = app();
     assert_eq!(

@@ -46,6 +46,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/resume-all", post(resume_all))
         .route("/close-all", post(close_all))
         .route("/import", post(import_pull_request))
+        .route("/issues/import", post(import_issues))
         .route("/review/check", post(check_review))
         .route("/review/rework", post(rework_review))
         .route("/review/bump", post(bump_review))
@@ -304,6 +305,20 @@ async fn import_pull_request(State(app): State<AppState>, Form(f): Form<ImportFo
         Ok(item) => format!("Imported the pull request as {item}; it is in review."),
         Err(e) => format!("Could not import the pull request: {e}"),
     };
+    app.notify(message);
+    Redirect::to("/")
+}
+
+async fn import_issues(State(app): State<AppState>) -> Redirect {
+    let done = app.pool().import_issues().await;
+    let mut message = format!(
+        "Brought in {} issues; dropped {} that are no longer open.",
+        done.added.len(),
+        done.removed.len()
+    );
+    for e in &done.errors {
+        message.push_str(&format!(" {e}."));
+    }
     app.notify(message);
     Redirect::to("/")
 }

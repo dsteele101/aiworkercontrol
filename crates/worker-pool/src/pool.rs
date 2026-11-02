@@ -11,6 +11,7 @@ mod trace;
 mod worker;
 
 pub use cleanup::{BranchOutcome, Cleanup};
+pub use import::IssueImport;
 pub use review::ReviewChange;
 
 use std::collections::BTreeMap;
@@ -106,6 +107,8 @@ struct State {
     usage: UsageMap,
     picker: Picker,
     limited: Option<String>,
+    /// Why each project's issues could not be read the last time.
+    issue_errors: BTreeMap<String, String>,
 }
 
 impl Supervisor {
@@ -250,6 +253,11 @@ impl Supervisor {
                 })
                 .collect(),
             last_error: state.last_error.clone(),
+            issue_errors: state
+                .issue_errors
+                .iter()
+                .map(|(p, e)| (p.clone(), e.clone()))
+                .collect(),
             usage: usage::listed(&state.usage),
             limited: state.limited.clone(),
             overridden: Provider::ALL

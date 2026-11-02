@@ -237,7 +237,8 @@ impl Tracker {
 }
 
 /// Reads the open issues behind `source`'s link, up to [`MAX_PAGES`] pages.
-pub(crate) async fn fetch_open(source: &IssueSource) -> Result<Vec<Issue>, PoolError> {
+/// The flag says whether that was all of them.
+pub(crate) async fn fetch_open(source: &IssueSource) -> Result<(Vec<Issue>, bool), PoolError> {
     let fail = |reason: String| PoolError::Issues {
         url: source.url.clone(),
         reason,
@@ -251,6 +252,7 @@ pub(crate) async fn fetch_open(source: &IssueSource) -> Result<Vec<Issue>, PoolE
         .filter(|t| !t.is_empty())
         .map(|t| tracker.auth(t));
     let mut issues = Vec::new();
+    let mut complete = false;
     for page in 1..=MAX_PAGES {
         let mut command = Command::new("sh");
         command
@@ -276,10 +278,11 @@ pub(crate) async fn fetch_open(source: &IssueSource) -> Result<Vec<Issue>, PoolE
         let more = !found.is_empty() || has_entries(&body);
         issues.extend(found);
         if !more {
+            complete = true;
             break;
         }
     }
-    Ok(issues)
+    Ok((issues, complete))
 }
 
 fn text<'a>(v: &'a Value, key: &str) -> &'a str {

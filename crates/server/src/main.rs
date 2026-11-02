@@ -113,11 +113,14 @@ async fn import_issues(state: server::AppState) {
     let mut every = tokio::time::interval(ISSUES_INTERVAL);
     loop {
         every.tick().await;
-        let (items, errors) = state.pool().import_issues().await;
-        for item in items {
+        let done = state.pool().import_issues().await;
+        for item in done.added {
             println!("imported issue as {item}");
         }
-        for e in errors {
+        for item in done.removed {
+            println!("dropped {item}: its issue is no longer open");
+        }
+        for e in done.errors {
             eprintln!("issues: {e}");
         }
     }

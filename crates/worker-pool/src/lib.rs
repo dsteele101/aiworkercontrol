@@ -59,8 +59,8 @@ pub use issues::{IssueOrder, IssueSource};
 pub use limits::{ProviderLimits, Span, StopHit, UsageLimits};
 pub use meta::ItemMeta;
 pub use pool::{
-    BranchOutcome, Cleanup, DEFAULT_STALL_AFTER, DEFAULT_SUGGESTION_RETENTION, PoolConfig,
-    ReviewChange, Supervisor,
+    BranchOutcome, Cleanup, DEFAULT_STALL_AFTER, DEFAULT_SUGGESTION_RETENTION, IssueImport,
+    PoolConfig, ReviewChange, Supervisor,
 };
 pub use project::{DEFAULT_BUILD_JOBS, Project, PullRequests};
 pub use status::{ActiveJob, Activity, PoolSnapshot, WorkerStatus};

@@ -319,6 +319,9 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
             @if let Some(error) = &snapshot.last_error {
                 p.bad { "Could not read the work queue: " (error) }
             }
+            @for (project, error) in &snapshot.issue_errors {
+                p.bad { "Issues of " (project) ": " (error) }
+            }
         }
 
         div #usage data-live {
@@ -361,6 +364,19 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                 }
             }
 
+        }
+
+        @if settings.projects.iter().any(|p| p.issues.is_some()) {
+            div {
+                h2 { "Issues" }
+                form.panel.bar method="post" action="/issues/import" {
+                    button { "Check issues now" }
+                    span.muted {
+                        "Issues are checked every five minutes. This tops up the waiting items now and drops "
+                        "waiting ones whose issues have been closed."
+                    }
+                }
+            }
         }
 
         // Outside the live sections, which refresh and would drop a typed link.

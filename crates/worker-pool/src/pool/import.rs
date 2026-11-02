@@ -1,7 +1,7 @@
 //! Taking over a pull request opened elsewhere: it joins the queue in review,
 //! where feedback on it is reworked like on any other item's.
 
-use work_queue::{State as ItemState, WorkItem};
+use work_queue::{META_SUFFIX, State as ItemState, WorkItem};
 
 use super::Supervisor;
 use crate::github::{self, PrState};
@@ -92,44 +92,71 @@ impl Supervisor {
         Ok(item)
     }
 
-    /// Tops up each project's open items with issues from its issue source:
-    /// as many as it takes to have the source's `limit` imported issues
-    /// waiting, chosen in its order and added as `issue-<number>.txt`. An
-    /// issue already in the queue in any state is not brought in again.
-    /// Returns the new items, and why any project's issues could not be read.
-    pub async fn import_issues(&self) -> (Vec<WorkItem>, Vec<PoolError>) {
-        let mut added = Vec::new();
-        let mut errors = Vec::new();
+    /// Brings each project's issues in from its issue source: tops its `open`
+    /// items up to the source's `limit` imported issues, chosen in its order
+    /// and added as `issue-<number>.txt`, and drops waiting ones whose issues
+    /// are no longer open. An issue already in the queue in any state is not
+    /// brought in again.
+    pub async fn import_issues(&self) -> IssueImport {
+        let mut result = IssueImport::default();
         for project in self.config().projects {
             let Some(source) = &project.issues else {
                 continue;
             };
-            match self.import_project_issues(&project.name, source).await {
-                Ok(items) => added.extend(items),
-                Err(e) => errors.push(e),
+            let outcome = self.import_project_issues(&project.name, source).await;
+            let mut state = self.shared.lock();
+            match outcome {
+                Ok((added, removed)) => {
+                    state.issue_errors.remove(&project.name);
+                    result.added.extend(added);
+                    result.removed.extend(removed);
+                }
+                Err(e) => {
+                    state
+                        .issue_errors
+                        .insert(project.name.clone(), e.to_string());
+                    result.errors.push(e);
+                }
             }
         }
-        if !added.is_empty() {
-            self.shared.changed();
-        }
-        (added, errors)
+        // Also redraws a cleared or new error.
+        self.shared.changed();
+        result
     }
 
     async fn import_project_issues(
         &self,
         project: &str,
         source: &IssueSource,
-    ) -> Result<Vec<WorkItem>, PoolError> {
+    ) -> Result<(Vec<WorkItem>, Vec<WorkItem>), PoolError> {
         let queue = self.queue();
-        let waiting = queue
-            .list(ItemState::Open)?
-            .iter()
-            .filter(|i| i.project == project && i.file.starts_with(ISSUE_PREFIX))
-            .count();
-        let room = (source.limit as usize).saturating_sub(waiting);
-        if room == 0 {
-            return Ok(Vec::new());
+        let (mut open, complete) = issues::fetch_open(source).await?;
+
+        // Waiting items whose issues were closed meanwhile. One a worker has
+        // already tried (it has a metadata file) is left to finish.
+        let mut removed = Vec::new();
+        let mut waiting = 0;
+        for item in queue.list(ItemState::Open)? {
+            let Some(number) = (item.project == project)
+                .then(|| issue_number(&item.file))
+                .flatten()
+            else {
+                continue;
+            };
+            let closed = complete && !open.iter().any(|i| i.number == number);
+            let untried = !queue
+                .sidecar_path(ItemState::Open, &item, META_SUFFIX)
+                .exists();
+            if closed && untried {
+                let path = queue.path(ItemState::Open, &item);
+                std::fs::remove_file(&path).map_err(PoolError::io("remove", path))?;
+                removed.push(item);
+            } else {
+                waiting += 1;
+            }
         }
+
+        let room = (source.limit as usize).saturating_sub(waiting);
         let mut known = std::collections::HashSet::new();
         for state in ItemState::ALL {
             known.extend(
@@ -140,7 +167,6 @@ impl Supervisor {
                     .map(|i| i.file),
             );
         }
-        let mut open = issues::fetch_open(source).await?;
         open.retain(|issue| !known.contains(&issue_file(issue.number)));
         let mut added = Vec::new();
         for issue in issues::ordered(open, source.order).into_iter().take(room) {
@@ -157,12 +183,31 @@ impl Supervisor {
                 .record(&item, EventKind::Imported, Some(issue.url));
             added.push(item);
         }
-        Ok(added)
+        Ok((added, removed))
     }
+}
+
+/// What one check of the issue sources did.
+#[derive(Debug, Default)]
+pub struct IssueImport {
+    /// Issues that joined the queue.
+    pub added: Vec<WorkItem>,
+    /// Waiting items dropped because their issues are no longer open.
+    pub removed: Vec<WorkItem>,
+    /// Why some project's issues could not be read.
+    pub errors: Vec<PoolError>,
 }
 
 /// What names the items made from issues.
 const ISSUE_PREFIX: &str = "issue-";
+
+/// The issue number in an item file name made by [`issue_file`].
+fn issue_number(file: &str) -> Option<u64> {
+    file.strip_prefix(ISSUE_PREFIX)?
+        .strip_suffix(".txt")?
+        .parse()
+        .ok()
+}
 
 fn issue_file(number: u64) -> String {
     format!("{ISSUE_PREFIX}{number}.txt")
@@ -196,6 +241,13 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic_in_result_fn)]
 
     use super::*;
+
+    #[test]
+    fn issue_file_names_round_trip() {
+        assert_eq!(issue_number(&issue_file(42)), Some(42));
+        assert_eq!(issue_number("pr-42.txt"), None);
+        assert_eq!(issue_number("issue-x.txt"), None);
+    }
 
     #[test]
     fn links_are_reduced_to_the_pull_request() {

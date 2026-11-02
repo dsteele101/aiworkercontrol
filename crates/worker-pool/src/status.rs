@@ -23,6 +23,8 @@ pub struct PoolSnapshot {
     pub workers: Vec<WorkerStatus>,
     /// The last error that kept workers from claiming items, if any.
     pub last_error: Option<String>,
+    /// Projects whose issues could not be read at the last check, with why.
+    pub issue_errors: Vec<(String, String)>,
     /// Each provider's latest reported plan usage; providers that never
     /// reported any are left out.
     pub usage: Vec<ProviderUsage>,
