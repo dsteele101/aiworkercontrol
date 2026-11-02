@@ -315,8 +315,8 @@ fn antigravity(v: &Value) -> Vec<AgentEvent> {
 
 /// The drivers behind Freebuff (a pty driver or the Codebuff SDK runner) print
 /// `text`, `tool` and `started` lines and a closing `result`; see
-/// `freebuff/`. The pty driver cannot read the TUI, so it reports only the
-/// start and the end.
+/// `freebuff/`. The pty driver cannot read the TUI, so it follows the chat
+/// file `freebuff` saves for the text and tool calls.
 fn freebuff(v: &Value) -> Vec<AgentEvent> {
     match str_at(v, "type") {
         Some("started") => vec![AgentEvent::Status("Freebuff is working".into())],
