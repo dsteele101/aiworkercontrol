@@ -807,8 +807,8 @@ pub(crate) fn settings(
                                 input type="password" name="api_key" autocomplete="off"
                                     placeholder=(if p.api_key.is_empty() { "not set" } else { "saved — leave blank to keep" });
                             }
-                            // `vibe` takes its model from its own config.
-                            @if p.provider.cli() != Cli::Vibe {
+                            // `vibe` takes its model from its own config; Freebuff picks its own.
+                            @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff) {
                                 div {
                                     label { "Model" }
                                     input type="text" name="model" value=(p.model) placeholder="CLI default";
@@ -826,7 +826,7 @@ pub(crate) fn settings(
                                     }
                                 }
                             }
-                            @if p.provider.cli() != Cli::Vibe {
+                            @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff) {
                                 div style="grid-column:1/-1" {
                                     label { "Other models" }
                                     textarea name="alternatives" rows="3"
@@ -1176,7 +1176,7 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
                 }
             }
             @if snapshot.usage.is_empty() {
-                p.muted { "No usage reported yet. Claude reports its plan usage during each run, and Antigravity, Codex, an OpenRouter key on a free model and Cloudflare with an analytics token are asked for theirs every five minutes (OpenRouter's is its daily free-request allowance, Cloudflare's its daily free neurons)." }
+                p.muted { "No usage reported yet. Claude reports its plan usage during each run, and Antigravity, Codex, Freebuff (its daily free hours), an OpenRouter key on a free model and Cloudflare with an analytics token are asked for theirs every five minutes (OpenRouter's is its daily free-request allowance, Cloudflare's its daily free neurons)." }
             } @else {
                 table {
                     tr { th { "Provider" } th { "Current window" } th { "Week" } th { "Status" } }
@@ -1359,6 +1359,7 @@ pub(crate) fn provider_value(provider: Provider) -> &'static str {
         Provider::OpenAiCompatible => "open_ai_compatible",
         Provider::Mistral => "mistral",
         Provider::Cloudflare => "cloudflare",
+        Provider::Freebuff => "freebuff",
     }
 }
 

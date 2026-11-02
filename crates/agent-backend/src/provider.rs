@@ -19,6 +19,15 @@ const COMPATIBLE_KEY_ENV: &str = "AIWC_PROVIDER_API_KEY";
 /// The model used for Cloudflare Workers AI when none is set.
 const CLOUDFLARE_MODEL: &str = "@cf/openai/gpt-oss-120b";
 
+/// Drives the interactive `freebuff` TUI in a pseudo-terminal; it has no
+/// headless mode. See the script for how it decides a task is done.
+const FREEBUFF_PTY_DRIVER: &str = include_str!("freebuff/pty_driver.py");
+/// Runs a task through the Codebuff SDK, for a Freebuff API key.
+const FREEBUFF_SDK_RUNNER: &str = include_str!("freebuff/sdk_runner.mjs");
+/// How long, in seconds, `freebuff` may be silent before its task is taken as
+/// done. It redraws a spinner and timer every second while it works.
+const FREEBUFF_IDLE_SECS: u32 = 30;
+
 /// An AI system a worker can use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,11 +48,13 @@ pub enum Provider {
     Mistral,
     /// Cloudflare Workers AI.
     Cloudflare,
+    /// Freebuff, the free tier of Codebuff.
+    Freebuff,
 }
 
 impl Provider {
     /// Every provider, in display order.
-    pub const ALL: [Provider; 8] = [
+    pub const ALL: [Provider; 9] = [
         Provider::Anthropic,
         Provider::Gemini,
         Provider::OpenAi,
@@ -52,6 +63,7 @@ impl Provider {
         Provider::OpenAiCompatible,
         Provider::Mistral,
         Provider::Cloudflare,
+        Provider::Freebuff,
     ];
 
     /// A human-readable name.
@@ -65,6 +77,7 @@ impl Provider {
             Provider::OpenAiCompatible => "OpenAI-compatible",
             Provider::Mistral => "Mistral (Vibe)",
             Provider::Cloudflare => "Cloudflare Workers AI",
+            Provider::Freebuff => "Freebuff",
         }
     }
 
@@ -75,6 +88,7 @@ impl Provider {
             Provider::OpenAi | Provider::OpenAiCompatible | Provider::Cloudflare => Cli::Codex,
             Provider::Gemini => Cli::Antigravity,
             Provider::Mistral => Cli::Vibe,
+            Provider::Freebuff => Cli::Freebuff,
         }
     }
 
@@ -88,7 +102,11 @@ impl Provider {
     pub fn supports_plan(self) -> bool {
         matches!(
             self,
-            Provider::Anthropic | Provider::OpenAi | Provider::Gemini | Provider::Mistral
+            Provider::Anthropic
+                | Provider::OpenAi
+                | Provider::Gemini
+                | Provider::Mistral
+                | Provider::Freebuff
         )
     }
 }
@@ -105,6 +123,9 @@ pub enum Cli {
     Antigravity,
     /// Mistral Vibe, `vibe`.
     Vibe,
+    /// Freebuff, `freebuff`. Interactive only, so it is run through a driver:
+    /// a pseudo-terminal on the plan login, the Codebuff SDK with an API key.
+    Freebuff,
 }
 
 impl Cli {
@@ -115,6 +136,7 @@ impl Cli {
             Cli::Codex => "codex",
             Cli::Antigravity => "agy",
             Cli::Vibe => "vibe",
+            Cli::Freebuff => "freebuff",
         }
     }
 
@@ -132,7 +154,7 @@ impl Cli {
             // From `agy --help` (1.4.2); its docs list only low to high.
             Cli::Antigravity => &["low", "medium", "high", "xhigh", "max"],
             // `vibe` has no effort setting.
-            Cli::Vibe => &[],
+            Cli::Vibe | Cli::Freebuff => &[],
         }
     }
 
@@ -144,6 +166,7 @@ impl Cli {
             Cli::Codex => &["CODEX_API_KEY", "OPENAI_API_KEY"],
             Cli::Antigravity => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
             Cli::Vibe => &["MISTRAL_API_KEY"],
+            Cli::Freebuff => &["CODEBUFF_API_KEY"],
         }
     }
 }
@@ -357,15 +380,15 @@ impl ProviderConfig {
     }
 
     /// Every model a worker may be given: `model` and `effort` first, then
-    /// the alternatives. `vibe` takes its model from its own config, so it
-    /// has only the one.
+    /// the alternatives. `vibe` takes its model from its own config and
+    /// Freebuff chooses its own, so they have only the one.
     pub fn options(&self) -> Vec<ModelOption> {
         let default = ModelOption {
             model: self.model.clone(),
             effort: self.effort.clone(),
             description: None,
         };
-        if self.provider.cli() == Cli::Vibe {
+        if matches!(self.provider.cli(), Cli::Vibe | Cli::Freebuff) {
             return vec![default];
         }
         std::iter::once(default)
@@ -435,6 +458,7 @@ impl ProviderConfig {
             Cli::Codex => self.codex(&mut run, job),
             Cli::Antigravity => self.antigravity(&mut run, job),
             Cli::Vibe => self.vibe(&mut run, job),
+            Cli::Freebuff => self.freebuff(&mut run, job),
         }
         // The caller removes these after setting `env`, which would undo any
         // that the provider set itself, such as Deepseek's auth token.
@@ -589,6 +613,40 @@ impl ProviderConfig {
     }
 }
 
+impl ProviderConfig {
+    /// `freebuff` has no headless mode. On the plan login a Python driver
+    /// types the prompt into its TUI; with an API key a bun script runs the
+    /// Codebuff SDK. Either reads the prompt on stdin and prints JSON lines.
+    /// The program is absolute so that it is not looked up in `cli_dir`.
+    fn freebuff(&self, run: &mut Invocation, job: &Job<'_>) {
+        run.stdin = Some(job.prompt.to_string());
+        run.program = "/usr/bin/env".to_string();
+        match self.key() {
+            Some(key) => {
+                run.arg("bun").arg("-e").arg(FREEBUFF_SDK_RUNNER);
+                run.set_env("CODEBUFF_API_KEY", key)
+                    .set_env("AIWC_CWD", job.workdir.display().to_string());
+            }
+            None => {
+                run.args = freebuff_driver_args(&job.workdir.display().to_string(), false);
+            }
+        }
+    }
+}
+
+/// The arguments, for `/usr/bin/env`, that run the pty driver in `cwd`: for a
+/// task, or with `report` to read the free allowance from `/model`.
+pub(crate) fn freebuff_driver_args(cwd: &str, report: bool) -> Vec<String> {
+    let mut args: Vec<String> = ["python3", "-I", "-c", FREEBUFF_PTY_DRIVER, cwd]
+        .map(String::from)
+        .into();
+    args.push(FREEBUFF_IDLE_SECS.to_string());
+    if report {
+        args.push("report".to_string());
+    }
+    args
+}
+
 fn non_empty(value: &Option<String>) -> Option<&str> {
     value.as_deref().map(str::trim).filter(|v| !v.is_empty())
 }
@@ -738,6 +796,37 @@ mod tests {
     #[test]
     fn vibe_accepts_no_effort() {
         let mut config = ProviderConfig::new(Provider::Mistral, Auth::Plan);
+        config.effort = Some("high".into());
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn freebuff_plan_drives_the_tui_and_a_key_runs_the_sdk() {
+        let mut config = ProviderConfig::new(Provider::Freebuff, Auth::Plan);
+        let run = config.invocation(&job()).unwrap();
+        assert_eq!(run.program, "/usr/bin/env");
+        assert_eq!(run.args[..3], ["python3", "-I", "-c"]);
+        assert_eq!(run.args[4..], ["/wt", "30"]);
+        assert_eq!(run.stdin.as_deref(), Some("do it"));
+        assert_eq!(run.env_remove, ["CODEBUFF_API_KEY"]);
+
+        config.auth = Auth::ApiKey { key: "cb_k".into() };
+        let run = config.invocation(&job()).unwrap();
+        assert_eq!(run.args[..2], ["bun", "-e"]);
+        assert_eq!(run.env_value("CODEBUFF_API_KEY"), Some("cb_k"));
+        assert_eq!(run.env_value("AIWC_CWD"), Some("/wt"));
+        assert!(run.env_remove.is_empty());
+    }
+
+    #[test]
+    fn freebuff_has_no_model_or_effort() {
+        let mut config = ProviderConfig::new(Provider::Freebuff, Auth::Plan);
+        config.alternatives.push(ModelOption {
+            model: Some("x".into()),
+            effort: None,
+            description: None,
+        });
+        assert_eq!(config.options().len(), 1);
         config.effort = Some("high".into());
         assert!(config.validate().is_err());
     }

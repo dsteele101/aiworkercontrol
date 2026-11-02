@@ -15,8 +15,8 @@ pub enum AuthStatus {
 
 /// The command that starts `cli`'s own plan login, printing the sign-in URL.
 ///
-/// `None` for Antigravity and Vibe: `agy` and `vibe` have no login
-/// subcommand. `agy` signs in with Google the first time it runs
+/// `None` for Antigravity, Vibe and Freebuff: `agy` and `vibe` have no login
+/// subcommand, and `freebuff login` needs a terminal. `agy` signs in with Google the first time it runs
 /// interactively in a terminal, and `vibe --setup` signs in with Mistral.
 ///
 /// ```
@@ -30,7 +30,7 @@ pub fn login_invocation(cli: Cli) -> Option<Invocation> {
     let args: &[&str] = match cli {
         Cli::Claude => &["auth", "login", "--claudeai"],
         Cli::Codex => &["login"],
-        Cli::Antigravity | Cli::Vibe => return None,
+        Cli::Antigravity | Cli::Vibe | Cli::Freebuff => return None,
     };
     Some(simple(cli, args))
 }
@@ -45,7 +45,7 @@ pub fn status_invocation(cli: Cli) -> Invocation {
         Cli::Claude => &["auth", "status", "--json"],
         Cli::Codex => &["login", "status"],
         Cli::Antigravity => &["models"],
-        Cli::Vibe => &["--version"],
+        Cli::Vibe | Cli::Freebuff => &["--version"],
     };
     simple(cli, args)
 }
@@ -76,7 +76,7 @@ pub fn parse_status(cli: Cli, output: &str) -> AuthStatus {
         }
         // `agy models` prints one `slug<TAB>name` line per model.
         Cli::Antigravity if output.lines().any(|l| l.contains('\t')) => AuthStatus::LoggedIn,
-        Cli::Antigravity | Cli::Vibe => AuthStatus::Unknown,
+        Cli::Antigravity | Cli::Vibe | Cli::Freebuff => AuthStatus::Unknown,
     }
 }
 

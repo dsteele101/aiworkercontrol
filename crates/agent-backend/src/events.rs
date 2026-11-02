@@ -64,6 +64,7 @@ pub fn parse_line(cli: Cli, line: &str) -> Vec<AgentEvent> {
         Cli::Codex => codex(&value),
         Cli::Antigravity => antigravity(&value),
         Cli::Vibe => vibe(&value),
+        Cli::Freebuff => freebuff(&value),
     }
 }
 
@@ -312,6 +313,26 @@ fn antigravity(v: &Value) -> Vec<AgentEvent> {
     }
 }
 
+/// The drivers behind Freebuff (a pty driver or the Codebuff SDK runner) print
+/// `text`, `tool` and `started` lines and a closing `result`; see
+/// `freebuff/`. The pty driver cannot read the TUI, so it reports only the
+/// start and the end.
+fn freebuff(v: &Value) -> Vec<AgentEvent> {
+    match str_at(v, "type") {
+        Some("started") => vec![AgentEvent::Status("Freebuff is working".into())],
+        Some("text") => text_event(str_at(v, "text")).into_iter().collect(),
+        Some("tool") => vec![AgentEvent::ToolUse {
+            name: str_at(v, "name").unwrap_or_default().to_string(),
+            detail: str_at(v, "detail").unwrap_or_default().to_string(),
+        }],
+        Some("result") => vec![AgentEvent::Finished {
+            ok: v.get("ok").and_then(Value::as_bool) == Some(true),
+            summary: str_at(v, "summary").map(str::to_string),
+        }],
+        _ => Vec::new(),
+    }
+}
+
 /// `vibe` streams one entry per line: the user's `message`, `reasoning`, the
 /// assistant's `message`, and an `effect` per tool call. It has no closing
 /// `result` line, so a run ends by its exit status alone (non-zero when it
@@ -437,6 +458,28 @@ mod tests {
                     detail: "echo hi".into()
                 },
                 AgentEvent::Text("ok".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn freebuff_driver_lines() {
+        assert_eq!(
+            parse_all(
+                Cli::Freebuff,
+                &[
+                    r#"{"type": "started"}"#,
+                    r#"{"type": "text", "text": "Done"}"#,
+                    r#"{"type": "result", "ok": false, "summary": "freebuff exited mid-run"}"#,
+                ],
+            ),
+            [
+                AgentEvent::Status("Freebuff is working".into()),
+                AgentEvent::Text("Done".into()),
+                AgentEvent::Finished {
+                    ok: false,
+                    summary: Some("freebuff exited mid-run".into())
+                },
             ]
         );
     }
