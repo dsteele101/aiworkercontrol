@@ -1058,3 +1058,19 @@ async fn provider_logos_are_served_from_the_app() {
     let (status, _) = app.get("/static/nope.svg").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn settings_are_grouped_into_sections_with_limit_bars() {
+    let app = app();
+    let (status, page) = app.get("/settings").await;
+    assert_eq!(status, StatusCode::OK);
+    for section in ["workers", "providers", "limits", "balance", "projects"] {
+        assert!(
+            page.contains(&format!(r##"href="#s-{section}""##)),
+            "{section}"
+        );
+        assert!(page.contains(&format!(r#"id="s-{section}""#)), "{section}");
+    }
+    assert_eq!(page.matches(r#"class="range""#).count(), 2, "{page}");
+    assert!(page.contains("/static/claude.svg"), "provider logos");
+}
