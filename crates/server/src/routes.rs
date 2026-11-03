@@ -154,6 +154,8 @@ async fn static_file(Path(name): Path<String>) -> Response {
         "openai.svg" => (include_bytes!("../assets/providers/openai.svg"), SVG),
         "googlegemini.svg" => (include_bytes!("../assets/providers/googlegemini.svg"), SVG),
         "cloudflare.svg" => (include_bytes!("../assets/providers/cloudflare.svg"), SVG),
+        "deepseek.png" => (include_bytes!("../assets/providers/deepseek.png"), PNG),
+        "mistral.svg" => (include_bytes!("../assets/providers/mistral.svg"), SVG),
         "freebuff.png" => (include_bytes!("../assets/providers/freebuff.png"), PNG),
         "openrouter.png" => (include_bytes!("../assets/providers/openrouter.png"), PNG),
         _ => return (StatusCode::NOT_FOUND, "no such file").into_response(),

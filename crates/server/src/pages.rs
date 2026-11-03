@@ -155,6 +155,7 @@ details.comment textarea { margin: 8px 0; min-height: 4.5em; }
 .pmark i { width: 20px; height: 20px; background: #fff; -webkit-mask: var(--logo) center / contain no-repeat;
   mask: var(--logo) center / contain no-repeat; }
 .pmark img { width: 100%; height: 100%; display: block; }
+.pmark.light { color: #1d2330; box-shadow: inset 0 0 0 1px #00000026; } .pmark.light img { padding: 16%; }
 .pill { display: inline-flex; align-items: center; gap: 7px; padding: 2px 11px 2px 9px; border-radius: 999px;
   font-size: 13px; font-weight: 600; white-space: nowrap; }
 .pill.ok { background: var(--ok-soft); color: var(--ok); } .pill.warn { background: var(--warn-soft); color: var(--warn); }
@@ -1718,21 +1719,25 @@ fn clip_to(text: &str, chars: usize) -> String {
 
 /// A provider's logo on its brand color, or its initial when it has none.
 fn provider_mark(provider: Provider) -> Markup {
+    // The file, and whether it is a full-color picture rather than a mark
+    // that is drawn in white on the brand color.
     let (color, logo) = match provider {
-        Provider::Anthropic => ("#d97757", Some("claude.svg")),
-        Provider::OpenAi => ("#0d0d0d", Some("openai.svg")),
-        Provider::Gemini => ("#3b6df0", Some("googlegemini.svg")),
-        Provider::Cloudflare => ("#f38020", Some("cloudflare.svg")),
-        Provider::OpenRouter => ("#000000", Some("openrouter.png")),
-        Provider::Freebuff => ("#000000", Some("freebuff.png")),
+        Provider::Anthropic => ("#d97757", Some(("claude.svg", false))),
+        Provider::OpenAi => ("#0d0d0d", Some(("openai.svg", false))),
+        Provider::Gemini => ("#3b6df0", Some(("googlegemini.svg", false))),
+        Provider::Cloudflare => ("#f38020", Some(("cloudflare.svg", false))),
+        Provider::OpenRouter => ("#000000", Some(("openrouter.png", true))),
+        Provider::Freebuff => ("#000000", Some(("freebuff.png", true))),
+        Provider::Deepseek => ("#ffffff", Some(("deepseek.png", true))),
+        Provider::Mistral => ("#ffffff", Some(("mistral.svg", true))),
         _ => ("#5d6580", None),
     };
     let initial = provider.label().chars().next().unwrap_or('?');
     html! {
-        span.pmark style={ "--pbg: " (color) } aria-hidden="true" {
+        span.pmark class=[(color == "#ffffff").then_some("light")] style={ "--pbg: " (color) } aria-hidden="true" {
             @match logo {
-                Some(file) if file.ends_with(".png") => img src={ "/static/" (file) } alt="";
-                Some(file) => i style={ "--logo: url(/static/" (file) ")" } {}
+                Some((file, true)) => img src={ "/static/" (file) } alt="";
+                Some((file, false)) => i style={ "--logo: url(/static/" (file) ")" } {}
                 None => (initial)
             }
         }

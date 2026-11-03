@@ -1051,7 +1051,14 @@ async fn held_items_are_never_tucked_away() {
 #[tokio::test]
 async fn provider_logos_are_served_from_the_app() {
     let app = app();
-    for name in ["claude.svg", "openai.svg", "freebuff.png", "openrouter.png"] {
+    for name in [
+        "claude.svg",
+        "openai.svg",
+        "freebuff.png",
+        "openrouter.png",
+        "deepseek.png",
+        "mistral.svg",
+    ] {
         let (status, _) = app.get(&format!("/static/{name}")).await;
         assert_eq!(status, StatusCode::OK, "{name}");
     }
