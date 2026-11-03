@@ -928,7 +928,7 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
 
         div #usage data-live {
             h2 { "Plan usage" }
-            (usage_panel(&snapshot, &settings.limits))
+            (usage_panel(&snapshot, &settings))
             p.muted { "Balancing: " (settings.balancing.scheme.label()) }
         }
 
@@ -1795,7 +1795,13 @@ fn provider_mark(provider: Provider) -> Markup {
     }
 }
 
-fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
+fn usage_panel(snapshot: &PoolSnapshot, settings: &Settings) -> Markup {
+    let limits = &settings.limits;
+    let usage: Vec<_> = snapshot
+        .usage
+        .iter()
+        .filter(|u| settings.is_enabled(u.provider))
+        .collect();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -1809,11 +1815,11 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
                 "Its last run failed: " (clip(error))
             }
         }
-        @if snapshot.usage.is_empty() {
+        @if usage.is_empty() {
             p.muted { "No usage reported yet. Claude reports its plan usage during each run, and Antigravity, Codex, Freebuff (its daily free hours), an OpenRouter key on a free model and Cloudflare with an analytics token are asked for theirs every five minutes (OpenRouter's is its daily free-request allowance, Cloudflare's its daily free neurons)." }
         } @else {
             div.usage {
-                @for u in &snapshot.usage {
+                @for u in &usage {
                     @let limits = &limits.for_provider(u.provider);
                     @let hit = limits.stop_hit(&u.usage, now);
                     @let overridden = snapshot.overridden.contains(&u.provider);
