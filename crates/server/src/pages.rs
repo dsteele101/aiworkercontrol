@@ -176,9 +176,9 @@ details.comment textarea { margin: 8px 0; min-height: 4.5em; }
 .uhead h3 { margin: 0; font-size: 14px; line-height: 1.25; overflow-wrap: anywhere; } .uhead .pill { margin-left: auto; font-size: 12px; padding: 0 9px; }
 .ucard .pmark { width: 28px; height: 28px; border-radius: 9px; } .ucard .pmark i { width: 16px; height: 16px; }
 .meter { margin-top: 9px; }
-.mtop { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12.5px; margin-bottom: 4px; }
+.mtop { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; font-size: 12.5px; margin-bottom: 4px; }
 .mlab { font-weight: 600; } .mlab .muted { font-weight: 400; font-size: 12px; }
-.mtop strong { font-variant-numeric: tabular-nums; }
+.mtop strong { font-variant-numeric: tabular-nums; white-space: nowrap; margin-left: auto; padding-left: 6px; }
 .mbar { position: relative; height: 8px; border-radius: 999px; background: var(--track); }
 .mbar b { display: block; height: 100%; border-radius: 999px; background: var(--ok); }
 .mbar.warn b { background: var(--warn); } .mbar.bad b { background: var(--bad); }
