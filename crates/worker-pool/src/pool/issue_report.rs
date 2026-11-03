@@ -51,9 +51,19 @@ impl Shared {
         self.shown(item, EventKind::IssueClosed, &url, closed);
     }
 
-    /// `item`'s metadata, or the default when it cannot be read.
+    /// `item`'s metadata, or the default when it cannot be read. An item
+    /// imported before its issue's link was kept in the metadata has it read
+    /// from the item's text.
     fn item_meta(&self, state: ItemState, item: &WorkItem) -> ItemMeta {
-        ItemMeta::load(&self.queue, state, item).unwrap_or_default()
+        let mut meta = ItemMeta::load(&self.queue, state, item).unwrap_or_default();
+        if meta.issue_url.is_none() {
+            meta.issue_url = self
+                .queue
+                .read(state, item)
+                .ok()
+                .and_then(|body| issue_link(&body));
+        }
+        meta
     }
 
     /// Records `event` for the issue at `url` in the work history if
@@ -93,6 +103,15 @@ fn reporting_issue(project: &Project, meta: &ItemMeta) -> Option<String> {
         .as_deref()
         .filter(|u| github::is_issue_url(u))?;
     reports.then(|| url.to_string())
+}
+
+/// The GitHub issue link on a line of its own in the text of an item made
+/// from an issue.
+fn issue_link(body: &str) -> Option<String> {
+    body.lines()
+        .map(str::trim)
+        .find(|l| github::is_issue_url(l))
+        .map(str::to_string)
 }
 
 /// The closing comment: the pull request that resolves the issue, and what
@@ -170,6 +189,16 @@ mod tests {
             None
         );
         assert_eq!(reporting_issue(&project(true), &ItemMeta::default()), None);
+    }
+
+    #[test]
+    fn the_link_is_found_in_an_imported_items_text() {
+        let body = "Resolve issue #4: T\n\nhttps://github.com/o/r/issues/4\n\nDetails\n";
+        assert_eq!(
+            issue_link(body).as_deref(),
+            Some("https://github.com/o/r/issues/4")
+        );
+        assert_eq!(issue_link("Resolve it\n\nno link"), None);
     }
 
     #[test]
