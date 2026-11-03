@@ -263,6 +263,7 @@ impl Supervisor {
         };
         let (fresh, to) = if pr_open {
             let fresh = ItemMeta {
+                title: meta.title,
                 pr_url: meta.pr_url,
                 pr_title: meta.pr_title,
                 pushed_head: meta.pushed_head,
@@ -271,7 +272,13 @@ impl Supervisor {
             };
             (fresh, ItemState::InReview)
         } else {
-            (ItemMeta::default(), ItemState::Open)
+            (
+                ItemMeta {
+                    title: meta.title,
+                    ..ItemMeta::default()
+                },
+                ItemState::Open,
+            )
         };
         fresh.save(queue, ItemState::Hold, item)?;
         queue.transition(item, ItemState::Hold, to)?;

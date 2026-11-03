@@ -697,7 +697,11 @@ fn queue_card_markup(c: &QueueCard, extra: bool) -> Markup {
     html! {
         div class=(class) style={ "--hue: hsl(" (project_hue(&item.project)) " 65% 55%)" } {
             div.kproj { i {} (item.project) }
-            div.ktitle title=(item) { (item.file) }
+            div.ktitle title=(item) {
+                @if let Some(title) = &c.meta.title {
+                    (title) " " span.muted { "(" (item.file) ")" }
+                } @else { (item.file) }
+            }
             div.kmeta {
                 (turn_ring(c.meta.turns, c.max_turns))
                 span { (c.meta.turns) " of " (c.max_turns) " turns" }
