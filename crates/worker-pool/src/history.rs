@@ -152,6 +152,10 @@ pub enum EventKind {
     Resumed,
     /// An item on hold was closed by hand.
     Closed,
+    /// A comment was posted on the item's issue; the detail is the issue's link.
+    IssueCommented,
+    /// The item's issue was closed; the detail is the issue's link.
+    IssueClosed,
 }
 
 /// A change in an item's life that no turn caused.

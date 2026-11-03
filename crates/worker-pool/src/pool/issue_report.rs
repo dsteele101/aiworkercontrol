@@ -7,6 +7,7 @@ use work_queue::{RESULT_SUFFIX, State as ItemState, WorkItem};
 
 use super::Shared;
 use crate::github;
+use crate::history::EventKind;
 use crate::{ItemMeta, PoolError, Project};
 
 /// The most of the agent's summary quoted in the closing comment.
@@ -24,11 +25,11 @@ impl Shared {
                     A summary and the pull request link will follow here.";
         let gh = github::program(self.config.borrow().cli_dir.as_deref());
         let result = github::comment_on_issue(&gh, &url, body).await;
-        if self.shown(item, result) {
+        if self.shown(item, EventKind::IssueCommented, &url, result) {
             let mut meta = meta;
             meta.issue_noted = true;
             let saved = meta.save(&self.queue, ItemState::InProgress, item);
-            self.shown(item, saved);
+            self.shown_err(item, saved);
         }
     }
 
@@ -45,9 +46,9 @@ impl Shared {
         let body = completion_comment(meta.pr_url.as_deref(), summary.as_deref());
         let gh = github::program(self.config.borrow().cli_dir.as_deref());
         let commented = github::comment_on_issue(&gh, &url, &body).await;
-        self.shown(item, commented);
+        self.shown(item, EventKind::IssueCommented, &url, commented);
         let closed = github::close_issue(&gh, &url).await;
-        self.shown(item, closed);
+        self.shown(item, EventKind::IssueClosed, &url, closed);
     }
 
     /// `item`'s metadata, or the default when it cannot be read.
@@ -55,8 +56,24 @@ impl Shared {
         ItemMeta::load(&self.queue, state, item).unwrap_or_default()
     }
 
+    /// Records `event` for the issue at `url` in the work history if
+    /// `result` succeeded, and returns whether it did.
+    fn shown(
+        &self,
+        item: &WorkItem,
+        event: EventKind,
+        url: &str,
+        result: Result<(), PoolError>,
+    ) -> bool {
+        let done = self.shown_err(item, result);
+        if done {
+            self.record(item, event, Some(url.to_string()));
+        }
+        done
+    }
+
     /// Whether `result` succeeded; a failure is shown as the pool's last error.
-    fn shown(&self, item: &WorkItem, result: Result<(), PoolError>) -> bool {
+    fn shown_err(&self, item: &WorkItem, result: Result<(), PoolError>) -> bool {
         match result {
             Ok(()) => true,
             Err(e) => {

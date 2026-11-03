@@ -168,7 +168,10 @@ fn one(project: &str, item: &str, entries: &[&Entry], now: u64) -> Option<ItemSu
                 }
                 EventKind::Resumed => finished = None,
                 EventKind::Closed => finished = Some(("closed", e.at)),
-                EventKind::Imported | EventKind::FeedbackQueued => {}
+                EventKind::Imported
+                | EventKind::FeedbackQueued
+                | EventKind::IssueCommented
+                | EventKind::IssueClosed => {}
             },
         }
     }
