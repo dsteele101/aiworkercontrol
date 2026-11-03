@@ -89,6 +89,11 @@ async fn dashboard_renders() {
         );
     }
     assert!(body.contains(r#"location.pathname + "?live=1""#));
+    assert!(body.contains(r#"href="/work""#), "{body}");
+    assert!(
+        !body.contains(r#"action="/import""#),
+        "importing lives on the work page"
+    );
 
     // The settings page has nothing live.
     let (_, settings) = app.get("/settings").await;
@@ -98,12 +103,12 @@ async fn dashboard_renders() {
 #[tokio::test]
 async fn importing_a_pull_request_reports_why_it_cannot() {
     let app = app();
-    let (_, body) = app.get("/").await;
+    let (_, body) = app.get("/work").await;
     assert!(body.contains(r#"action="/import""#), "{body}");
 
     let status = app.post("/import", "url=not+a+link").await;
     assert_eq!(status, StatusCode::SEE_OTHER);
-    let (_, page) = app.get("/").await;
+    let (_, page) = app.get("/work").await;
     assert!(page.contains("is not a GitHub pull request link"), "{page}");
 
     app.post(
@@ -111,7 +116,7 @@ async fn importing_a_pull_request_reports_why_it_cannot() {
         "url=https%3A%2F%2Fgithub.com%2Fup%2Frepo%2Fpull%2F9",
     )
     .await;
-    let (_, page) = app.get("/").await;
+    let (_, page) = app.get("/work").await;
     assert!(
         page.contains("no project opens pull requests against up/repo"),
         "{page}"
@@ -1005,4 +1010,122 @@ async fn suggestions_have_their_own_page_and_not_a_dashboard_section() {
         page.contains(r#"<div id="suggestions" data-live>"#),
         "{page}"
     );
+}
+
+/// Writes `count` items, `prefix0`.. `prefixN`, into a project's state directory.
+fn write_items(app: &App, state: &str, prefix: &str, count: usize) {
+    let dir = app.dir.path().join(format!("work/{state}/demo"));
+    fs::create_dir_all(&dir).unwrap();
+    for n in 0..count {
+        fs::write(dir.join(format!("{prefix}{n}.txt")), "item").unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_long_lane_keeps_its_overflow_behind_a_more_tile() {
+    let app = app();
+    write_items(&app, "open", "item", 5);
+    let (_, page) = app.get("/").await;
+    assert!(page.contains("+3 more"), "{page}");
+    assert_eq!(page.matches(r#" extra" style="#).count(), 3, "{page}");
+    assert!(page.contains(r#"for="exp-open""#), "{page}");
+
+    write_items(&app, "closed", "done", 3);
+    let (_, page) = app.get("/").await;
+    assert!(
+        !page.contains(r#"for="exp-closed""#),
+        "three fit in a lane: {page}"
+    );
+}
+
+#[tokio::test]
+async fn held_items_are_never_tucked_away() {
+    let app = app();
+    write_items(&app, "hold", "stuck", 6);
+    let (_, page) = app.get("/").await;
+    assert!(!page.contains(r#"for="exp-hold""#), "{page}");
+    assert!(page.contains(r#"class="kcard card p-demo attn""#), "{page}");
+    assert!(page.contains(r#"id="qa""#), "the attention filter: {page}");
+}
+
+#[tokio::test]
+async fn provider_logos_are_served_from_the_app() {
+    let app = app();
+    for name in [
+        "claude.svg",
+        "openai.svg",
+        "freebuff.png",
+        "openrouter.png",
+        "deepseek.png",
+        "mistral.svg",
+    ] {
+        let (status, _) = app.get(&format!("/static/{name}")).await;
+        assert_eq!(status, StatusCode::OK, "{name}");
+    }
+    let (status, _) = app.get("/static/nope.svg").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn settings_are_grouped_into_sections_with_limit_bars() {
+    let app = app();
+    let (status, page) = app.get("/settings").await;
+    assert_eq!(status, StatusCode::OK);
+    for section in ["workers", "providers", "limits", "balance", "projects"] {
+        assert!(
+            page.contains(&format!(r##"href="#s-{section}""##)),
+            "{section}"
+        );
+        assert!(page.contains(&format!(r#"id="s-{section}""#)), "{section}");
+    }
+    assert_eq!(page.matches(r#"class="range""#).count(), 2, "{page}");
+    assert!(page.contains("/static/claude.svg"), "provider logos");
+    assert!(
+        page.contains(r#"data-warn="warn" data-stop="stop""#),
+        "{page}"
+    );
+    assert!(page.contains(r#"src="/static/limits.js""#), "{page}");
+    let (status, script) = app.get("/static/limits.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(script.contains("data-warn") || script.contains("dataset.warn"));
+}
+
+#[tokio::test]
+async fn a_saved_project_can_be_edited_keeping_its_token() {
+    let app = app();
+    fs::create_dir_all(app.dir.path().join("spec/demo")).unwrap();
+    fs::create_dir_all(app.dir.path().join("repo/.git")).unwrap();
+    app.post(
+        "/settings/projects",
+        "name=demo&spec_dir=spec/demo&repo=repo&setup=make&issues_url=https%3A%2F%2Fgitlab.com%2Fg%2Fp%2Fissues&issues_limit=3&issues_token=tok",
+    )
+    .await;
+
+    // The edit form starts from what is saved, with the name fixed and the token hidden.
+    let (_, page) = app.get("/settings").await;
+    assert!(page.contains(r#"name="edit""#), "{page}");
+    assert!(
+        page.contains(r#"name="name" placeholder="phase" value="demo" readonly"#),
+        "{page}"
+    );
+    assert!(page.contains(r#"value="spec/demo""#), "{page}");
+    assert!(page.contains(r#"value="make""#), "{page}");
+    assert!(page.contains("saved — leave blank to keep"), "{page}");
+    assert!(!page.contains("tok\""), "the token is never shown");
+
+    // Saving an edit with the token left blank keeps it; the other fields change.
+    app.post(
+        "/settings/projects",
+        "edit=1&name=demo&spec_dir=spec/demo&repo=repo&setup=make+all&build_jobs=2&issues_url=https%3A%2F%2Fgitlab.com%2Fg%2Fp%2Fissues&issues_limit=5",
+    )
+    .await;
+    let saved = app.saved();
+    let project = &saved.projects[0];
+    assert_eq!(saved.projects.len(), 1);
+    assert_eq!(project.setup.as_deref(), Some("make all"));
+    assert_eq!(project.build_jobs, 2);
+    let issues = project.issues.as_ref().unwrap();
+    assert_eq!((issues.limit, issues.token.as_deref()), (5, Some("tok")));
+    let (_, page) = app.get("/settings").await;
+    assert!(page.contains("Saved project demo."), "{page}");
 }

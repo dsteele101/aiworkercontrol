@@ -45,6 +45,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/close", post(close))
         .route("/resume-all", post(resume_all))
         .route("/close-all", post(close_all))
+        .route("/work", get(work_page))
         .route("/import", post(import_pull_request))
         .route("/review/check", post(check_review))
         .route("/review/rework", post(rework_review))
@@ -139,17 +140,30 @@ async fn history_json(State(app): State<AppState>) -> Response {
     }
 }
 
-/// The scripts of the history page, compiled in so it works offline.
+/// The scripts of the history page and the provider logos, compiled in so
+/// they work offline.
 async fn static_file(Path(name): Path<String>) -> Response {
-    let body = match name.as_str() {
-        "chart.umd.js" => include_str!("../assets/chart.umd.js"),
-        "history.js" => include_str!("../assets/history.js"),
-        "fallbacks.js" => include_str!("../assets/fallbacks.js"),
+    const JS: &str = "text/javascript; charset=utf-8";
+    const SVG: &str = "image/svg+xml";
+    const PNG: &str = "image/png";
+    let (body, kind): (&'static [u8], &str) = match name.as_str() {
+        "chart.umd.js" => (include_bytes!("../assets/chart.umd.js"), JS),
+        "history.js" => (include_bytes!("../assets/history.js"), JS),
+        "fallbacks.js" => (include_bytes!("../assets/fallbacks.js"), JS),
+        "limits.js" => (include_bytes!("../assets/limits.js"), JS),
+        "claude.svg" => (include_bytes!("../assets/providers/claude.svg"), SVG),
+        "openai.svg" => (include_bytes!("../assets/providers/openai.svg"), SVG),
+        "googlegemini.svg" => (include_bytes!("../assets/providers/googlegemini.svg"), SVG),
+        "cloudflare.svg" => (include_bytes!("../assets/providers/cloudflare.svg"), SVG),
+        "deepseek.png" => (include_bytes!("../assets/providers/deepseek.png"), PNG),
+        "mistral.svg" => (include_bytes!("../assets/providers/mistral.svg"), SVG),
+        "freebuff.png" => (include_bytes!("../assets/providers/freebuff.png"), PNG),
+        "openrouter.png" => (include_bytes!("../assets/providers/openrouter.png"), PNG),
         _ => return (StatusCode::NOT_FOUND, "no such file").into_response(),
     };
     (
         [
-            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CONTENT_TYPE, kind),
             // Revalidated each time, so an upgrade shows at once.
             (header::CACHE_CONTROL, "no-cache"),
         ],
@@ -296,7 +310,7 @@ async fn import_pull_request(State(app): State<AppState>, Form(f): Form<ImportFo
         Err(e) => format!("Could not import the pull request: {e}"),
     };
     app.notify(message);
-    Redirect::to("/")
+    Redirect::to("/work")
 }
 
 async fn check_review(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {
@@ -350,6 +364,10 @@ async fn bump_review(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Re
 struct SuggestionForm {
     project: String,
     id: u32,
+}
+
+async fn work_page(State(app): State<AppState>) -> Html<String> {
+    Html(pages::work(app.take_notice()).into_string())
 }
 
 async fn suggestions_page(
@@ -940,102 +958,118 @@ struct ProjectForm {
     issues_order: IssueOrder,
     #[serde(default)]
     issues_token: String,
+    /// Set when editing a saved project, where a blank token keeps the saved one.
+    #[serde(default)]
+    edit: Option<String>,
 }
 
 async fn add_project(State(app): State<AppState>, Form(f): Form<ProjectForm>) -> Redirect {
     let root = app.root().to_path_buf();
-    report(
-        &app,
-        app.update_settings(|s| {
-            let name = f.name.trim();
-            let valid_name = !name.is_empty()
-                && name
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-                && !name.starts_with('.');
-            if !valid_name {
-                return Err("Project name must be a plain directory name.".into());
+    let saved = app.update_settings(|s| {
+        let name = f.name.trim();
+        let valid_name = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            && !name.starts_with('.');
+        if !valid_name {
+            return Err("Project name must be a plain directory name.".into());
+        }
+        let mut project = Project::new(name, f.spec_dir.trim(), f.repo.trim());
+        if !f.base_ref.trim().is_empty() {
+            project.base_ref = f.base_ref.trim().to_string();
+        }
+        project.setup = Some(f.setup.trim().to_string()).filter(|s| !s.is_empty());
+        project.ignore_comments = f
+            .ignore_comments
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect();
+        if !f.build_jobs.trim().is_empty() {
+            project.build_jobs = f
+                .build_jobs
+                .trim()
+                .parse()
+                .ok()
+                .filter(|j| (1..=MAX_BUILD_JOBS).contains(j))
+                .ok_or(format!(
+                    "Build jobs must be a number from 1 to {MAX_BUILD_JOBS}."
+                ))?;
+        }
+        if !f.issues_url.trim().is_empty() {
+            let limit = f
+                .issues_limit
+                .trim()
+                .parse()
+                .ok()
+                .filter(|n| (1..=MAX_ISSUE_BATCH).contains(n))
+                .ok_or(format!(
+                    "Issues at a time must be a number from 1 to {MAX_ISSUE_BATCH}."
+                ))?;
+            let saved_token = f
+                .edit
+                .is_some()
+                .then(|| {
+                    s.projects
+                        .iter()
+                        .find(|p| p.name == project.name)
+                        .and_then(|p| p.issues.as_ref())
+                        .and_then(|i| i.token.clone())
+                })
+                .flatten();
+            project.issues = Some(IssueSource {
+                url: f.issues_url.trim().to_string(),
+                limit,
+                order: f.issues_order,
+                token: Some(f.issues_token.trim().to_string())
+                    .filter(|t| !t.is_empty())
+                    .or(saved_token),
+            });
+        }
+        let (remote, repo) = (f.pr_remote.trim(), f.pr_repo.trim());
+        project.pr = match (remote.is_empty(), repo.is_empty()) {
+            (true, true) => None,
+            (false, false) if repo.split('/').filter(|p| !p.is_empty()).count() == 2 => {
+                Some(PullRequests {
+                    push_remote: remote.to_string(),
+                    repo: repo.to_string(),
+                    base: Some(f.pr_base.trim())
+                        .filter(|b| !b.is_empty())
+                        .unwrap_or("main")
+                        .to_string(),
+                    draft: f.pr_draft.is_some(),
+                })
             }
-            let mut project = Project::new(name, f.spec_dir.trim(), f.repo.trim());
-            if !f.base_ref.trim().is_empty() {
-                project.base_ref = f.base_ref.trim().to_string();
+            _ => {
+                return Err(
+                    "Pull requests need both a push remote and a repository (owner/name).".into(),
+                );
             }
-            project.setup = Some(f.setup.trim().to_string()).filter(|s| !s.is_empty());
-            project.ignore_comments = f
-                .ignore_comments
-                .lines()
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(str::to_string)
-                .collect();
-            if !f.build_jobs.trim().is_empty() {
-                project.build_jobs = f
-                    .build_jobs
-                    .trim()
-                    .parse()
-                    .ok()
-                    .filter(|j| (1..=MAX_BUILD_JOBS).contains(j))
-                    .ok_or(format!(
-                        "Build jobs must be a number from 1 to {MAX_BUILD_JOBS}."
-                    ))?;
-            }
-            if !f.issues_url.trim().is_empty() {
-                let limit = f
-                    .issues_limit
-                    .trim()
-                    .parse()
-                    .ok()
-                    .filter(|n| (1..=MAX_ISSUE_BATCH).contains(n))
-                    .ok_or(format!(
-                        "Issues at a time must be a number from 1 to {MAX_ISSUE_BATCH}."
-                    ))?;
-                project.issues = Some(IssueSource {
-                    url: f.issues_url.trim().to_string(),
-                    limit,
-                    order: f.issues_order,
-                    token: Some(f.issues_token.trim().to_string()).filter(|t| !t.is_empty()),
-                });
-            }
-            let (remote, repo) = (f.pr_remote.trim(), f.pr_repo.trim());
-            project.pr = match (remote.is_empty(), repo.is_empty()) {
-                (true, true) => None,
-                (false, false) if repo.split('/').filter(|p| !p.is_empty()).count() == 2 => {
-                    Some(PullRequests {
-                        push_remote: remote.to_string(),
-                        repo: repo.to_string(),
-                        base: Some(f.pr_base.trim())
-                            .filter(|b| !b.is_empty())
-                            .unwrap_or("main")
-                            .to_string(),
-                        draft: f.pr_draft.is_some(),
-                    })
-                }
-                _ => {
-                    return Err(
-                        "Pull requests need both a push remote and a repository (owner/name)."
-                            .into(),
-                    );
-                }
-            };
-            if !root.join(&project.spec_dir).is_dir() {
-                return Err(format!(
-                    "Spec directory {} not found.",
-                    project.spec_dir.display()
-                ));
-            }
-            if !root.join(&project.repo).join(".git").exists() {
-                return Err(format!(
-                    "{} is not a git repository.",
-                    project.repo.display()
-                ));
-            }
-            s.projects.retain(|p| p.name != project.name);
-            s.projects.push(project);
-            s.projects.sort_by(|a, b| a.name.cmp(&b.name));
-            Ok(())
-        }),
-    );
-    Redirect::to("/settings")
+        };
+        if !root.join(&project.spec_dir).is_dir() {
+            return Err(format!(
+                "Spec directory {} not found.",
+                project.spec_dir.display()
+            ));
+        }
+        if !root.join(&project.repo).join(".git").exists() {
+            return Err(format!(
+                "{} is not a git repository.",
+                project.repo.display()
+            ));
+        }
+        s.projects.retain(|p| p.name != project.name);
+        s.projects.push(project);
+        s.projects.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(())
+    });
+    if saved.is_ok() {
+        app.notify(format!("Saved project {}.", f.name.trim()));
+    }
+    report(&app, saved);
+    Redirect::to("/settings#s-projects")
 }
 
 #[derive(Deserialize)]

@@ -1,14 +1,15 @@
 //! HTML pages.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_backend::{AgentEvent, AuthStatus, Cli, Provider, UsageWindow};
 use maud::{DOCTYPE, Markup, html};
 use work_queue::{State as ItemState, WorkItem};
 use worker_pool::{
-    ActiveJob, Activity, Author, ClaimOrder, DEFAULT_BUILD_JOBS, IssueOrder, NotesVersion,
-    PoolSnapshot, ProjectSuggestions, Scheme, Span, Suggestion, SuggestionStatus, UsageLimits,
+    ActiveJob, Activity, Author, ClaimOrder, DEFAULT_BUILD_JOBS, IssueOrder, ItemMeta,
+    NotesVersion, PoolSnapshot, Project, ProjectSuggestions, Scheme, Span, Suggestion,
+    SuggestionStatus, UsageLimits,
 };
 
 use crate::routes::{
@@ -24,33 +25,43 @@ const EVENT_CHARS: usize = 240;
 const STYLE: &str = r#"
 :root {
   color-scheme: light;
-  --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #5f6878;
-  --border: #dde1e8; --accent: #2f5bd3; --on-accent: #ffffff; --link: #2448b8;
-  --ok: #1f7a4d; --bad: #b3261e; --warn: #8a5a00; --code: #eef1f5;
+  --bg: #eef0f6; --panel: #ffffff; --text: #171b2e; --muted: #5d6580;
+  --border: #dde1ee; --accent: #3b5bdb; --on-accent: #ffffff; --link: #2f4bc0;
+  --ok: #17935f; --bad: #c9342b; --warn: #b87500; --code: #f1f3fa;
+  --accent-soft: #e4e9ff; --ok-soft: #dcf5e9; --warn-soft: #fff0cf; --bad-soft: #ffe1de;
+  --track: #e3e6f2; --glow: #dfe6ff;
+  --shadow: 0 1px 2px #1b255f14, 0 8px 24px -12px #1b255f33;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
-    --bg: #12151b; --panel: #1b1f27; --text: #e4e7ee; --muted: #a3acbd;
-    --border: #2c323e; --accent: #8fb0ff; --on-accent: #0d1220; --link: #9dbaff;
-    --ok: #5cc48f; --bad: #f2867d; --warn: #e8bd68; --code: #262b36;
+    --bg: #0e1120; --panel: #171b30; --text: #e8ebf7; --muted: #9aa3c2;
+    --border: #272d4a; --accent: #8ea6ff; --on-accent: #0b1030; --link: #a3b6ff;
+    --ok: #4fd09a; --bad: #ff8b82; --warn: #eab654; --code: #1d2240;
+    --accent-soft: #232c5a; --ok-soft: #14392c; --warn-soft: #3d2f10; --bad-soft: #442020;
+    --track: #262c4a; --glow: #1d2754;
+    --shadow: 0 1px 2px #0006, 0 12px 28px -14px #000a;
   }
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text);
-  font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { display: flex; gap: 20px; align-items: baseline; padding: 14px 16px;
-  border-bottom: 1px solid var(--border); background: var(--panel); }
-header h1 { font-size: 17px; margin: 0; }
+body { margin: 0; background: var(--bg) radial-gradient(900px 400px at 85% -10%, var(--glow), transparent 70%) no-repeat;
+  color: var(--text); font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { position: sticky; top: 0; z-index: 5; display: flex; gap: 6px; align-items: center; padding: 10px 16px;
+  border-bottom: 1px solid var(--border); backdrop-filter: blur(14px);
+  background: color-mix(in srgb, var(--bg) 78%, transparent); }
+header h1 { font-size: 17px; margin: 0 14px 0 0; display: flex; align-items: center; gap: 10px; }
+.logo { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; color: #fff;
+  background: linear-gradient(135deg, var(--accent), #7a5cf0); }
+header a { padding: 6px 12px; border-radius: 999px; font-weight: 500; }
+header a:hover { text-decoration: none; color: var(--text); }
 a, a:visited { color: var(--link); text-decoration: none; }
 a:hover { text-decoration: underline; }
 header a, header a:visited { color: var(--muted); }
-header a.here { color: var(--text); font-weight: 600; }
+header a.here { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 main { max-width: 1200px; margin: 0 auto; padding: 16px; }
-h2 { font-size: 15px; margin: 24px 0 10px; text-transform: uppercase;
-  letter-spacing: .04em; color: var(--muted); }
+h2 { font-size: 18px; margin: 22px 0 10px; letter-spacing: -.01em; }
 .panel { background: var(--panel); border: 1px solid var(--border);
-  border-radius: 8px; padding: 14px; }
+  border-radius: 16px; padding: 16px; box-shadow: var(--shadow); }
 .bar { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; }
 .notice { background: var(--code); border-left: 3px solid var(--accent);
   padding: 10px 12px; border-radius: 6px; margin-bottom: 14px; }
@@ -82,7 +93,7 @@ details.menu[open] > div { position: absolute; right: 0; z-index: 1; display: fl
   background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
 button, input, select { font: inherit; color: inherit; }
 button { background: var(--panel); border: 1px solid var(--border);
-  border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+  border-radius: 10px; padding: 5px 14px; cursor: pointer; font-weight: 500; }
 button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent);
   font-weight: 600; }
 button:hover { border-color: var(--accent); }
@@ -137,6 +148,207 @@ details.comment textarea { margin: 8px 0; min-height: 4.5em; }
 .suggestion .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .scroll { overflow-x: auto; }
 @media (max-width: 600px) { header { flex-wrap: wrap; gap: 10px 16px; } }
+
+/* Provider marks, status strip and pills. */
+.pmark { --pbg: #5d6580; flex: none; width: 34px; height: 34px; border-radius: 11px; display: grid; place-items: center;
+  background: var(--pbg); color: #fff; font-weight: 700; overflow: hidden; box-shadow: inset 0 0 0 1px #ffffff26; }
+.pmark i { width: 20px; height: 20px; background: #fff; -webkit-mask: var(--logo) center / contain no-repeat;
+  mask: var(--logo) center / contain no-repeat; }
+.pmark img { width: 100%; height: 100%; display: block; }
+.pmark.light { color: #1d2330; box-shadow: inset 0 0 0 1px #00000026; } .pmark.light img { padding: 16%; }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 2px 11px 2px 9px; border-radius: 999px;
+  font-size: 13px; font-weight: 600; white-space: nowrap; }
+.pill.ok { background: var(--ok-soft); color: var(--ok); } .pill.warn { background: var(--warn-soft); color: var(--warn); }
+.pill.bad { background: var(--bad-soft); color: var(--bad); } .pill.idle { background: var(--code); color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+.pill.ok .dot { animation: pulse 1.8s ease-out infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 55%, transparent); } 100% { box-shadow: 0 0 0 8px transparent; } }
+.stepper { display: inline-flex; align-items: center; gap: 2px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+.stepper button { border: 0; background: none; width: 30px; height: 30px; padding: 0; font-size: 16px; }
+.stepper b { min-width: 24px; text-align: center; }
+.spacer { flex: 1; }
+
+/* Plan usage: a compact card per provider, a bar per window. */
+.usage { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); }
+.ucard { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 12px 14px;
+  box-shadow: var(--shadow); min-width: 0; }
+.ucard.limited { border-color: color-mix(in srgb, var(--bad) 55%, var(--border)); }
+.uhead { display: flex; align-items: center; gap: 9px; }
+.uhead h3 { margin: 0; font-size: 14px; line-height: 1.25; overflow-wrap: anywhere; } .uhead .pill { margin-left: auto; font-size: 12px; padding: 0 9px; }
+.ucard .pmark { width: 28px; height: 28px; border-radius: 9px; } .ucard .pmark i { width: 16px; height: 16px; }
+.meter { margin-top: 9px; }
+.mtop { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; font-size: 12.5px; margin-bottom: 4px; }
+.mlab { font-weight: 600; } .mlab .muted { font-weight: 400; font-size: 12px; }
+.mtop strong { font-variant-numeric: tabular-nums; white-space: nowrap; margin-left: auto; padding-left: 6px; }
+.mbar { position: relative; height: 8px; border-radius: 999px; background: var(--track); }
+.mbar b { display: block; height: 100%; border-radius: 999px; background: var(--ok); }
+.mbar.warn b { background: var(--warn); } .mbar.bad b { background: var(--bad); }
+.mbar i { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 2px; background: var(--text); }
+.ustate { margin-top: 9px; padding: 6px 10px; background: var(--code); border-radius: 10px; font-size: 12.5px; }
+.ustate form { margin-left: 6px; } .ustate button { padding: 1px 10px; font-size: 12.5px; }
+
+/* Workers: a timeline of what the agent just did. */
+.wcard.idle { background: transparent; box-shadow: none; border-style: dashed; }
+.wtop { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 6px; }
+.wtop h3 { margin: 0; font-size: 16px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.chip { font-size: 12px; padding: 1px 9px; border-radius: 999px; background: var(--code); color: var(--muted); }
+.chip.acc { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+ul.timeline { list-style: none; margin: 10px 0 0; padding: 0 0 0 4px; position: relative; }
+ul.timeline::before { content: ""; position: absolute; left: 13px; top: 8px; bottom: 8px; width: 2px; background: var(--border); }
+ul.timeline li { position: relative; display: flex; gap: 10px; padding: 4px 0; font-size: 13px; overflow-wrap: anywhere; }
+ul.timeline .ic { flex: none; width: 20px; height: 20px; border-radius: 7px; display: grid; place-items: center; z-index: 1;
+  background: var(--panel); border: 1px solid var(--border); color: var(--muted); font-size: 11px; }
+ul.timeline li.cur .ic { background: var(--accent); border-color: var(--accent); color: var(--on-accent); animation: pulse2 1.6s ease-out infinite; }
+@keyframes pulse2 { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 50%, transparent); } 100% { box-shadow: 0 0 0 9px transparent; } }
+
+/* Queue: a lane per state. Collapse, expand and filters are checkboxes, so they need no script. */
+.qwrap input { position: absolute; opacity: 0; width: 1px; height: 1px; pointer-events: none; }
+.qfilters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+.qlab { font-size: 12px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.qchip { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border); background: var(--panel);
+  border-radius: 999px; padding: 4px 12px; font-weight: 600; font-size: 13.5px; cursor: pointer; }
+.qchip i { width: 8px; height: 8px; border-radius: 3px; background: var(--hue); }
+.qchip:hover { border-color: var(--accent); }
+.qfilters > input:checked + .qchip { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+.qfilters > input:checked + .qchip.attn { background: var(--bad-soft); border-color: var(--bad); color: var(--bad); }
+.qfilters > input:focus-visible + .qchip { outline: 2px solid var(--accent); outline-offset: 2px; }
+.lanes { display: flex; flex-direction: column; gap: 12px; }
+.sw { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 12px; background: var(--code); border-radius: 18px; padding: 10px; }
+.sw.empty { opacity: .75; }
+.sw-head { display: flex; flex-direction: column; gap: 2px; align-self: start; padding: 8px 10px; border-radius: 12px; font-weight: 600; font-size: 13.5px; cursor: pointer; }
+.sw-head:hover { background: var(--panel); }
+.sw-head .nm { display: flex; align-items: center; gap: 8px; } .sw-head i { width: 9px; height: 9px; border-radius: 50%; background: var(--lane); }
+.sw-head .count { font-size: 30px; line-height: 1.1; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sw-head .tog { font-size: 12px; font-weight: 500; color: var(--muted); }
+.tog::after { content: "Hide"; }
+.sw-body { display: grid; gap: 10px; min-width: 0; align-content: start; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); }
+.kcard { position: relative; background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 12px; min-width: 0;
+  box-shadow: 0 1px 2px #1b255f10; }
+.kcard.attn { border-color: color-mix(in srgb, var(--bad) 45%, var(--border)); }
+.kproj { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.kproj i { width: 8px; height: 8px; border-radius: 3px; background: var(--hue); }
+.ktitle { font-weight: 600; margin: 4px 0 8px; overflow-wrap: anywhere; line-height: 1.3; }
+.kmeta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.kstate { margin-top: 8px; font-size: 12.5px; overflow-wrap: anywhere; }
+.kacts { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-top: 10px; font-size: 13px; }
+.kacts button { padding: 2px 10px; font-size: 13px; }
+.ring { width: 22px; height: 22px; flex: none; }
+.kcard.more { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; text-align: center;
+  min-height: 84px; background: transparent; border-style: dashed; color: var(--accent); cursor: pointer; box-shadow: none; }
+.kcard.more b { font-size: 15px; } .kcard.more span { font-size: 12.5px; color: var(--muted); } .kcard.more:hover { background: var(--panel); }
+.kcard.fewer, .sw-body .extra { display: none; }
+.kempty { grid-column: 1 / -1; padding: 10px 12px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); font-size: 13px; }
+.qwrap:has(#qa:checked) .kcard.card:not(.attn) { display: none; }
+@media (max-width: 640px) {
+  .sw { grid-template-columns: 1fr; }
+  .sw-head { flex-direction: row; align-items: center; gap: 10px; width: 100%; } .sw-head .tog { margin-left: auto; } .sw-head .count { font-size: 22px; }
+}
+#col-open:checked ~ #queue #lane-open .sw-body { display: none; }
+#col-open:checked ~ #queue #lane-open .tog::after { content: "Show"; }
+#exp-open:checked ~ #queue #lane-open .extra { display: block; }
+#exp-open:checked ~ #queue #lane-open .kcard.more { display: none; }
+#exp-open:checked ~ #queue #lane-open .kcard.fewer { display: flex; }
+#col-open:focus-visible ~ #queue #lane-open .sw-head, #exp-open:focus-visible ~ #queue #lane-open .kcard.more { outline: 2px solid var(--accent); outline-offset: 2px; }
+#col-inprogress:checked ~ #queue #lane-inprogress .sw-body { display: none; }
+#col-inprogress:checked ~ #queue #lane-inprogress .tog::after { content: "Show"; }
+#exp-inprogress:checked ~ #queue #lane-inprogress .extra { display: block; }
+#exp-inprogress:checked ~ #queue #lane-inprogress .kcard.more { display: none; }
+#exp-inprogress:checked ~ #queue #lane-inprogress .kcard.fewer { display: flex; }
+#col-inprogress:focus-visible ~ #queue #lane-inprogress .sw-head, #exp-inprogress:focus-visible ~ #queue #lane-inprogress .kcard.more { outline: 2px solid var(--accent); outline-offset: 2px; }
+#col-inreview:checked ~ #queue #lane-inreview .sw-body { display: none; }
+#col-inreview:checked ~ #queue #lane-inreview .tog::after { content: "Show"; }
+#exp-inreview:checked ~ #queue #lane-inreview .extra { display: block; }
+#exp-inreview:checked ~ #queue #lane-inreview .kcard.more { display: none; }
+#exp-inreview:checked ~ #queue #lane-inreview .kcard.fewer { display: flex; }
+#col-inreview:focus-visible ~ #queue #lane-inreview .sw-head, #exp-inreview:focus-visible ~ #queue #lane-inreview .kcard.more { outline: 2px solid var(--accent); outline-offset: 2px; }
+#col-hold:checked ~ #queue #lane-hold .sw-body { display: none; }
+#col-hold:checked ~ #queue #lane-hold .tog::after { content: "Show"; }
+#exp-hold:checked ~ #queue #lane-hold .extra { display: block; }
+#exp-hold:checked ~ #queue #lane-hold .kcard.more { display: none; }
+#exp-hold:checked ~ #queue #lane-hold .kcard.fewer { display: flex; }
+#col-hold:focus-visible ~ #queue #lane-hold .sw-head, #exp-hold:focus-visible ~ #queue #lane-hold .kcard.more { outline: 2px solid var(--accent); outline-offset: 2px; }
+#col-closed:checked ~ #queue #lane-closed .sw-body { display: none; }
+#col-closed:checked ~ #queue #lane-closed .tog::after { content: "Show"; }
+#exp-closed:checked ~ #queue #lane-closed .extra { display: block; }
+#exp-closed:checked ~ #queue #lane-closed .kcard.more { display: none; }
+#exp-closed:checked ~ #queue #lane-closed .kcard.fewer { display: flex; }
+#col-closed:focus-visible ~ #queue #lane-closed .sw-head, #exp-closed:focus-visible ~ #queue #lane-closed .kcard.more { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Settings: a section nav, a card per section, and a row per setting. */
+.slayout { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: 28px; align-items: start; }
+.snav { position: sticky; top: 70px; display: flex; flex-direction: column; gap: 2px; margin-top: 22px; }
+.snav a { padding: 7px 12px; border-radius: 10px; color: var(--muted); font-weight: 600; font-size: 14px; }
+.snav a:hover { color: var(--text); background: var(--code); text-decoration: none; }
+.scontent { min-width: 0; }
+.ssec { background: var(--panel); border: 1px solid var(--border); border-radius: 20px; padding: 20px; box-shadow: var(--shadow);
+  margin-top: 22px; scroll-margin-top: 80px; min-width: 0; }
+.ssec > h2 { margin: 0 0 4px; font-size: 20px; } .ssec h3 { margin: 18px 0 8px; font-size: 15px; }
+.lead { margin: 0 0 12px; color: var(--muted); font-size: 13.5px; }
+.srow { display: flex; align-items: flex-end; gap: 14px; padding: 14px 0; border-top: 1px solid var(--border); }
+.srow > button { margin-left: auto; flex: none; }
+.sfield { flex: 1; min-width: 0; max-width: 520px; } .sfield input[type=number] { max-width: 9em; }
+label.f { display: block; margin: 0 0 5px; font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.hint { margin: 6px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+label.switch { display: flex; gap: 12px; align-items: flex-start; padding: 4px 0; cursor: pointer; color: var(--text); font-size: 15px; margin: 0; }
+label.switch input { appearance: none; flex: none; width: 38px; height: 22px; border-radius: 999px; background: var(--track);
+  position: relative; cursor: pointer; transition: background .2s; margin: 1px 0 0; padding: 0; }
+label.switch input::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%;
+  background: #fff; transition: transform .2s; box-shadow: 0 1px 2px #0004; }
+label.switch input:checked { background: var(--accent); } label.switch input:checked::after { transform: translateX(16px); }
+label.switch input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+label.switch b { display: block; font-weight: 600; } label.switch span { color: var(--muted); font-size: 13px; }
+.pcards { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); margin-top: 14px; }
+.pcard { border: 1px solid var(--border); border-radius: 16px; padding: 14px; min-width: 0; background: var(--bg); }
+.pcard.active { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.phead { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+.phead h3 { margin: 0; font-size: 16px; } .phead form { margin-left: auto; }
+.pcard .fields { margin-top: 8px; }
+.inline-mark { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.inline-mark .pmark { width: 22px; height: 22px; border-radius: 7px; } .inline-mark .pmark i { width: 13px; height: 13px; }
+.range { position: relative; height: 50px; margin: 2px 6px 6px; }
+.range .rail { position: absolute; left: 0; right: 0; top: 22px; height: 10px; border-radius: 999px;
+  background: linear-gradient(90deg, var(--ok) 0 var(--w), var(--warn) var(--w) var(--s), var(--bad) var(--s) 100%); }
+.range .mk { position: absolute; top: 12px; width: 0; }
+.range .mk::after { content: ""; position: absolute; left: -2px; top: 6px; width: 4px; height: 30px; border-radius: 3px; background: var(--text); }
+.range .mk span { position: absolute; top: -12px; left: 0; transform: translateX(-50%); white-space: nowrap; font-size: 11px; font-weight: 600; color: var(--muted); }
+.range.live .mk { width: 28px; height: 44px; top: 6px; margin: 0; padding: 0; border: 0; background: none; transform: translateX(-50%);
+  cursor: ew-resize; touch-action: none; color: inherit; }
+.range.live .mk::after { left: 12px; top: 8px; transition: background .15s; }
+.range.live .mk.stop::after { background: var(--bad); } .range.live .mk.warn::after { background: var(--warn); }
+.range.live .mk:hover::after, .range.live .mk.held::after { background: var(--text); }
+.range.live .mk:focus-visible { outline: none; } .range.live .mk:focus-visible::after { outline: 2px solid var(--accent); outline-offset: 2px; }
+.range.live .mk span { left: 14px; top: -6px; pointer-events: none; }
+.range.live .rail { transition: none; }
+.range + .hint { margin: 0 0 12px; }
+#fallbacks { counter-reset: fb; }
+#fallbacks li { counter-increment: fb; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 6px 12px 6px 8px; margin-bottom: 6px; }
+#fallbacks li::before { content: counter(fb); flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 700; }
+#fallbacks li.dragging { opacity: .4; }
+details.ssub { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
+details.ssub > summary { cursor: pointer; font-weight: 600; color: var(--accent); }
+details.ssub[open] > summary { margin-bottom: 10px; }
+.projects { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); }
+.proj { border: 1px solid var(--border); border-radius: 16px; padding: 14px; min-width: 0; background: var(--bg); }
+.proj h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 16px; }
+.proj h3 i { width: 10px; height: 10px; border-radius: 3px; background: var(--hue); }
+details.pedit { margin-top: 10px; }
+details.pedit > summary { display: inline-block; list-style: none; cursor: pointer; border: 1px solid var(--border); border-radius: 10px;
+  padding: 4px 14px; font-weight: 500; background: var(--panel); }
+details.pedit > summary::-webkit-details-marker { display: none; } details.pedit > summary:hover { border-color: var(--accent); }
+details.pedit .on-open, details.pedit[open] .on-closed { display: none; } details.pedit[open] .on-open { display: inline; }
+details.pedit[open] > form { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.proj:has(details.pedit[open]) { grid-column: 1 / -1; }
+.proj dl { display: grid; grid-template-columns: 110px 1fr; gap: 5px 10px; margin: 0 0 12px; font-size: 13px; }
+.proj dt { color: var(--muted); } .proj dd { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 760px) {
+  .slayout { grid-template-columns: 1fr; gap: 0; }
+  .snav { position: static; flex-direction: row; overflow-x: auto; margin-top: 12px; }
+  .snav a { white-space: nowrap; }
+  .srow { flex-wrap: wrap; align-items: stretch; } .srow > button { margin-left: 0; }
+}
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
 "#;
 
 /// Keeps the page's `data-live` sections current: every two seconds while
@@ -210,8 +422,17 @@ fn layout(title: &str, here: &str, refresh: bool, notice: Option<String>, body: 
             }
             body {
                 header {
-                    h1 { "AI Worker Control" }
+                    h1 {
+                        span.logo aria-hidden="true" {
+                            svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" {
+                                circle cx="8" cy="8" r="2.2" {}
+                                path d="M8 1.5v2.3M8 12.2v2.3M1.5 8h2.3M12.2 8h2.3" {}
+                            }
+                        }
+                        "AI Worker Control"
+                    }
                     a href="/" class=[(here == "dashboard").then_some("here")] { "Dashboard" }
+                    a href="/work" class=[(here == "work").then_some("here")] { "Work" }
                     a href="/history" class=[(here == "history").then_some("here")] { "History" }
                     a href="/suggestions" class=[(here == "suggestions").then_some("here")] { "Suggestions" }
                     a href="/settings" class=[(here == "settings").then_some("here")] { "Settings" }
@@ -224,6 +445,28 @@ fn layout(title: &str, here: &str, refresh: bool, notice: Option<String>, body: 
             }
         }
     }
+}
+
+/// The work page: where work comes into the queue from outside.
+pub(crate) fn work(notice: Option<String>) -> Markup {
+    let body = html! {
+        h2 { "Work" }
+        div {
+            h3 { "Import a pull request" }
+            form.panel.bar method="post" action="/import" {
+                input type="text" name="url" required style="flex:1; min-width:260px"
+                    placeholder="https://github.com/owner/repo/pull/123"
+                    aria-label="Pull request link";
+                button.primary { "Import" }
+            }
+            p.muted {
+                "Adds an open pull request to the queue, in review, for the project that opens pull requests "
+                "against its repository. Its branch must be on that project's push remote. Changes requested on "
+                "it and failing checks are then reworked like those on the app's own pull requests."
+            }
+        }
+    };
+    layout("Work", "work", false, notice, body)
 }
 
 /// The history dashboard's page. Its filters, figures and charts are drawn
@@ -285,55 +528,393 @@ pub(crate) fn history(notice: Option<String>) -> Markup {
     layout("History", "history", false, notice, body)
 }
 
+/// The queue's lanes, top to bottom: state, title and dot color.
+const LANES: [(ItemState, &str, &str); 5] = [
+    (ItemState::Open, "Open", "var(--muted)"),
+    (ItemState::InProgress, "In progress", "var(--accent)"),
+    (ItemState::InReview, "In review", "var(--warn)"),
+    (ItemState::Hold, "Hold", "var(--bad)"),
+    (ItemState::Closed, "Closed", "var(--ok)"),
+];
+/// Cards a lane shows before the rest go behind its "more" tile.
+const LANE_CARDS: usize = 3;
+
+/// One item of the queue, ready to draw.
+struct QueueCard<'a> {
+    item: &'a WorkItem,
+    state: ItemState,
+    meta: ItemMeta,
+    /// What the item is waiting on, in a sentence.
+    status: String,
+    /// The color class of `status`.
+    tone: &'static str,
+    /// Whether the item needs the user's eye: held, failing or stuck.
+    attn: bool,
+    /// Lower sorts first within a lane.
+    rank: u8,
+    pull_request: Option<String>,
+    has_worktree: bool,
+    worker: Option<usize>,
+    max_turns: u32,
+}
+
+fn queue_card<'a>(
+    app: &AppState,
+    settings: &Settings,
+    snapshot: &PoolSnapshot,
+    projects: &[Project],
+    state: ItemState,
+    item: &'a WorkItem,
+) -> QueueCard<'a> {
+    let meta = app.pool().meta(state, item).unwrap_or_default();
+    let max_turns = settings.max_turns.max(1);
+    let used = format!("{} of {max_turns} turns used", meta.turns);
+    let known = settings.projects.iter().any(|p| p.name == item.project);
+    let (status, tone, rank, attn) = match state {
+        ItemState::Open => match &meta.last_error {
+            Some(error) => (
+                format!("retrying ({used}); last run: {error}"),
+                "warn",
+                1,
+                true,
+            ),
+            None if !known => (
+                format!("no project “{}” configured", item.project),
+                "muted",
+                1,
+                true,
+            ),
+            None => ("open".to_string(), "muted", 3, false),
+        },
+        ItemState::InProgress => ("in progress".to_string(), "warn", 3, false),
+        ItemState::Hold => {
+            let reason = meta
+                .hold_reason
+                .clone()
+                .unwrap_or_else(|| "set aside for manual review".into());
+            (format!("on hold: {reason}"), "bad", 0, true)
+        }
+        ItemState::InReview if meta.needs_rework.is_some() => {
+            let last = meta
+                .last_error
+                .as_ref()
+                .map(|e| format!("; last run: {e}"))
+                .unwrap_or_default();
+            (
+                format!("changes requested; waiting for a worker ({used}){last}"),
+                "warn",
+                0,
+                true,
+            )
+        }
+        ItemState::InReview if meta.ci_running => (
+            format!("waiting for CI to finish ({used})"),
+            "warn",
+            2,
+            false,
+        ),
+        ItemState::InReview => (format!("in review ({used})"), "warn", 3, false),
+        ItemState::Closed => ("closed".to_string(), "ok", 4, false),
+    };
+    let pull_request = match state {
+        ItemState::InReview => meta.pr_url.clone(),
+        ItemState::Closed => app.pool().pull_request(state, item),
+        _ => None,
+    };
+    let worker = snapshot.workers.iter().find_map(|w| match &w.activity {
+        Activity::Working(job) if job.item == *item => Some(w.id),
+        _ => None,
+    });
+    QueueCard {
+        item,
+        state,
+        has_worktree: state == ItemState::Closed
+            && projects
+                .iter()
+                .find(|p| p.name == item.project)
+                .is_some_and(|p| p.worktree_path(item).exists()),
+        meta,
+        status,
+        tone,
+        attn,
+        rank,
+        pull_request,
+        worker,
+        max_turns,
+    }
+}
+
+/// A project's accent color, the same each time it is drawn.
+fn project_hue(name: &str) -> u32 {
+    name.bytes()
+        .fold(7_u32, |h, b| h.wrapping_mul(31).wrapping_add(u32::from(b)))
+        % 360
+}
+
+/// `name` as a fragment of an HTML id or class.
+fn slug(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// A ring showing how much of an item's turn allowance is spent.
+fn turn_ring(turns: u32, max: u32) -> Markup {
+    let circumference = 2.0 * std::f64::consts::PI * 8.0;
+    let spent = f64::from(turns.min(max)) / f64::from(max.max(1));
+    let tone = if turns >= max {
+        "var(--bad)"
+    } else if turns + 1 >= max {
+        "var(--warn)"
+    } else {
+        "var(--accent)"
+    };
+    html! {
+        svg.ring viewBox="0 0 22 22" aria-hidden="true" {
+            circle cx="11" cy="11" r="8" fill="none" stroke="var(--track)" stroke-width="3" {}
+            circle cx="11" cy="11" r="8" fill="none" stroke=(tone) stroke-width="3" stroke-linecap="round"
+                stroke-dasharray={ (format!("{:.1} {circumference:.1}", circumference * spent)) }
+                transform="rotate(-90 11 11)" {}
+        }
+    }
+}
+
+fn queue_card_markup(c: &QueueCard, extra: bool) -> Markup {
+    let item = c.item;
+    let encoded = url_encode(&item.to_string());
+    let class = format!(
+        "kcard card p-{}{}{}",
+        slug(&item.project),
+        if c.attn { " attn" } else { "" },
+        if extra { " extra" } else { "" },
+    );
+    html! {
+        div class=(class) style={ "--hue: hsl(" (project_hue(&item.project)) " 65% 55%)" } {
+            div.kproj { i {} (item.project) }
+            div.ktitle title=(item) { (item.file) }
+            div.kmeta {
+                (turn_ring(c.meta.turns, c.max_turns))
+                span { (c.meta.turns) " of " (c.max_turns) " turns" }
+                @if let Some(id) = c.worker { span.pill.ok { span.dot {} "Worker " (id + 1) } }
+            }
+            div.kstate.(c.tone) { (c.status) }
+            div.kacts {
+                @match c.state {
+                    ItemState::Hold => {
+                        form.inline method="post" action="/resume" {
+                            input type="hidden" name="item" value=(item);
+                            button title="Reset its turn count and give it back to the agents" { "Return to agent" }
+                        }
+                        form.inline method="post" action="/close" {
+                            input type="hidden" name="item" value=(item);
+                            button title="Close it without more work, such as after its pull request was closed" { "Close" }
+                        }
+                    }
+                    ItemState::InReview => {
+                        @if let Some(url) = &c.pull_request {
+                            a href=(url) target="_blank" rel="noopener" { "Pull request" }
+                        }
+                        a href={ "/result?item=" (encoded) } { "Result" }
+                        @if c.pull_request.is_some() {
+                            details.menu {
+                                summary { "Next action" }
+                                div {
+                                    form.inline method="post" action="/review/check" {
+                                        input type="hidden" name="item" value=(item);
+                                        button title="Read the latest reviews, comments and CI results now, and queue a rework if they ask for changes" { "Check latest" }
+                                    }
+                                    form.inline method="post" action="/review/rework" {
+                                        input type="hidden" name="item" value=(item);
+                                        button title="Act on feedback on the latest commit even if a rework already answered it, for when that rework changed nothing" { "Rework again" }
+                                    }
+                                    form.inline method="post" action="/review/bump" {
+                                        input type="hidden" name="item" value=(item);
+                                        button title="Push an empty commit to the pull request so the remote checks run again" { "Bump PR" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ItemState::Closed => {
+                        a href={ "/result?item=" (encoded) } { "Result" }
+                        @if let Some(url) = &c.pull_request {
+                            a href=(url) target="_blank" rel="noopener" { "Pull request" }
+                        }
+                        @if c.has_worktree {
+                            form.inline method="post" action="/cleanup" {
+                                input type="hidden" name="item" value=(item);
+                                button title="Remove the worktree; delete the branch too if it is merged" { "Clean up" }
+                            }
+                        }
+                    }
+                    ItemState::Open | ItemState::InProgress => {}
+                }
+            }
+        }
+    }
+}
+
+/// One lane of the queue. Past `LANE_CARDS` items, the rest wait behind a
+/// "more" tile; held items are never hidden.
+fn lane(state: ItemState, title: &str, color: &str, mut cards: Vec<QueueCard>) -> Markup {
+    let dir = state.dir_name();
+    // Items that need attention come first; the rest keep their order.
+    cards.sort_by_key(|c| {
+        let spent = if state == ItemState::Closed {
+            0
+        } else {
+            c.meta.turns
+        };
+        (c.rank, std::cmp::Reverse(spent))
+    });
+    let shown = if state == ItemState::Hold || cards.len() <= LANE_CARDS {
+        cards.len()
+    } else {
+        LANE_CARDS - 1
+    };
+    let hidden = cards.len() - shown;
+    let hidden_attn = cards.iter().skip(shown).filter(|c| c.attn).count();
+    html! {
+        section.sw id={ "lane-" (dir) } class=[cards.is_empty().then_some("empty")] style={ "--lane: " (color) } {
+            label.sw-head for={ "col-" (dir) } {
+                span.nm { i {} (title) }
+                span.count { (cards.len()) }
+                span.tog {}
+            }
+            div.sw-body {
+                @for (i, card) in cards.iter().enumerate() { (queue_card_markup(card, i >= shown)) }
+                @if hidden > 0 {
+                    label.kcard.more for={ "exp-" (dir) } {
+                        b { "+" (hidden) " more" }
+                        span { @if hidden_attn > 0 { (hidden_attn) " need attention" } @else { "all on track" } }
+                    }
+                    label.kcard.fewer for={ "exp-" (dir) } { b { "Show fewer" } }
+                }
+                @if cards.is_empty() { div.kempty { "Nothing here" } }
+            }
+        }
+    }
+}
+
+/// The queue: project and attention filters, and a lane per state. Every
+/// toggle is a checkbox the lanes and cards react to in CSS, so none of it
+/// is lost when the live section is swapped.
+fn queue_section(
+    app: &AppState,
+    settings: &Settings,
+    snapshot: &PoolSnapshot,
+    items: &[(ItemState, Vec<WorkItem>)],
+) -> Markup {
+    let projects = app.pool().config().projects;
+    let names: BTreeSet<&str> = items
+        .iter()
+        .flat_map(|(_, list)| list.iter().map(|i| i.project.as_str()))
+        .chain(settings.projects.iter().map(|p| p.name.as_str()))
+        .collect();
+    let filter_css: String = names
+        .iter()
+        .map(|name| {
+            let slug = slug(name);
+            format!(
+                ".qwrap:has(.pf:checked):not(:has(#pf-{slug}:checked)) .kcard.p-{slug} {{ display: none !important; }}\n"
+            )
+        })
+        .collect();
+    let held = items
+        .iter()
+        .any(|(state, list)| *state == ItemState::Hold && !list.is_empty());
+    html! {
+        div.qwrap {
+            style { (maud::PreEscaped(filter_css)) ".qwrap:has(#qa:checked) .kcard.card:not(.attn) { display: none !important; }" }
+            div.qfilters {
+                span.qlab { "Project" }
+                @for name in &names {
+                    input.pf type="checkbox" id={ "pf-" (slug(name)) };
+                    label.qchip for={ "pf-" (slug(name)) } style={ "--hue: hsl(" (project_hue(name)) " 65% 55%)" } { i {} (name) }
+                }
+                span.spacer {}
+                input #qa type="checkbox";
+                label.qchip.attn for="qa" { "Needs attention" }
+            }
+            @for (state, _) in items {
+                input.col type="checkbox" id={ "col-" (state.dir_name()) } checked[*state == ItemState::Closed];
+                input.exp type="checkbox" id={ "exp-" (state.dir_name()) };
+            }
+            div #queue data-live {
+                @if held {
+                    div.bar style="margin-bottom:12px" {
+                        form.inline method="post" action="/resume-all" {
+                            button title="Reset the turn count of every held item and give them all back to the agents" { "Return all held to agent" }
+                        }
+                        form.inline method="post" action="/close-all" onsubmit="return confirm('Close every held item without more work?')" {
+                            button title="Close every held item without more work" { "Close all held" }
+                        }
+                    }
+                }
+                div.lanes {
+                    @for (state, title, color) in LANES {
+                        @let list = items.iter().find(|(s, _)| *s == state).map(|(_, l)| l.as_slice()).unwrap_or_default();
+                        (lane(
+                            state,
+                            title,
+                            color,
+                            list.iter().map(|i| queue_card(app, settings, snapshot, &projects, state, i)).collect(),
+                        ))
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
     let snapshot = app.pool().snapshot();
     let settings = app.settings();
     let queue = app.pool().queue();
-    let lists: BTreeMap<_, _> = ItemState::ALL
+    let items: Vec<_> = ItemState::ALL
         .iter()
-        .map(|s| (s.dir_name(), queue.list(*s).unwrap_or_default()))
+        .map(|s| (*s, queue.list(*s).unwrap_or_default()))
         .collect();
-    let max_turns = settings.max_turns.max(1);
-    let meta = |state: ItemState, item: &WorkItem| app.pool().meta(state, item).unwrap_or_default();
     let provider = settings.provider(settings.active);
     let auth = match provider {
         Some(p) if p.use_api_key || !settings.active.supports_plan() => "API key",
         _ => "plan login",
     };
-    let known = |item: &WorkItem| settings.projects.iter().any(|p| p.name == item.project);
-    let pool_projects = app.pool().config().projects;
-    let has_worktree = |item: &WorkItem| {
-        pool_projects
-            .iter()
-            .find(|p| p.name == item.project)
-            .is_some_and(|p| p.worktree_path(item).exists())
-    };
 
     let body = html! {
         div #status data-live {
             div.panel.bar {
-                div {
-                    @if snapshot.running { strong.ok { "● Running" } } @else { strong.muted { "○ Stopped" } }
+                @if snapshot.running {
+                    span.pill.ok { span.dot {} "Running" }
+                } @else {
+                    span.pill.idle { "Stopped" }
                 }
-                div { (settings.active.label()) " " span.muted { "(" (auth) ")" } }
+                div { strong { (settings.active.label()) } " " span.muted { "(" (auth) ")" } }
                 div.bar {
-                    span { "Workers" }
-                    form.inline method="post" action="/workers" {
-                        input type="hidden" name="count" value=(settings.workers.saturating_sub(1));
-                        button disabled[settings.workers == 0] aria-label="Fewer workers" { "−" }
-                    }
-                    strong { (settings.workers) }
-                    form.inline method="post" action="/workers" {
-                        input type="hidden" name="count" value=(settings.workers + 1);
-                        button disabled[settings.workers >= MAX_WORKERS] aria-label="More workers" { "+" }
+                    span.muted { "Workers" }
+                    span.stepper {
+                        form.inline method="post" action="/workers" {
+                            input type="hidden" name="count" value=(settings.workers.saturating_sub(1));
+                            button disabled[settings.workers == 0] aria-label="Fewer workers" { "−" }
+                        }
+                        b { (settings.workers) }
+                        form.inline method="post" action="/workers" {
+                            input type="hidden" name="count" value=(settings.workers + 1);
+                            button disabled[settings.workers >= MAX_WORKERS] aria-label="More workers" { "+" }
+                        }
                     }
                 }
-                div {
-                    @if snapshot.running {
-                        form.inline method="post" action="/stop" { button { "Stop" } }
-                    } @else {
-                        form.inline method="post" action="/start" { button.primary { "Start" } }
-                    }
+                span.spacer {}
+                @if snapshot.running {
+                    form.inline method="post" action="/stop" { button { "Stop" } }
+                } @else {
+                    form.inline method="post" action="/start" { button.primary { "Start" } }
                 }
             }
             @if let Some(error) = &snapshot.last_error {
@@ -354,10 +935,10 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
             }
             div.grid {
                 @for worker in &snapshot.workers {
-                    div.panel.card {
-                        @match &worker.activity {
-                            Activity::Idle => {
-                                h3 { span { "Worker " (worker.id + 1) } span.muted { "idle" } }
+                    @match &worker.activity {
+                        Activity::Idle => {
+                            div.panel.card.wcard.idle {
+                                div.wtop { h3 { "Worker " (worker.id + 1) } span.pill.idle { "idle" } }
                                 @if worker.id >= snapshot.target_workers || !snapshot.running {
                                     p.muted { "Stopping." }
                                 } @else if snapshot.limited.is_some() {
@@ -366,165 +947,57 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                                     p.muted { "Waiting for open work." }
                                 }
                             }
-                            Activity::Working(job) => {
-                                h3 { span { "Worker " (worker.id + 1) } span.muted { (elapsed(job.started)) } }
-                                div { strong { (job.item) } " " span.muted { "· " (job.provider.label()) @if !job.model.is_empty() { " · " (job.model) } } }
+                        }
+                        Activity::Working(job) => {
+                            div.panel.card.wcard {
+                                div.wtop { h3 { "Worker " (worker.id + 1) } span.timer { (elapsed(job.started)) } }
+                                strong { (job.item) }
+                                div.chips {
+                                    span.chip.acc { (job.provider.label()) }
+                                    @if !job.model.is_empty() { span.chip { (job.model) } }
+                                }
                                 (now_line(job))
-                                ul.events {
+                                ul.timeline {
                                     @let skip = job.events.len().saturating_sub(CARD_EVENTS);
-                                    @for event in job.events.iter().skip(skip) { li { (event_line(event)) } }
-                                    @if job.events.is_empty() { li.muted { "Starting agent…" } }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-        }
-
-        // Outside the live sections, which refresh and would drop a typed link.
-        div {
-            h2 { "Import a pull request" }
-            form.panel.bar method="post" action="/import" {
-                input type="text" name="url" required style="flex:1; min-width:260px"
-                    placeholder="https://github.com/owner/repo/pull/123"
-                    aria-label="Pull request link";
-                button.primary { "Import" }
-            }
-            p.muted {
-                "Adds an open pull request to the queue, in review, for the project that opens pull requests "
-                "against its repository. Its branch must be on that project's push remote. Changes requested on "
-                "it and failing checks are then reworked like those on the app's own pull requests."
-            }
-        }
-
-        div #queue data-live {
-            h2 { "Queue" }
-            div.panel {
-                p.bar {
-                    @for (state, items) in &lists { span { (state) ": " strong { (items.len()) } } }
-                }
-                @if !lists.get("hold").is_none_or(Vec::is_empty) {
-                    div.bar {
-                        form.inline method="post" action="/resume-all" {
-                            button title="Reset the turn count of every held item and give them all back to the agents" { "Return all held to agent" }
-                        }
-                        form.inline method="post" action="/close-all" onsubmit="return confirm('Close every held item without more work?')" {
-                            button title="Close every held item without more work" { "Close all held" }
-                        }
-                    }
-                }
-                table {
-                    tr { th { "Item" } th { "State" } th { "" } }
-                    @for item in lists.get("inprogress").into_iter().flatten() {
-                        tr { td { (item) } td.warn { "in progress" } td {} }
-                    }
-                    @for item in lists.get("open").into_iter().flatten() {
-                        tr {
-                            td { (item) }
-                            @let m = meta(ItemState::Open, item);
-                            @if let Some(error) = &m.last_error {
-                                td.warn { "retrying (" (m.turns) " of " (max_turns) " turns used); last run: " (error) }
-                                td {}
-                            } @else if !known(item) {
-                                td.muted { "no project “" (item.project) "” configured" }
-                                td {}
-                            } @else {
-                                td { "open" } td {}
-                            }
-                        }
-                    }
-                    @for item in lists.get("hold").into_iter().flatten() {
-                        tr {
-                            td { (item) }
-                            td.bad {
-                                "on hold: "
-                                (meta(ItemState::Hold, item).hold_reason.unwrap_or_else(|| "set aside for manual review".into()))
-                            }
-                            td {
-                                form.inline method="post" action="/resume" {
-                                    input type="hidden" name="item" value=(item);
-                                    button title="Reset its turn count and give it back to the agents" { "Return to agent" }
-                                }
-                                form.inline method="post" action="/close" {
-                                    input type="hidden" name="item" value=(item);
-                                    button title="Close it without more work, such as after its pull request was closed" { "Close" }
-                                }
-                            }
-                        }
-                    }
-                    @for item in lists.get("inreview").into_iter().flatten() {
-                        @let m = meta(ItemState::InReview, item);
-                        tr {
-                            td { (item) }
-                            @if m.needs_rework.is_some() {
-                                td.warn {
-                                    "changes requested; waiting for a worker (" (m.turns) " of "
-                                    (max_turns) " turns used)"
-                                    @if let Some(error) = &m.last_error { "; last run: " (error) }
-                                }
-                            } @else if m.ci_running {
-                                td.warn {
-                                    "waiting for CI to finish (" (m.turns) " of " (max_turns)
-                                    " turns used)"
-                                }
-                            } @else {
-                                td.warn { "in review (" (m.turns) " of " (max_turns) " turns used)" }
-                            }
-                            td {
-                                @if let Some(url) = &m.pr_url {
-                                    a href=(url) target="_blank" rel="noopener" { "Pull request" }
-                                }
-                                " "
-                                a href={ "/result?item=" (url_encode(&item.to_string())) } { "Result" }
-                                @if m.pr_url.is_some() {
-                                    " "
-                                    details.menu {
-                                        summary { "Next action" }
-                                        div {
-                                            form.inline method="post" action="/review/check" {
-                                                input type="hidden" name="item" value=(item);
-                                                button title="Read the latest reviews, comments and CI results now, and queue a rework if they ask for changes" { "Check latest" }
-                                            }
-                                            form.inline method="post" action="/review/rework" {
-                                                input type="hidden" name="item" value=(item);
-                                                button title="Act on feedback on the latest commit even if a rework already answered it, for when that rework changed nothing" { "Rework again" }
-                                            }
-                                            form.inline method="post" action="/review/bump" {
-                                                input type="hidden" name="item" value=(item);
-                                                button title="Push an empty commit to the pull request so the remote checks run again" { "Bump PR" }
-                                            }
+                                    @let last = job.events.len().saturating_sub(1);
+                                    @for (i, event) in job.events.iter().enumerate().skip(skip) {
+                                        li class=[(i == last).then_some("cur")] {
+                                            span.ic { (event_icon(event)) }
+                                            span { (event_line(event)) }
                                         }
                                     }
-                                }
-                            }
-                        }
-                    }
-                    @for item in lists.get("closed").into_iter().flatten() {
-                        tr {
-                            td { (item) }
-                            td.ok { "closed" }
-                            td {
-                                a href={ "/result?item=" (url_encode(&item.to_string())) } { "Result" }
-                                @if let Some(url) = app.pool().pull_request(ItemState::Closed, item) {
-                                    " " a href=(url) target="_blank" rel="noopener" { "Pull request" }
-                                }
-                                @if has_worktree(item) {
-                                    " "
-                                    form.inline method="post" action="/cleanup" {
-                                        input type="hidden" name="item" value=(item);
-                                        button title="Remove the worktree; delete the branch too if it is merged" { "Clean up" }
-                                    }
+                                    @if job.events.is_empty() { li { span.ic { "·" } span.muted { "Starting agent…" } } }
                                 }
                             }
                         }
                     }
                 }
             }
+        }
+
+        div {
+            h2 { "Queue" }
+            (queue_section(app, &settings, &snapshot, &items))
         }
     };
     layout("Dashboard", "dashboard", true, notice, body)
+}
+
+/// A glyph for the kind of step an agent event is.
+fn event_icon(event: &AgentEvent) -> &'static str {
+    match event {
+        AgentEvent::ToolUse { name, .. } => match name.to_ascii_lowercase().as_str() {
+            "read" | "view_file" | "read_file" => "▤",
+            "edit" | "write" | "multiedit" | "write_file" | "replace" => "✎",
+            "grep" | "glob" | "search" | "grep_search" | "find_by_name" => "⌕",
+            "bash" | "shell" | "run_command" | "run_shell_command" => "▸",
+            _ => "•",
+        },
+        AgentEvent::Text(_) => "¶",
+        AgentEvent::Finished { ok: true, .. } => "✓",
+        AgentEvent::Finished { ok: false, .. } => "✕",
+        _ => "·",
+    }
 }
 
 /// The suggestions page: those awaiting a decision, and the rejected ones
@@ -717,6 +1190,90 @@ fn utc(secs: u64) -> String {
     )
 }
 
+/// The fields of a project, empty for a new one or filled in to edit one.
+/// A saved project's name is fixed, since saving under a name replaces it.
+fn project_fields(project: Option<&Project>) -> Markup {
+    let pr = project.and_then(|p| p.pr.as_ref());
+    let issues = project.and_then(|p| p.issues.as_ref());
+    html! {
+        div.fields {
+            div { label.f { "Name" } input type="text" name="name" placeholder="phase" value=[project.map(|p| p.name.as_str())] readonly[project.is_some()] required; }
+            div { label.f { "Spec directory" } input type="text" name="spec_dir" placeholder="spec/phase" value=[project.map(|p| p.spec_dir.display().to_string())] required; }
+            div { label.f { "Repository" } input type="text" name="repo" placeholder="/home/me/dev/phase or ../phase" value=[project.map(|p| p.repo.display().to_string())] required; }
+            div { label.f { "Branch from" } input type="text" name="base_ref" placeholder="main" value=[project.map(|p| p.base_ref.as_str())]; }
+            div { label.f { "Build jobs" } input type="number" name="build_jobs" min="1" max=(MAX_BUILD_JOBS) placeholder=(DEFAULT_BUILD_JOBS) value=[project.map(|p| p.build_jobs)]; }
+        }
+        div.fields {
+            div { label.f { "Push to remote (optional)" } input type="text" name="pr_remote" placeholder="fork" value=[pr.map(|pr| pr.push_remote.as_str())]; }
+            div { label.f { "Open pull request against" } input type="text" name="pr_repo" placeholder="phase-rs/phase" value=[pr.map(|pr| pr.repo.as_str())]; }
+            div { label.f { "Pull request base branch" } input type="text" name="pr_base" placeholder="main" value=[pr.map(|pr| pr.base.as_str())]; }
+            div { label.switch { input type="checkbox" name="pr_draft" checked[pr.is_some_and(|pr| pr.draft)]; div { b { "Open as draft" } } } }
+        }
+        div.fields {
+            div { label.f { "Issues link (optional)" } input type="text" name="issues_url" placeholder="https://github.com/phase-rs/phase/issues" value=[issues.map(|i| i.url.as_str())]; }
+            div { label.f { "Issues at a time" } input type="number" name="issues_limit" min="1" max=(MAX_ISSUE_BATCH) placeholder="5" value=[issues.map(|i| i.limit)]; }
+            div {
+                label.f { "Take issues" }
+                select name="issues_order" {
+                    @for order in IssueOrder::ALL {
+                        option value=(order.value()) selected[issues.is_some_and(|i| i.order == order)] { (order.label()) }
+                    }
+                }
+            }
+            div {
+                label.f { "Access token (optional)" }
+                input type="password" name="issues_token" autocomplete="off"
+                    placeholder=(if issues.is_some_and(|i| i.token.is_some()) { "saved — leave blank to keep" } else { "" });
+            }
+        }
+        p.hint {
+            "Open issues of a GitHub, GitLab, Bitbucket or Gitea/Forgejo repository become work items "
+            code { "issue-<number>.txt" } ", a few at a time: that many are kept waiting in "
+            code { "open" } ", and more follow as workers take them. The token is only needed for private repositories."
+        }
+        label.f { "Worktree setup command (optional)" }
+        input type="text" name="setup" placeholder="e.g. cp \"$AIWC_REPO\"/data/*.json data/" value=[project.and_then(|p| p.setup.as_deref())];
+        label.f style="margin-top:12px" { "Ignored comment markers (optional, one per line)" }
+        textarea name="ignore_comments" rows="2" placeholder="pr-review-deferred" { (project.map(|p| p.ignore_comments.join("\n")).unwrap_or_default()) }
+        p.hint {
+            "A pull request comment or review containing any of these is not feedback, so it queues no rework. "
+            "Use it for a bot's notice that asks for nothing."
+        }
+    }
+}
+
+/// A bar for one usage window's levels: green up to the first warning,
+/// amber up to the stop level and red beyond it, with a mark at each. With
+/// scripts on, the marks drag, editing the fields `warn_field` and
+/// `stop_field`; without, it shows the saved levels.
+fn limit_bar(warn_field: &str, stop_field: &str, warn: &[u8], stop: u8) -> Markup {
+    let stop = stop.min(100);
+    let first = warn
+        .iter()
+        .copied()
+        .filter(|w| *w < stop)
+        .min()
+        .unwrap_or(stop);
+    html! {
+        div.range data-warn=(warn_field) data-stop=(stop_field) style={ "--w: " (first) "%; --s: " (stop) "%" } {
+            div.rail {}
+            @for w in warn.iter().filter(|w| **w <= 100) {
+                span.mk style={ "left: " (w) "%" } { span { "warn " (w) "%" } }
+            }
+            span.mk style={ "left: " (stop) "%" } { span { "stop " (stop) "%" } }
+        }
+    }
+}
+
+/// Levels as the comma-separated text a field takes.
+fn levels_text(levels: &[u8]) -> String {
+    levels
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 pub(crate) fn settings(
     app: &AppState,
     settings: &Settings,
@@ -724,372 +1281,403 @@ pub(crate) fn settings(
     notice: Option<String>,
 ) -> Markup {
     let body = html! {
-        h2 { "Workers" }
-        form.panel.bar method="post" action="/workers" {
-            input type="hidden" name="back" value="settings";
-            label for="count" { "Number of workers" }
-            input #count type="number" name="count" min="0" max=(MAX_WORKERS) value=(settings.workers) style="width:6em";
-            button { "Save" }
-        }
-        form.panel.bar method="post" action="/settings/max-turns" style="margin-top:12px" {
-            label for="max_turns" { "Turns per item before hold" }
-            input #max_turns type="number" name="max_turns" min="1" max=(MAX_TURNS) value=(settings.max_turns) style="width:6em";
-            button { "Save" }
-            span.muted {
-                "Every agent run on an item is a turn, failed ones included; failures retry until "
-                "the limit, then the item goes on hold for you to review and return."
+        div.slayout {
+            nav.snav aria-label="Settings sections" {
+                a href="#s-workers" { "Workers" }
+                a href="#s-providers" { "AI providers" }
+                a href="#s-limits" { "Usage limits" }
+                a href="#s-balance" { "Load balancing" }
+                a href="#s-projects" { "Projects" }
             }
-        }
-        form.panel.bar method="post" action="/settings/suggestion-retention" style="margin-top:12px" {
-            label for="days" { "Days to keep rejected suggestions" }
-            input #days type="number" name="days" min="1" max=(MAX_RETENTION_DAYS) value=(settings.suggestion_retention_days) style="width:6em";
-            button { "Save" }
-            span.muted {
-                "A rejected suggestion for the agent instructions can be restored from the "
-                "dashboard until this many days have passed."
-            }
-        }
-        form.panel.bar method="post" action="/settings/review-comments" style="margin-top:12px" {
-            label.check {
-                input type="checkbox" name="follow_all_comments" checked[settings.follow_all_comments];
-                "Follow review comments even if changes are not requested"
-            }
-            button { "Save" }
-            span.muted {
-                "Only a maintainer can request changes. With this on, inline comments on a pull "
-                "request's latest commit from anyone queue a rework too."
-            }
-        }
-        form.panel.bar method="post" action="/settings/ci-logs" style="margin-top:12px" {
-            label.check {
-                input type="checkbox" name="follow_ci_logs" checked[settings.follow_ci_logs];
-                "Give the agent the logs of failing CI runs"
-            }
-            button { "Save" }
-            span.muted {
-                "A failing check already queues a rework. With this on, the tail of each failed "
-                "run's log goes with it, so the agent can fix what CI actually reported."
-            }
-        }
-        form.panel.bar method="post" action="/settings/claim-order" style="margin-top:12px" {
-            label for="order" { "Take new items" }
-            select #order name="order" style="width:auto" {
-                @for order in ClaimOrder::ALL {
-                    option value=(claim_order_value(order)) selected[order == settings.claim_order] { (order.label()) }
-                }
-            }
-            button { "Save" }
-            span.muted {
-                "Alphanumeric goes by project, then file name. The others go by when the item "
-                "file was last changed. Reworks of items in review always come first."
-            }
-        }
-
-        h2 { "AI system" }
-        form.panel.bar method="post" action="/settings/active" {
-            label for="active" { "Workers use" }
-            select #active name="provider" style="width:auto" {
-                @for p in Provider::ALL.into_iter().filter(|p| settings.is_enabled(*p)) {
-                    option value=(provider_value(p)) selected[p == settings.active] { (p.label()) }
-                }
-            }
-            button { "Use" }
-        }
-
-        div.grid style="margin-top:12px" {
-            @for p in &settings.providers {
-                div.panel.stack {
-                    h3 style="margin:0" {
-                        (p.provider.label())
-                        @if p.provider == settings.active { " " span.ok { "· active" } }
-                        @if !p.enabled { " " span.muted { "· disabled" } }
+            div.scontent {
+                section.ssec #s-workers {
+                    h2 { "Workers" }
+                    p.lead { "How many agents run, how long an item may take, and how follow-up work is handled." }
+                    form.srow method="post" action="/workers" {
+                        input type="hidden" name="back" value="settings";
+                        div.sfield {
+                            label.f for="count" { "Number of workers" }
+                            input #count type="number" name="count" min="0" max=(MAX_WORKERS) value=(settings.workers);
+                        }
+                        button { "Save" }
                     }
-                    form.bar method="post" action="/settings/provider/enabled" {
-                        input type="hidden" name="provider" value=(provider_value(p.provider));
-                        input type="hidden" name="enabled" value=(!p.enabled);
-                        button { @if p.enabled { "Disable" } @else { "Enable" } }
-                    }
-                    @if p.provider.supports_plan() {
-                        (login_block(app, p.provider, status(p.provider.cli())))
-                    } @else {
-                        p.muted { "API key only; this provider has no plan login." }
-                    }
-                    form method="post" action="/settings/provider" {
-                        input type="hidden" name="provider" value=(provider_value(p.provider));
-                        @if p.provider.supports_plan() {
-                            label.check {
-                                input type="checkbox" name="use_api_key" checked[p.use_api_key];
-                                "Use an API key instead of the plan login"
+                    form.srow method="post" action="/settings/max-turns" {
+                        div.sfield {
+                            label.f for="max_turns" { "Turns per item before hold" }
+                            input #max_turns type="number" name="max_turns" min="1" max=(MAX_TURNS) value=(settings.max_turns);
+                            p.hint {
+                                "Every agent run on an item is a turn, failed ones included; failures retry until "
+                                "the limit, then the item goes on hold for you to review and return."
                             }
                         }
-                        div.fields {
-                            div {
-                                label { "API key" }
-                                input type="password" name="api_key" autocomplete="off"
-                                    placeholder=(if p.api_key.is_empty() { "not set" } else { "saved — leave blank to keep" });
+                        button { "Save" }
+                    }
+                    form.srow method="post" action="/settings/suggestion-retention" {
+                        div.sfield {
+                            label.f for="days" { "Days to keep rejected suggestions" }
+                            input #days type="number" name="days" min="1" max=(MAX_RETENTION_DAYS) value=(settings.suggestion_retention_days);
+                            p.hint {
+                                "A rejected suggestion for the agent instructions can be restored from the "
+                                "dashboard until this many days have passed."
                             }
-                            // `vibe` takes its model from its own config; Freebuff picks its own.
-                            @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff) {
-                                div {
-                                    label { "Model" }
-                                    input type="text" name="model" value=(p.model) placeholder="CLI default";
+                        }
+                        button { "Save" }
+                    }
+                    form.srow method="post" action="/settings/claim-order" {
+                        div.sfield {
+                            label.f for="order" { "Take new items" }
+                            select #order name="order" {
+                                @for order in ClaimOrder::ALL {
+                                    option value=(claim_order_value(order)) selected[order == settings.claim_order] { (order.label()) }
                                 }
                             }
-                            @let levels = p.provider.cli().effort_levels();
-                            @if !levels.is_empty() {
-                                div {
-                                    label { "Effort" }
-                                    select name="effort" {
-                                        option value="" selected[p.effort.is_empty()] { "CLI default" }
-                                        @for level in levels {
-                                            option value=(level) selected[p.effort == *level] { (level) }
+                            p.hint {
+                                "Alphanumeric goes by project, then file name. The others go by when the item "
+                                "file was last changed. Reworks of items in review always come first."
+                            }
+                        }
+                        button { "Save" }
+                    }
+                    form.srow method="post" action="/settings/review-comments" {
+                        label.switch {
+                            input type="checkbox" name="follow_all_comments" checked[settings.follow_all_comments];
+                            div {
+                                b { "Follow review comments even if changes are not requested" }
+                                span {
+                                    "Only a maintainer can request changes. With this on, inline comments on a pull "
+                                    "request's latest commit from anyone queue a rework too."
+                                }
+                            }
+                        }
+                        button { "Save" }
+                    }
+                    form.srow method="post" action="/settings/ci-logs" {
+                        label.switch {
+                            input type="checkbox" name="follow_ci_logs" checked[settings.follow_ci_logs];
+                            div {
+                                b { "Give the agent the logs of failing CI runs" }
+                                span {
+                                    "A failing check already queues a rework. With this on, the tail of each failed "
+                                    "run's log goes with it, so the agent can fix what CI actually reported."
+                                }
+                            }
+                        }
+                        button { "Save" }
+                    }
+                }
+
+                section.ssec #s-providers {
+                    h2 { "AI providers" }
+                    p.lead { "Choose which provider the workers use, and how each one signs in." }
+                    form.srow method="post" action="/settings/active" {
+                        div.sfield {
+                            label.f for="active" { "Workers use" }
+                            select #active name="provider" {
+                                @for p in Provider::ALL.into_iter().filter(|p| settings.is_enabled(*p)) {
+                                    option value=(provider_value(p)) selected[p == settings.active] { (p.label()) }
+                                }
+                            }
+                        }
+                        button { "Use" }
+                    }
+                    div.pcards {
+                        @for p in &settings.providers {
+                            div.pcard class=[(p.provider == settings.active).then_some("active")] {
+                                div.phead {
+                                    (provider_mark(p.provider))
+                                    h3 { (p.provider.label()) }
+                                    @if p.provider == settings.active { span.pill.ok { "Active" } }
+                                    @if !p.enabled { span.pill.idle { "Disabled" } }
+                                    form.inline method="post" action="/settings/provider/enabled" {
+                                        input type="hidden" name="provider" value=(provider_value(p.provider));
+                                        input type="hidden" name="enabled" value=(!p.enabled);
+                                        button { @if p.enabled { "Disable" } @else { "Enable" } }
+                                    }
+                                }
+                                @if p.provider.supports_plan() {
+                                    (login_block(app, p.provider, status(p.provider.cli())))
+                                } @else {
+                                    p.hint { "API key only; this provider has no plan login." }
+                                }
+                                form method="post" action="/settings/provider" {
+                                    input type="hidden" name="provider" value=(provider_value(p.provider));
+                                    @if p.provider.supports_plan() {
+                                        label.switch {
+                                            input type="checkbox" name="use_api_key" checked[p.use_api_key];
+                                            div { b { "Use an API key instead of the plan login" } }
+                                        }
+                                    }
+                                    div.fields {
+                                        div {
+                                            label.f { "API key" }
+                                            input type="password" name="api_key" autocomplete="off"
+                                                placeholder=(if p.api_key.is_empty() { "not set" } else { "saved — leave blank to keep" });
+                                        }
+                                        // `vibe` takes its model from its own config; Freebuff picks its own.
+                                        @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff) {
+                                            div {
+                                                label.f { "Model" }
+                                                input type="text" name="model" value=(p.model) placeholder="CLI default";
+                                            }
+                                        }
+                                        @let levels = p.provider.cli().effort_levels();
+                                        @if !levels.is_empty() {
+                                            div {
+                                                label.f { "Effort" }
+                                                select name="effort" {
+                                                    option value="" selected[p.effort.is_empty()] { "CLI default" }
+                                                    @for level in levels {
+                                                        option value=(level) selected[p.effort == *level] { (level) }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff) {
+                                            div style="grid-column:1/-1" {
+                                                label.f { "Other models" }
+                                                textarea name="alternatives" rows="3"
+                                                    placeholder="model | effort | when to use it" {
+                                                    (crate::settings::alternatives_text(&p.alternatives))
+                                                }
+                                                p.hint {
+                                                    "One per line; effort and description are optional. With any listed, an agent reads each item (and each rework) and picks from these and the model above."
+                                                }
+                                            }
+                                        }
+                                        @if matches!(p.provider, Provider::Deepseek | Provider::OpenRouter | Provider::OpenAiCompatible | Provider::Cloudflare) {
+                                            div {
+                                                label.f { "Base URL" }
+                                                input type="text" name="base_url" value=(p.base_url)
+                                                    placeholder=(if p.provider == Provider::Deepseek { "https://api.deepseek.com/anthropic" } else if p.provider == Provider::OpenRouter { "https://openrouter.ai/api" } else if p.provider == Provider::Cloudflare { "https://api.cloudflare.com/client/v4/accounts/<account id>/ai/v1" } else { "http://localhost:8000/v1 (Responses API)" });
+                                            }
+                                        }
+                                        @if p.provider == Provider::Cloudflare {
+                                            div {
+                                                label.f { "Analytics token" }
+                                                input type="password" name="analytics_token" autocomplete="off"
+                                                    placeholder=(if p.analytics_token.is_empty() { "not set — usage is not shown" } else { "saved — leave blank to keep" });
+                                                p.hint {
+                                                    "An API token with Account Analytics: Read. It lets the dashboard show today's Workers AI neurons against the 10,000 free per day."
+                                                }
+                                            }
+                                        }
+                                    }
+                                    p.bar style="margin-top:12px" {
+                                        button { "Save" }
+                                        @if !p.api_key.is_empty() {
+                                            label.check { input type="checkbox" name="clear_key"; "Remove saved key" }
+                                        }
+                                        @if !p.analytics_token.is_empty() {
+                                            label.check { input type="checkbox" name="clear_analytics_token"; "Remove analytics token" }
                                         }
                                     }
                                 }
                             }
-                            @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff) {
-                                div style="grid-column:1/-1" {
-                                    label { "Other models" }
-                                    textarea name="alternatives" rows="3"
-                                        placeholder="model | effort | when to use it" {
-                                        (crate::settings::alternatives_text(&p.alternatives))
-                                    }
-                                    p.muted style="margin:4px 0 0" {
-                                        "One per line; effort and description are optional. With any listed, an agent reads each item (and each rework) and picks from these and the model above."
-                                    }
-                                }
+                        }
+                    }
+                }
+
+                section.ssec #s-limits {
+                    h2 { "Usage limits" }
+                    p.lead {
+                        "At a warning level the dashboard flags a provider. At the stop level no new run starts on it; "
+                        "running agents finish their item."
+                    }
+                    form method="post" action="/settings/limits" {
+                        h3 { "Current window" }
+                        (limit_bar("warn", "stop", &settings.limits.warn, settings.limits.stop))
+                        div.fields {
+                            div {
+                                label.f for="warn" { "Warn at (%, comma-separated)" }
+                                input #warn type="text" name="warn" value=(levels_text(&settings.limits.warn));
                             }
-                            @if matches!(p.provider, Provider::Deepseek | Provider::OpenRouter | Provider::OpenAiCompatible | Provider::Cloudflare) {
-                                div {
-                                    label { "Base URL" }
-                                    input type="text" name="base_url" value=(p.base_url)
-                                        placeholder=(if p.provider == Provider::Deepseek { "https://api.deepseek.com/anthropic" } else if p.provider == Provider::OpenRouter { "https://openrouter.ai/api" } else if p.provider == Provider::Cloudflare { "https://api.cloudflare.com/client/v4/accounts/<account id>/ai/v1" } else { "http://localhost:8000/v1 (Responses API)" });
-                                }
-                            }
-                            @if p.provider == Provider::Cloudflare {
-                                div {
-                                    label { "Analytics token" }
-                                    input type="password" name="analytics_token" autocomplete="off"
-                                        placeholder=(if p.analytics_token.is_empty() { "not set — usage is not shown" } else { "saved — leave blank to keep" });
-                                    p.muted style="margin:4px 0 0" {
-                                        "An API token with Account Analytics: Read. It lets the dashboard show today's Workers AI neurons against the 10,000 free per day."
-                                    }
-                                }
+                            div {
+                                label.f for="stop" { "Stop at (%)" }
+                                input #stop type="number" name="stop" min="1" max="100" value=(settings.limits.stop);
                             }
                         }
+                        h3 { "Week" }
+                        (limit_bar("week_warn", "week_stop", &settings.limits.week_warn, settings.limits.week_stop))
+                        div.fields {
+                            div {
+                                label.f for="week_warn" { "Warn at (%, comma-separated)" }
+                                input #week_warn type="text" name="week_warn" value=(levels_text(&settings.limits.week_warn));
+                            }
+                            div {
+                                label.f for="week_stop" { "Stop at (%)" }
+                                input #week_stop type="number" name="week_stop" min="1" max="100" value=(settings.limits.week_stop);
+                            }
+                        }
+                        label.switch style="margin-top:8px" {
+                            input type="checkbox" name="failover" checked[settings.limits.failover];
+                            div {
+                                b { "Fail over at the stop level" }
+                                span { "Move on to the next provider below (priority failover; the other balancing schemes always share work across all of them)." }
+                            }
+                        }
+                        h3 { "Fallback providers, in order" }
+                        ul #fallbacks {
+                            @for chosen in settings.fallbacks.iter().copied() {
+                                (fallback_row(Some(chosen)))
+                            }
+                        }
+                        template #fallback-template { (fallback_row(None)) }
+                        p { button type="button" #add-fallback { "Add provider" } }
                         p.bar {
-                            button { "Save" }
-                            @if !p.api_key.is_empty() {
-                                label.check { input type="checkbox" name="clear_key"; "Remove saved key" }
+                            button.primary { "Save" }
+                            span.hint {
+                                "Levels apply to each window a provider reports, the current one and the week. "
+                                "Each fallback uses the model and effort on its card above, and is skipped unless it is set up. Drag a row by its handle to reorder; nothing changes until you save. "
+                                "Plan logins report their usage; a provider on an API key doesn't (except OpenRouter on a free model, which reports its daily free-request allowance, and Cloudflare with an analytics token, which reports its daily free neurons), so it is never stopped."
                             }
-                            @if !p.analytics_token.is_empty() {
-                                label.check { input type="checkbox" name="clear_analytics_token"; "Remove analytics token" }
+                        }
+                        script src="/static/limits.js" {}
+                        script src="/static/fallbacks.js" {}
+                    }
+                    details.ssub {
+                        summary { "Per-provider usage limits" }
+                        form method="post" action="/settings/provider-limits" {
+                            p.hint {
+                                "Overrides the plan usage limits above for one provider, whether or not it is active. Leave a field blank to follow the global level."
                             }
+                            div.scroll {
+                                table {
+                                    tr { th { "Provider" } th { "Window: warn at" } th { "Window: stop at" } th { "Week: warn at" } th { "Week: stop at" } }
+                                    @for p in Provider::ALL {
+                                        @let own = settings.limits.providers.get(&p).cloned().unwrap_or_default();
+                                        @let levels = |l: &Option<Vec<u8>>| levels_text(l.as_deref().unwrap_or_default());
+                                        @let name = |level: &str| format!("{}_{level}", provider_value(p));
+                                        tr {
+                                            td { span.inline-mark { (provider_mark(p)) (p.label()) } }
+                                            td { input type="text" name=(name("warn")) value=(levels(&own.warn)) placeholder=(levels_text(&settings.limits.warn)); }
+                                            td { input type="number" name=(name("stop")) min="1" max="100" value=[own.stop] placeholder=(settings.limits.stop); }
+                                            td { input type="text" name=(name("week_warn")) value=(levels(&own.week_warn)) placeholder=(levels_text(&settings.limits.week_warn)); }
+                                            td { input type="number" name=(name("week_stop")) min="1" max="100" value=[own.week_stop] placeholder=(settings.limits.week_stop); }
+                                        }
+                                    }
+                                }
+                            }
+                            p.bar { button.primary { "Save" } }
                         }
                     }
                 }
-            }
-        }
 
-        h2 { "Plan usage limits" }
-        form.panel method="post" action="/settings/limits" {
-            div.fields {
-                div {
-                    label for="warn" { "Current window: warn at (%, comma-separated)" }
-                    input #warn type="text" name="warn" value=(settings.limits.warn.iter().map(u8::to_string).collect::<Vec<_>>().join(", "));
-                }
-                div {
-                    label for="stop" { "Current window: stop at (%)" }
-                    input #stop type="number" name="stop" min="1" max="100" value=(settings.limits.stop);
-                }
-                div {
-                    label for="week_warn" { "Week: warn at (%, comma-separated)" }
-                    input #week_warn type="text" name="week_warn" value=(settings.limits.week_warn.iter().map(u8::to_string).collect::<Vec<_>>().join(", "));
-                }
-                div {
-                    label for="week_stop" { "Week: stop at (%)" }
-                    input #week_stop type="number" name="week_stop" min="1" max="100" value=(settings.limits.week_stop);
-                }
-            }
-            label.check {
-                input type="checkbox" name="failover" checked[settings.limits.failover];
-                "At the stop level, fail over to the next provider below (priority failover; the other balancing schemes always share work across all of them)"
-            }
-            h3 style="margin-bottom:6px" { "Fallback providers, in order" }
-            ul #fallbacks {
-                @for chosen in settings.fallbacks.iter().copied() {
-                    (fallback_row(Some(chosen)))
-                }
-            }
-            template #fallback-template { (fallback_row(None)) }
-            p { button type="button" #add-fallback { "Add provider" } }
-            p.bar {
-                button { "Save" }
-                span.muted {
-                    "Levels apply to each window a provider reports, the current one and the week. "
-                    "At the stop level no new run starts on that provider; running agents finish their item. "
-                    "Each fallback uses the model and effort on its card above, and is skipped unless it is set up. Drag a row by its handle to reorder; nothing changes until you save. "
-                    "Plan logins report their usage; a provider on an API key doesn't (except OpenRouter on a free model, which reports its daily free-request allowance, and Cloudflare with an analytics token, which reports its daily free neurons), so it is never stopped."
-                }
-            }
-            script src="/static/fallbacks.js" {}
-        }
-
-        h2 { "Per-provider usage limits" }
-        form.panel method="post" action="/settings/provider-limits" {
-            p.muted style="margin-top:0" {
-                "Overrides the plan usage limits above for one provider, whether or not it is active. Leave a field blank to follow the global level."
-            }
-            table {
-                tr { th { "Provider" } th { "Window: warn at" } th { "Window: stop at" } th { "Week: warn at" } th { "Week: stop at" } }
-                @for p in Provider::ALL {
-                    @let own = settings.limits.providers.get(&p).cloned().unwrap_or_default();
-                    @let levels = |l: &Option<Vec<u8>>| l.iter().flatten().map(u8::to_string).collect::<Vec<_>>().join(", ");
-                    @let name = |level: &str| format!("{}_{level}", provider_value(p));
-                    tr {
-                        td { (p.label()) }
-                        td { input type="text" name=(name("warn")) value=(levels(&own.warn)) placeholder=(settings.limits.warn.iter().map(u8::to_string).collect::<Vec<_>>().join(", ")); }
-                        td { input type="number" name=(name("stop")) min="1" max="100" value=[own.stop] placeholder=(settings.limits.stop); }
-                        td { input type="text" name=(name("week_warn")) value=(levels(&own.week_warn)) placeholder=(settings.limits.week_warn.iter().map(u8::to_string).collect::<Vec<_>>().join(", ")); }
-                        td { input type="number" name=(name("week_stop")) min="1" max="100" value=[own.week_stop] placeholder=(settings.limits.week_stop); }
+                section.ssec #s-balance {
+                    h2 { "Load balancing" }
+                    p.lead {
+                        "Spreads items across " (settings.active.label()) " and the fallbacks above, among those under their stop level."
                     }
-                }
-            }
-            p.bar { button { "Save" } }
-        }
-
-        h2 { "Load balancing" }
-        form.panel method="post" action="/settings/balancing" {
-            p.muted style="margin-top:0" {
-                "Spreads items across " (settings.active.label()) " and the fallbacks above, among those under their stop level."
-            }
-            div.fields {
-                div {
-                    label for="scheme" { "Scheme" }
-                    select #scheme name="scheme" {
-                        @for scheme in Scheme::ALL {
-                            option value=(scheme_value(scheme)) selected[scheme == settings.balancing.scheme] { (scheme.label()) }
+                    form method="post" action="/settings/balancing" {
+                        div.fields {
+                            div {
+                                label.f for="scheme" { "Scheme" }
+                                select #scheme name="scheme" {
+                                    @for scheme in Scheme::ALL {
+                                        option value=(scheme_value(scheme)) selected[scheme == settings.balancing.scheme] { (scheme.label()) }
+                                    }
+                                }
+                            }
+                            @for p in std::iter::once(settings.active).chain(settings.fallbacks.iter().copied().filter(|p| *p != settings.active && settings.is_enabled(*p))) {
+                                div {
+                                    @let name = format!("weight_{}", provider_value(p));
+                                    label.f for=(name) { (p.label()) " weight" }
+                                    input id=(name) type="number" name=(name) min="1" max=(MAX_WEIGHT) value=(settings.balancing.weight(p));
+                                }
+                            }
+                        }
+                        label.switch style="margin-top:8px" {
+                            input type="checkbox" name="rework_any_provider" checked[settings.balancing.rework_any_provider];
+                            div {
+                                b { "Reworks may run on any provider" }
+                                span { "Off: a rework waits for the provider that opened its pull request." }
+                            }
+                        }
+                        p.bar { button.primary { "Save" } }
+                        ul.hint {
+                            li { strong { "Priority failover" } ": the active provider, then each fallback in order once the ones before it reach the stop level." }
+                            li { strong { "Round robin" } ": each provider in turn." }
+                            li { strong { "Weighted" } ": in proportion to the weights, spread evenly; weights only matter here." }
+                            li { strong { "Pace-based" } ": the provider furthest below its pace, i.e. least used for how much of its plan window has passed. A provider that reports no usage, such as one on an API key, counts as exactly on pace." }
                         }
                     }
                 }
-                @for p in std::iter::once(settings.active).chain(settings.fallbacks.iter().copied().filter(|p| *p != settings.active && settings.is_enabled(*p))) {
-                    div {
-                        @let name = format!("weight_{}", provider_value(p));
-                        label for=(name) { (p.label()) " weight" }
-                        input id=(name) type="number" name=(name) min="1" max=(MAX_WEIGHT) value=(settings.balancing.weight(p));
-                    }
-                }
-            }
-            label.check {
-                input type="checkbox" name="rework_any_provider" checked[settings.balancing.rework_any_provider];
-                "Reworks may run on any provider (off: a rework waits for the provider that opened its pull request)"
-            }
-            p.bar {
-                button { "Save" }
-            }
-            ul.muted {
-                li { strong { "Priority failover" } ": the active provider, then each fallback in order once the ones before it reach the stop level." }
-                li { strong { "Round robin" } ": each provider in turn." }
-                li { strong { "Weighted" } ": in proportion to the weights, spread evenly; weights only matter here." }
-                li { strong { "Pace-based" } ": the provider furthest below its pace, i.e. least used for how much of its plan window has passed. A provider that reports no usage, such as one on an API key, counts as exactly on pace." }
-            }
-        }
 
-        h2 { "Projects" }
-        div.panel.stack {
-            p.muted {
-                "Work items for a project go in " code { "work/open/<name>/" } ". "
-                "Relative paths are relative to " code { (app.root().display()) } "."
-            }
-            @if !settings.projects.is_empty() {
-                table {
-                    tr { th { "Name" } th { "Spec directory" } th { "Repository" } th { "Branch from" } th { "Worktree setup" } th { "Build jobs" } th { "Pull requests" } th { "Issues" } th {} }
-                    @for project in &settings.projects {
-                        tr {
-                            td { (project.name) }
-                            td { code { (project.spec_dir.display()) } }
-                            td { code { (project.repo.display()) } }
-                            td { code { (project.base_ref) } }
-                            td {
-                                @if let Some(setup) = &project.setup { code { (setup) } }
-                                @else { span.muted { "none" } }
-                            }
-                            td { (project.build_jobs) }
-                            td {
-                                @if let Some(pr) = &project.pr {
-                                    "push to " code { (pr.push_remote) } ", open against "
-                                    code { (pr.repo) " " (pr.base) }
-                                    @if pr.draft { " (draft)" }
-                                } @else { span.muted { "off" } }
-                            }
-                            td {
-                                @if let Some(issues) = &project.issues {
-                                    code { (issues.url) } ", " (issues.limit) " at a time, "
-                                    (issues.order.label())
-                                } @else { span.muted { "off" } }
-                            }
-                            td {
-                                form.inline method="post" action="/settings/projects/delete" {
-                                    input type="hidden" name="name" value=(project.name);
-                                    button { "Remove" }
+                section.ssec #s-projects {
+                    h2 { "Projects" }
+                    p.lead {
+                        "Work items for a project go in " code { "work/open/<name>/" } ". "
+                        "Relative paths are relative to " code { (app.root().display()) } "."
+                    }
+                    div.projects {
+                        @for project in &settings.projects {
+                            article.proj style={ "--hue: hsl(" (project_hue(&project.name)) " 65% 55%)" } {
+                                h3 {
+                                    i {}
+                                    (project.name)
+                                    form.inline method="post" action="/settings/projects/delete" style="margin-left:auto" {
+                                        input type="hidden" name="name" value=(project.name);
+                                        button { "Remove" }
+                                    }
+                                }
+                                dl {
+                                    dt { "Spec directory" } dd { code { (project.spec_dir.display()) } }
+                                    dt { "Repository" } dd { code { (project.repo.display()) } }
+                                    dt { "Branch from" } dd { code { (project.base_ref) } }
+                                    dt { "Worktree setup" }
+                                    dd {
+                                        @if let Some(setup) = &project.setup { code { (setup) } }
+                                        @else { span.muted { "none" } }
+                                    }
+                                    dt { "Build jobs" } dd { (project.build_jobs) }
+                                    dt { "Pull requests" }
+                                    dd {
+                                        @if let Some(pr) = &project.pr {
+                                            "push to " code { (pr.push_remote) } ", open against "
+                                            code { (pr.repo) " " (pr.base) }
+                                            @if pr.draft { " (draft)" }
+                                        } @else { span.muted { "off" } }
+                                    }
+                                    dt { "Issues" }
+                                    dd {
+                                        @if let Some(issues) = &project.issues {
+                                            code { (issues.url) } ", " (issues.limit) " at a time, "
+                                            (issues.order.label())
+                                        } @else { span.muted { "off" } }
+                                    }
+                                }
+                                details.pedit {
+                                    summary { span.on-closed { "Edit" } span.on-open { "Cancel" } }
+                                    form method="post" action="/settings/projects" {
+                                        input type="hidden" name="edit" value="1";
+                                        (project_fields(Some(project)))
+                                        p.bar {
+                                            button.primary { "Save changes" }
+                                            span.hint { "Leave the access token blank to keep the saved one." }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            }
-            form method="post" action="/settings/projects" {
-                div.fields {
-                    div { label { "Name" } input type="text" name="name" placeholder="phase" required; }
-                    div { label { "Spec directory" } input type="text" name="spec_dir" placeholder="spec/phase" required; }
-                    div { label { "Repository" } input type="text" name="repo" placeholder="/home/me/dev/phase or ../phase" required; }
-                    div { label { "Branch from" } input type="text" name="base_ref" placeholder="main"; }
-                    div { label { "Build jobs" } input type="number" name="build_jobs" min="1" max=(MAX_BUILD_JOBS) placeholder=(DEFAULT_BUILD_JOBS); }
-                }
-                div.fields {
-                    div { label { "Push to remote (optional)" } input type="text" name="pr_remote" placeholder="fork"; }
-                    div { label { "Open pull request against" } input type="text" name="pr_repo" placeholder="phase-rs/phase"; }
-                    div { label { "Pull request base branch" } input type="text" name="pr_base" placeholder="main"; }
-                    div { label.check style="margin-top:26px" { input type="checkbox" name="pr_draft"; "Open as draft" } }
-                }
-                div.fields {
-                    div { label { "Issues link (optional)" } input type="text" name="issues_url" placeholder="https://github.com/phase-rs/phase/issues"; }
-                    div { label { "Issues at a time" } input type="number" name="issues_limit" min="1" max=(MAX_ISSUE_BATCH) placeholder="5"; }
-                    div {
-                        label { "Take issues" }
-                        select name="issues_order" {
-                            @for order in IssueOrder::ALL {
-                                option value=(order.value()) { (order.label()) }
+                    details.ssub open[settings.projects.is_empty()] {
+                        summary { "Add a project" }
+                        form method="post" action="/settings/projects" {
+                            (project_fields(None))
+                            p.hint {
+                                "Each item gets a fresh git worktree on its own " code { "ai/<item>" } " branch, beside the repo in "
+                                code { "<repo>-worktrees/" } ". This command runs there with " code { "sh -c" } " before the agent "
+                                "starts, to supply gitignored or generated files the build needs; "
+                                code { "$AIWC_REPO" } " is your checkout and " code { "$AIWC_WORKTREE" } " the new worktree. "
+                                "Each worker keeps its own " code { "CARGO_TARGET_DIR" } " build cache there too, and builds with "
+                                code { "CARGO_BUILD_JOBS" } " set to the build jobs. "
+                                "With a push remote set, finished work is pushed there and a pull request opened with "
+                                code { "gh" } " (your GitHub login), titled and described by the agent following the repo's PR template. "
+                                "To change a project, use its Edit button."
                             }
+                            p { button.primary { "Add project" } }
                         }
                     }
-                    div { label { "Access token (optional)" } input type="password" name="issues_token" autocomplete="off"; }
                 }
-                p.muted {
-                    "Open issues of a GitHub, GitLab, Bitbucket or Gitea/Forgejo repository become work items "
-                    code { "issue-<number>.txt" } ", a few at a time: that many are kept waiting in "
-                    code { "open" } ", and more follow as workers take them. The token is only needed for private repositories."
-                }
-                label { "Worktree setup command (optional)" }
-                input type="text" name="setup" placeholder="e.g. cp \"$AIWC_REPO\"/data/*.json data/";
-                label { "Ignored comment markers (optional, one per line)" }
-                textarea name="ignore_comments" rows="2" placeholder="pr-review-deferred" {}
-                p.muted {
-                    "A pull request comment or review containing any of these is not feedback, so it queues no rework. "
-                    "Use it for a bot's notice that asks for nothing."
-                }
-                p.muted {
-                    "Each item gets a fresh git worktree on its own " code { "ai/<item>" } " branch, beside the repo in "
-                    code { "<repo>-worktrees/" } ". This command runs there with " code { "sh -c" } " before the agent "
-                    "starts, to supply gitignored or generated files the build needs; "
-                    code { "$AIWC_REPO" } " is your checkout and " code { "$AIWC_WORKTREE" } " the new worktree. "
-                    "Each worker keeps its own " code { "CARGO_TARGET_DIR" } " build cache there too, and builds with "
-                    code { "CARGO_BUILD_JOBS" } " set to the build jobs. "
-                    "With a push remote set, finished work is pushed there and a pull request opened with "
-                    code { "gh" } " (your GitHub login), titled and described by the agent following the repo's PR template. "
-                    "To change a project, add it again under the same name."
-                }
-                p { button { "Add project" } }
             }
         }
     };
@@ -1176,50 +1764,84 @@ fn clip_to(text: &str, chars: usize) -> String {
     }
 }
 
+/// A provider's logo on its brand color, or its initial when it has none.
+fn provider_mark(provider: Provider) -> Markup {
+    // The file, and whether it is a full-color picture rather than a mark
+    // that is drawn in white on the brand color.
+    let (color, logo) = match provider {
+        Provider::Anthropic => ("#d97757", Some(("claude.svg", false))),
+        Provider::OpenAi => ("#0d0d0d", Some(("openai.svg", false))),
+        Provider::Gemini => ("#3b6df0", Some(("googlegemini.svg", false))),
+        Provider::Cloudflare => ("#f38020", Some(("cloudflare.svg", false))),
+        Provider::OpenRouter => ("#000000", Some(("openrouter.png", true))),
+        Provider::Freebuff => ("#000000", Some(("freebuff.png", true))),
+        Provider::Deepseek => ("#ffffff", Some(("deepseek.png", true))),
+        Provider::Mistral => ("#ffffff", Some(("mistral.svg", true))),
+        _ => ("#5d6580", None),
+    };
+    let initial = provider.label().chars().next().unwrap_or('?');
+    html! {
+        span.pmark class=[(color == "#ffffff").then_some("light")] style={ "--pbg: " (color) } aria-hidden="true" {
+            @match logo {
+                Some((file, true)) => img src={ "/static/" (file) } alt="";
+                Some((file, false)) => i style={ "--logo: url(/static/" (file) ")" } {}
+                None => (initial)
+            }
+        }
+    }
+}
+
 fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     html! {
-        div.panel {
-            @if let Some(limited) = &snapshot.limited {
-                p.bad { "Workers are waiting: " (limited) ". Override a provider below to let runs start on it again." }
+        @if let Some(limited) = &snapshot.limited {
+            p.bad { "Workers are waiting: " (limited) ". Override a provider below to let runs start on it again." }
+        }
+        @for (provider, error) in &snapshot.suspended {
+            p.warn {
+                (provider.label()) " is set aside as a fallback until the active provider can run again. "
+                "Its last run failed: " (clip(error))
             }
-            @for (provider, error) in &snapshot.suspended {
-                p.warn {
-                    (provider.label()) " is set aside as a fallback until the active provider can run again. "
-                    "Its last run failed: " (clip(error))
-                }
-            }
-            @if snapshot.usage.is_empty() {
-                p.muted { "No usage reported yet. Claude reports its plan usage during each run, and Antigravity, Codex, Freebuff (its daily free hours), an OpenRouter key on a free model and Cloudflare with an analytics token are asked for theirs every five minutes (OpenRouter's is its daily free-request allowance, Cloudflare's its daily free neurons)." }
-            } @else {
-                table {
-                    tr { th { "Provider" } th { "Current window" } th { "Week" } th { "Status" } }
-                    @for u in &snapshot.usage {
-                        @let limits = &limits.for_provider(u.provider);
-                        @let hit = limits.stop_hit(&u.usage, now);
-                        tr {
-                            td { (u.provider.label()) }
-                            td { (usage_window(u.usage.session, Span::Window, now, limits)) }
-                            td { (usage_window(u.usage.weekly, Span::Week, now, limits)) }
-                            td {
-                                @if let Some(hit) = hit {
-                                    @if snapshot.overridden.contains(&u.provider) {
-                                        span.warn { "Past the " (hit.level) "% " (hit.span.label()) " stop level; overridden until the window resets" }
-                                    } @else {
-                                        span.bad { "Stopped at the " (hit.level) "% " (hit.span.label()) " level " }
-                                        form.inline method="post" action="/usage/override" {
-                                            input type="hidden" name="provider" value=(provider_value(u.provider));
-                                            button { "Override" }
-                                        }
-                                    }
-                                } @else if let Some(level) = limits.plan_warning(&u.usage, now) {
-                                    span.warn { "Past the " (level) "% warning" }
+        }
+        @if snapshot.usage.is_empty() {
+            p.muted { "No usage reported yet. Claude reports its plan usage during each run, and Antigravity, Codex, Freebuff (its daily free hours), an OpenRouter key on a free model and Cloudflare with an analytics token are asked for theirs every five minutes (OpenRouter's is its daily free-request allowance, Cloudflare's its daily free neurons)." }
+        } @else {
+            div.usage {
+                @for u in &snapshot.usage {
+                    @let limits = &limits.for_provider(u.provider);
+                    @let hit = limits.stop_hit(&u.usage, now);
+                    @let overridden = snapshot.overridden.contains(&u.provider);
+                    @let warning = limits.plan_warning(&u.usage, now);
+                    div.ucard class=[(hit.is_some() && !overridden).then_some("limited")] {
+                        div.uhead {
+                            (provider_mark(u.provider))
+                            h3 { (u.provider.label()) }
+                            @if hit.is_some() && !overridden {
+                                span.pill.bad { "Stopped" }
+                            } @else if hit.is_some() || warning.is_some() {
+                                span.pill.warn { "Watch" }
+                            } @else {
+                                span.pill.ok { "Healthy" }
+                            }
+                        }
+                        (meter(u.usage.session, Span::Window, now, limits))
+                        (meter(u.usage.weekly, Span::Week, now, limits))
+                        @if let Some(hit) = hit {
+                            div.ustate {
+                                @if overridden {
+                                    span.warn { "Past the " (hit.level) "% " (hit.span.label()) " stop level; overridden until the window resets" }
                                 } @else {
-                                    span.muted { "OK" }
+                                    span.bad { "Stopped at the " (hit.level) "% " (hit.span.label()) " level " }
+                                    form.inline method="post" action="/usage/override" {
+                                        input type="hidden" name="provider" value=(provider_value(u.provider));
+                                        button { "Override" }
+                                    }
                                 }
                             }
+                        } @else if let Some(level) = warning {
+                            div.ustate { span.warn { "Past the " (level) "% warning" } }
                         }
                     }
                 }
@@ -1228,23 +1850,40 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
     }
 }
 
-fn usage_window(window: Option<UsageWindow>, span: Span, now: u64, limits: &UsageLimits) -> Markup {
+/// A bar for one usage window, with a tick at its stop level.
+fn meter(window: Option<UsageWindow>, span: Span, now: u64, limits: &UsageLimits) -> Markup {
+    let name = match span {
+        Span::Window => "Session",
+        Span::Week => "Week",
+    };
+    let Some(w) = window else {
+        return html! { div.meter { div.mtop { span.mlab { (name) } span.muted { "not reported" } } } };
+    };
+    let percent = w.percent_at(now);
+    let class = if limits.stopped(span, percent) {
+        Some("bad")
+    } else {
+        limits.warning(span, percent).map(|_| "warn")
+    };
+    let stop = limits.stop_at(span).min(100);
     html! {
-        @match window {
-            None => span.muted { "not reported" },
-            Some(w) => {
-                @let percent = w.percent_at(now);
-                @let class = if limits.stopped(span, percent) {
-                    Some("bad")
-                } else {
-                    limits.warning(span, percent).map(|_| "warn")
-                };
-                strong class=[class] { (percent) "%" }
-                @if let Some(reset) = w.resets_at.filter(|r| *r > now) {
-                    " " span.muted { "· resets in " (duration(reset - now)) }
-                } @else if w.resets_at.is_some() {
-                    " " span.muted { "· reset since last report" }
+        div.meter {
+            div.mtop {
+                span.mlab {
+                    (name)
+                    span.muted {
+                        @if let Some(reset) = w.resets_at.filter(|r| *r > now) {
+                            " · resets in " (duration(reset - now))
+                        } @else if w.resets_at.is_some() {
+                            " · reset since last report"
+                        }
+                    }
                 }
+                strong class=[class] { (percent) "%" }
+            }
+            div.mbar class=[class] {
+                b style={ "width: " (percent.min(100)) "%" } {}
+                i style={ "left: " (stop) "%" } title={ "Runs stop at " (stop) "%" } {}
             }
         }
     }
@@ -1454,6 +2093,18 @@ mod tests {
         }
         let w: W = toml::from_str(&format!("p = {json}")).unwrap();
         w.p
+    }
+
+    #[test]
+    fn slug_makes_ids_from_project_names() {
+        assert_eq!(slug("Docs Site_2"), "docs-site-2");
+        assert_eq!(slug("phase"), "phase");
+    }
+
+    #[test]
+    fn project_hue_is_stable_and_in_range() {
+        assert_eq!(project_hue("phase"), project_hue("phase"));
+        assert!(project_hue("anything at all") < 360);
     }
 
     #[test]
