@@ -21,8 +21,6 @@ use crate::{AppState, Settings};
 const CARD_EVENTS: usize = 8;
 /// Longest event text shown before it is cut.
 const EVENT_CHARS: usize = 240;
-/// Radius of a usage dial, in its 120 by 112 drawing.
-const DIAL_RADIUS: f64 = 46.0;
 
 const STYLE: &str = r#"
 :root {
@@ -61,7 +59,7 @@ a:hover { text-decoration: underline; }
 header a, header a:visited { color: var(--muted); }
 header a.here { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 main { max-width: 1200px; margin: 0 auto; padding: 16px; }
-h2 { font-size: 20px; margin: 30px 0 12px; letter-spacing: -.01em; }
+h2 { font-size: 18px; margin: 22px 0 10px; letter-spacing: -.01em; }
 .panel { background: var(--panel); border: 1px solid var(--border);
   border-radius: 16px; padding: 16px; box-shadow: var(--shadow); }
 .bar { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; }
@@ -169,22 +167,24 @@ details.comment textarea { margin: 8px 0; min-height: 4.5em; }
 .stepper b { min-width: 24px; text-align: center; }
 .spacer { flex: 1; }
 
-/* Plan usage: one card per provider, a dial per window. */
-.usage { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 330px), 1fr)); }
-.ucard { background: var(--panel); border: 1px solid var(--border); border-radius: 20px; padding: 18px;
+/* Plan usage: a compact card per provider, a bar per window. */
+.usage { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); }
+.ucard { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 12px 14px;
   box-shadow: var(--shadow); min-width: 0; }
 .ucard.limited { border-color: color-mix(in srgb, var(--bad) 55%, var(--border)); }
-.uhead { display: flex; align-items: center; gap: 10px; }
-.uhead h3 { margin: 0; font-size: 16px; line-height: 1.25; } .uhead .pill { margin-left: auto; }
-.gauges { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 6px; margin: 10px 0 2px; }
-.gauge { margin: 0; text-align: center; min-width: 0; }
-.gwrap { position: relative; max-width: 150px; margin: 0 auto; }
-.gwrap svg { width: 100%; height: auto; display: block; }
-.gval { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; padding-top: 14px; line-height: 1.1; }
-.gval strong { font-size: 24px; font-variant-numeric: tabular-nums; } .gval span { font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-.gauge figcaption { font-size: 12.5px; color: var(--muted); margin-top: -4px; }
-.ustate { margin-top: 10px; padding: 8px 12px; background: var(--code); border-radius: 12px; font-size: 13px; }
-.ustate form { margin-left: 6px; }
+.uhead { display: flex; align-items: center; gap: 9px; }
+.uhead h3 { margin: 0; font-size: 14px; line-height: 1.25; overflow-wrap: anywhere; } .uhead .pill { margin-left: auto; font-size: 12px; padding: 0 9px; }
+.ucard .pmark { width: 28px; height: 28px; border-radius: 9px; } .ucard .pmark i { width: 16px; height: 16px; }
+.meter { margin-top: 9px; }
+.mtop { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12.5px; margin-bottom: 4px; }
+.mlab { font-weight: 600; } .mlab .muted { font-weight: 400; font-size: 12px; }
+.mtop strong { font-variant-numeric: tabular-nums; }
+.mbar { position: relative; height: 8px; border-radius: 999px; background: var(--track); }
+.mbar b { display: block; height: 100%; border-radius: 999px; background: var(--ok); }
+.mbar.warn b { background: var(--warn); } .mbar.bad b { background: var(--bad); }
+.mbar i { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 2px; background: var(--text); }
+.ustate { margin-top: 9px; padding: 6px 10px; background: var(--code); border-radius: 10px; font-size: 12.5px; }
+.ustate form { margin-left: 6px; } .ustate button { padding: 1px 10px; font-size: 12.5px; }
 
 /* Workers: a timeline of what the agent just did. */
 .wcard.idle { background: transparent; box-shadow: none; border-style: dashed; }
@@ -1625,10 +1625,8 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
                                 span.pill.ok { "Healthy" }
                             }
                         }
-                        div.gauges {
-                            (gauge(u.usage.session, Span::Window, now, limits))
-                            (gauge(u.usage.weekly, Span::Week, now, limits))
-                        }
+                        (meter(u.usage.session, Span::Window, now, limits))
+                        (meter(u.usage.weekly, Span::Week, now, limits))
                         @if let Some(hit) = hit {
                             div.ustate {
                                 @if overridden {
@@ -1643,8 +1641,6 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
                             }
                         } @else if let Some(level) = warning {
                             div.ustate { span.warn { "Past the " (level) "% warning" } }
-                        } @else {
-                            div.ustate { span.muted { "OK" } }
                         }
                     }
                 }
@@ -1653,14 +1649,14 @@ fn usage_panel(snapshot: &PoolSnapshot, limits: &UsageLimits) -> Markup {
     }
 }
 
-/// A dial for one usage window, with a tick at its stop level.
-fn gauge(window: Option<UsageWindow>, span: Span, now: u64, limits: &UsageLimits) -> Markup {
+/// A bar for one usage window, with a tick at its stop level.
+fn meter(window: Option<UsageWindow>, span: Span, now: u64, limits: &UsageLimits) -> Markup {
     let name = match span {
         Span::Window => "Session",
         Span::Week => "Week",
     };
     let Some(w) = window else {
-        return html! { figure.gauge { p.muted { (name) ": " span.muted { "not reported" } } } };
+        return html! { div.meter { div.mtop { span.mlab { (name) } span.muted { "not reported" } } } };
     };
     let percent = w.percent_at(now);
     let class = if limits.stopped(span, percent) {
@@ -1668,42 +1664,25 @@ fn gauge(window: Option<UsageWindow>, span: Span, now: u64, limits: &UsageLimits
     } else {
         limits.warning(span, percent).map(|_| "warn")
     };
-    let tone = match class {
-        Some("bad") => "var(--bad)",
-        Some(_) => "var(--warn)",
-        None => "var(--ok)",
-    };
-    // A 240° dial: the track, the share used, and a tick where runs stop.
-    let circumference = 2.0 * std::f64::consts::PI * DIAL_RADIUS;
-    let sweep = circumference * 2.0 / 3.0;
-    let used = sweep * f64::from(percent.min(100)) / 100.0;
-    let tick = (150.0 + 2.4 * f64::from(limits.stop_at(span).min(100))).to_radians();
-    let at = |r: f64| (60.0 + tick.cos() * r, 62.0 + tick.sin() * r);
-    let ((x1, y1), (x2, y2)) = (at(DIAL_RADIUS - 8.0), at(DIAL_RADIUS + 7.0));
+    let stop = limits.stop_at(span).min(100);
     html! {
-        figure.gauge {
-            div.gwrap {
-                svg viewBox="0 0 120 112" aria-hidden="true" {
-                    g transform="rotate(150 60 62)" fill="none" stroke-linecap="round" stroke-width="10" {
-                        circle cx="60" cy="62" r=(DIAL_RADIUS) stroke="var(--track)"
-                            stroke-dasharray={ (format!("{sweep:.1} {circumference:.1}")) } {}
-                        circle cx="60" cy="62" r=(DIAL_RADIUS) stroke=(tone)
-                            stroke-dasharray={ (format!("{used:.1} {circumference:.1}")) } {}
+        div.meter {
+            div.mtop {
+                span.mlab {
+                    (name)
+                    span.muted {
+                        @if let Some(reset) = w.resets_at.filter(|r| *r > now) {
+                            " · resets in " (duration(reset - now))
+                        } @else if w.resets_at.is_some() {
+                            " · reset since last report"
+                        }
                     }
-                    line x1=(format!("{x1:.1}")) y1=(format!("{y1:.1}")) x2=(format!("{x2:.1}")) y2=(format!("{y2:.1}"))
-                        stroke="var(--text)" stroke-width="2.5" stroke-linecap="round" {}
                 }
-                div.gval {
-                    strong class=[class] { (percent) "%" }
-                    span { (name) }
-                }
+                strong class=[class] { (percent) "%" }
             }
-            figcaption {
-                @if let Some(reset) = w.resets_at.filter(|r| *r > now) {
-                    "resets in " (duration(reset - now))
-                } @else if w.resets_at.is_some() {
-                    "reset since last report"
-                }
+            div.mbar class=[class] {
+                b style={ "width: " (percent.min(100)) "%" } {}
+                i style={ "left: " (stop) "%" } title={ "Runs stop at " (stop) "%" } {}
             }
         }
     }
