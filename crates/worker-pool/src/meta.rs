@@ -10,6 +10,9 @@ use crate::PoolError;
 /// What the pool remembers about one item.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ItemMeta {
+    /// The title of the pull request or issue the item was imported from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     /// Agent runs on the item since it was created or last returned from
     /// hold. Every run counts: the first, each rework, each failure.
     #[serde(default)]

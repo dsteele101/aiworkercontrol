@@ -64,6 +64,7 @@ impl Supervisor {
         // Creating the item file claims its name before anything else is touched.
         queue.add(ItemState::InReview, &item, &body)?;
         let meta = ItemMeta {
+            title: Some(info.title.clone()),
             pr_url: Some(url),
             pr_title: Some(info.title.clone()),
             pushed_head: Some(info.head),
@@ -153,6 +154,11 @@ impl Supervisor {
                 description = issue.body.trim(),
             );
             queue.add(ItemState::Open, &item, &body)?;
+            ItemMeta {
+                title: Some(issue.title.clone()),
+                ..ItemMeta::default()
+            }
+            .save(queue, ItemState::Open, &item)?;
             self.shared
                 .record(&item, EventKind::Imported, Some(issue.url));
             added.push(item);
