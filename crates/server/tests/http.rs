@@ -89,6 +89,11 @@ async fn dashboard_renders() {
         );
     }
     assert!(body.contains(r#"location.pathname + "?live=1""#));
+    assert!(body.contains(r#"href="/work""#), "{body}");
+    assert!(
+        !body.contains(r#"action="/import""#),
+        "importing lives on the work page"
+    );
 
     // The settings page has nothing live.
     let (_, settings) = app.get("/settings").await;
@@ -98,12 +103,12 @@ async fn dashboard_renders() {
 #[tokio::test]
 async fn importing_a_pull_request_reports_why_it_cannot() {
     let app = app();
-    let (_, body) = app.get("/").await;
+    let (_, body) = app.get("/work").await;
     assert!(body.contains(r#"action="/import""#), "{body}");
 
     let status = app.post("/import", "url=not+a+link").await;
     assert_eq!(status, StatusCode::SEE_OTHER);
-    let (_, page) = app.get("/").await;
+    let (_, page) = app.get("/work").await;
     assert!(page.contains("is not a GitHub pull request link"), "{page}");
 
     app.post(
@@ -111,7 +116,7 @@ async fn importing_a_pull_request_reports_why_it_cannot() {
         "url=https%3A%2F%2Fgithub.com%2Fup%2Frepo%2Fpull%2F9",
     )
     .await;
-    let (_, page) = app.get("/").await;
+    let (_, page) = app.get("/work").await;
     assert!(
         page.contains("no project opens pull requests against up/repo"),
         "{page}"

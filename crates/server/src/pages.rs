@@ -357,6 +357,7 @@ fn layout(title: &str, here: &str, refresh: bool, notice: Option<String>, body: 
                         "AI Worker Control"
                     }
                     a href="/" class=[(here == "dashboard").then_some("here")] { "Dashboard" }
+                    a href="/work" class=[(here == "work").then_some("here")] { "Work" }
                     a href="/history" class=[(here == "history").then_some("here")] { "History" }
                     a href="/suggestions" class=[(here == "suggestions").then_some("here")] { "Suggestions" }
                     a href="/settings" class=[(here == "settings").then_some("here")] { "Settings" }
@@ -369,6 +370,28 @@ fn layout(title: &str, here: &str, refresh: bool, notice: Option<String>, body: 
             }
         }
     }
+}
+
+/// The work page: where work comes into the queue from outside.
+pub(crate) fn work(notice: Option<String>) -> Markup {
+    let body = html! {
+        h2 { "Work" }
+        div {
+            h3 { "Import a pull request" }
+            form.panel.bar method="post" action="/import" {
+                input type="text" name="url" required style="flex:1; min-width:260px"
+                    placeholder="https://github.com/owner/repo/pull/123"
+                    aria-label="Pull request link";
+                button.primary { "Import" }
+            }
+            p.muted {
+                "Adds an open pull request to the queue, in review, for the project that opens pull requests "
+                "against its repository. Its branch must be on that project's push remote. Changes requested on "
+                "it and failing checks are then reworked like those on the app's own pull requests."
+            }
+        }
+    };
+    layout("Work", "work", false, notice, body)
 }
 
 /// The history dashboard's page. Its filters, figures and charts are drawn
@@ -874,22 +897,6 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                         }
                     }
                 }
-            }
-        }
-
-        // Outside the live sections, which refresh and would drop a typed link.
-        div {
-            h2 { "Import a pull request" }
-            form.panel.bar method="post" action="/import" {
-                input type="text" name="url" required style="flex:1; min-width:260px"
-                    placeholder="https://github.com/owner/repo/pull/123"
-                    aria-label="Pull request link";
-                button.primary { "Import" }
-            }
-            p.muted {
-                "Adds an open pull request to the queue, in review, for the project that opens pull requests "
-                "against its repository. Its branch must be on that project's push remote. Changes requested on "
-                "it and failing checks are then reworked like those on the app's own pull requests."
             }
         }
 

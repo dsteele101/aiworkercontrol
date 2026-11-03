@@ -45,6 +45,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/close", post(close))
         .route("/resume-all", post(resume_all))
         .route("/close-all", post(close_all))
+        .route("/work", get(work_page))
         .route("/import", post(import_pull_request))
         .route("/review/check", post(check_review))
         .route("/review/rework", post(rework_review))
@@ -306,7 +307,7 @@ async fn import_pull_request(State(app): State<AppState>, Form(f): Form<ImportFo
         Err(e) => format!("Could not import the pull request: {e}"),
     };
     app.notify(message);
-    Redirect::to("/")
+    Redirect::to("/work")
 }
 
 async fn check_review(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {
@@ -360,6 +361,10 @@ async fn bump_review(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Re
 struct SuggestionForm {
     project: String,
     id: u32,
+}
+
+async fn work_page(State(app): State<AppState>) -> Html<String> {
+    Html(pages::work(app.take_notice()).into_string())
 }
 
 async fn suggestions_page(
