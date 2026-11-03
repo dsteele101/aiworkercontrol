@@ -333,6 +333,13 @@ details.ssub[open] > summary { margin-bottom: 10px; }
 .proj { border: 1px solid var(--border); border-radius: 16px; padding: 14px; min-width: 0; background: var(--bg); }
 .proj h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 16px; }
 .proj h3 i { width: 10px; height: 10px; border-radius: 3px; background: var(--hue); }
+details.pedit { margin-top: 10px; }
+details.pedit > summary { display: inline-block; list-style: none; cursor: pointer; border: 1px solid var(--border); border-radius: 10px;
+  padding: 4px 14px; font-weight: 500; background: var(--panel); }
+details.pedit > summary::-webkit-details-marker { display: none; } details.pedit > summary:hover { border-color: var(--accent); }
+details.pedit .on-open, details.pedit[open] .on-closed { display: none; } details.pedit[open] .on-open { display: inline; }
+details.pedit[open] > form { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+.proj:has(details.pedit[open]) { grid-column: 1 / -1; }
 .proj dl { display: grid; grid-template-columns: 110px 1fr; gap: 5px 10px; margin: 0 0 12px; font-size: 13px; }
 .proj dt { color: var(--muted); } .proj dd { margin: 0; overflow-wrap: anywhere; }
 @media (max-width: 760px) {
@@ -1183,6 +1190,58 @@ fn utc(secs: u64) -> String {
     )
 }
 
+/// The fields of a project, empty for a new one or filled in to edit one.
+/// A saved project's name is fixed, since saving under a name replaces it.
+fn project_fields(project: Option<&Project>) -> Markup {
+    let pr = project.and_then(|p| p.pr.as_ref());
+    let issues = project.and_then(|p| p.issues.as_ref());
+    html! {
+        div.fields {
+            div { label.f { "Name" } input type="text" name="name" placeholder="phase" value=[project.map(|p| p.name.as_str())] readonly[project.is_some()] required; }
+            div { label.f { "Spec directory" } input type="text" name="spec_dir" placeholder="spec/phase" value=[project.map(|p| p.spec_dir.display().to_string())] required; }
+            div { label.f { "Repository" } input type="text" name="repo" placeholder="/home/me/dev/phase or ../phase" value=[project.map(|p| p.repo.display().to_string())] required; }
+            div { label.f { "Branch from" } input type="text" name="base_ref" placeholder="main" value=[project.map(|p| p.base_ref.as_str())]; }
+            div { label.f { "Build jobs" } input type="number" name="build_jobs" min="1" max=(MAX_BUILD_JOBS) placeholder=(DEFAULT_BUILD_JOBS) value=[project.map(|p| p.build_jobs)]; }
+        }
+        div.fields {
+            div { label.f { "Push to remote (optional)" } input type="text" name="pr_remote" placeholder="fork" value=[pr.map(|pr| pr.push_remote.as_str())]; }
+            div { label.f { "Open pull request against" } input type="text" name="pr_repo" placeholder="phase-rs/phase" value=[pr.map(|pr| pr.repo.as_str())]; }
+            div { label.f { "Pull request base branch" } input type="text" name="pr_base" placeholder="main" value=[pr.map(|pr| pr.base.as_str())]; }
+            div { label.switch { input type="checkbox" name="pr_draft" checked[pr.is_some_and(|pr| pr.draft)]; div { b { "Open as draft" } } } }
+        }
+        div.fields {
+            div { label.f { "Issues link (optional)" } input type="text" name="issues_url" placeholder="https://github.com/phase-rs/phase/issues" value=[issues.map(|i| i.url.as_str())]; }
+            div { label.f { "Issues at a time" } input type="number" name="issues_limit" min="1" max=(MAX_ISSUE_BATCH) placeholder="5" value=[issues.map(|i| i.limit)]; }
+            div {
+                label.f { "Take issues" }
+                select name="issues_order" {
+                    @for order in IssueOrder::ALL {
+                        option value=(order.value()) selected[issues.is_some_and(|i| i.order == order)] { (order.label()) }
+                    }
+                }
+            }
+            div {
+                label.f { "Access token (optional)" }
+                input type="password" name="issues_token" autocomplete="off"
+                    placeholder=(if issues.is_some_and(|i| i.token.is_some()) { "saved — leave blank to keep" } else { "" });
+            }
+        }
+        p.hint {
+            "Open issues of a GitHub, GitLab, Bitbucket or Gitea/Forgejo repository become work items "
+            code { "issue-<number>.txt" } ", a few at a time: that many are kept waiting in "
+            code { "open" } ", and more follow as workers take them. The token is only needed for private repositories."
+        }
+        label.f { "Worktree setup command (optional)" }
+        input type="text" name="setup" placeholder="e.g. cp \"$AIWC_REPO\"/data/*.json data/" value=[project.and_then(|p| p.setup.as_deref())];
+        label.f style="margin-top:12px" { "Ignored comment markers (optional, one per line)" }
+        textarea name="ignore_comments" rows="2" placeholder="pr-review-deferred" { (project.map(|p| p.ignore_comments.join("\n")).unwrap_or_default()) }
+        p.hint {
+            "A pull request comment or review containing any of these is not feedback, so it queues no rework. "
+            "Use it for a bot's notice that asks for nothing."
+        }
+    }
+}
+
 /// A bar for one usage window's levels: green up to the first warning,
 /// amber up to the stop level and red beyond it, with a mark at each. With
 /// scripts on, the marks drag, editing the fields `warn_field` and
@@ -1552,7 +1611,14 @@ pub(crate) fn settings(
                     div.projects {
                         @for project in &settings.projects {
                             article.proj style={ "--hue: hsl(" (project_hue(&project.name)) " 65% 55%)" } {
-                                h3 { i {} (project.name) }
+                                h3 {
+                                    i {}
+                                    (project.name)
+                                    form.inline method="post" action="/settings/projects/delete" style="margin-left:auto" {
+                                        input type="hidden" name="name" value=(project.name);
+                                        button { "Remove" }
+                                    }
+                                }
                                 dl {
                                     dt { "Spec directory" } dd { code { (project.spec_dir.display()) } }
                                     dt { "Repository" } dd { code { (project.repo.display()) } }
@@ -1579,9 +1645,16 @@ pub(crate) fn settings(
                                         } @else { span.muted { "off" } }
                                     }
                                 }
-                                form.inline method="post" action="/settings/projects/delete" {
-                                    input type="hidden" name="name" value=(project.name);
-                                    button { "Remove" }
+                                details.pedit {
+                                    summary { span.on-closed { "Edit" } span.on-open { "Cancel" } }
+                                    form method="post" action="/settings/projects" {
+                                        input type="hidden" name="edit" value="1";
+                                        (project_fields(Some(project)))
+                                        p.bar {
+                                            button.primary { "Save changes" }
+                                            span.hint { "Leave the access token blank to keep the saved one." }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -1589,45 +1662,7 @@ pub(crate) fn settings(
                     details.ssub open[settings.projects.is_empty()] {
                         summary { "Add a project" }
                         form method="post" action="/settings/projects" {
-                            div.fields {
-                                div { label.f { "Name" } input type="text" name="name" placeholder="phase" required; }
-                                div { label.f { "Spec directory" } input type="text" name="spec_dir" placeholder="spec/phase" required; }
-                                div { label.f { "Repository" } input type="text" name="repo" placeholder="/home/me/dev/phase or ../phase" required; }
-                                div { label.f { "Branch from" } input type="text" name="base_ref" placeholder="main"; }
-                                div { label.f { "Build jobs" } input type="number" name="build_jobs" min="1" max=(MAX_BUILD_JOBS) placeholder=(DEFAULT_BUILD_JOBS); }
-                            }
-                            div.fields {
-                                div { label.f { "Push to remote (optional)" } input type="text" name="pr_remote" placeholder="fork"; }
-                                div { label.f { "Open pull request against" } input type="text" name="pr_repo" placeholder="phase-rs/phase"; }
-                                div { label.f { "Pull request base branch" } input type="text" name="pr_base" placeholder="main"; }
-                                div { label.switch { input type="checkbox" name="pr_draft"; div { b { "Open as draft" } } } }
-                            }
-                            div.fields {
-                                div { label.f { "Issues link (optional)" } input type="text" name="issues_url" placeholder="https://github.com/phase-rs/phase/issues"; }
-                                div { label.f { "Issues at a time" } input type="number" name="issues_limit" min="1" max=(MAX_ISSUE_BATCH) placeholder="5"; }
-                                div {
-                                    label.f { "Take issues" }
-                                    select name="issues_order" {
-                                        @for order in IssueOrder::ALL {
-                                            option value=(order.value()) { (order.label()) }
-                                        }
-                                    }
-                                }
-                                div { label.f { "Access token (optional)" } input type="password" name="issues_token" autocomplete="off"; }
-                            }
-                            p.hint {
-                                "Open issues of a GitHub, GitLab, Bitbucket or Gitea/Forgejo repository become work items "
-                                code { "issue-<number>.txt" } ", a few at a time: that many are kept waiting in "
-                                code { "open" } ", and more follow as workers take them. The token is only needed for private repositories."
-                            }
-                            label.f { "Worktree setup command (optional)" }
-                            input type="text" name="setup" placeholder="e.g. cp \"$AIWC_REPO\"/data/*.json data/";
-                            label.f style="margin-top:12px" { "Ignored comment markers (optional, one per line)" }
-                            textarea name="ignore_comments" rows="2" placeholder="pr-review-deferred" {}
-                            p.hint {
-                                "A pull request comment or review containing any of these is not feedback, so it queues no rework. "
-                                "Use it for a bot's notice that asks for nothing."
-                            }
+                            (project_fields(None))
                             p.hint {
                                 "Each item gets a fresh git worktree on its own " code { "ai/<item>" } " branch, beside the repo in "
                                 code { "<repo>-worktrees/" } ". This command runs there with " code { "sh -c" } " before the agent "
@@ -1637,7 +1672,7 @@ pub(crate) fn settings(
                                 code { "CARGO_BUILD_JOBS" } " set to the build jobs. "
                                 "With a push remote set, finished work is pushed there and a pull request opened with "
                                 code { "gh" } " (your GitHub login), titled and described by the agent following the repo's PR template. "
-                                "To change a project, add it again under the same name."
+                                "To change a project, use its Edit button."
                             }
                             p { button.primary { "Add project" } }
                         }

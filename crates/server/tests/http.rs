@@ -1089,3 +1089,43 @@ async fn settings_are_grouped_into_sections_with_limit_bars() {
     assert_eq!(status, StatusCode::OK);
     assert!(script.contains("data-warn") || script.contains("dataset.warn"));
 }
+
+#[tokio::test]
+async fn a_saved_project_can_be_edited_keeping_its_token() {
+    let app = app();
+    fs::create_dir_all(app.dir.path().join("spec/demo")).unwrap();
+    fs::create_dir_all(app.dir.path().join("repo/.git")).unwrap();
+    app.post(
+        "/settings/projects",
+        "name=demo&spec_dir=spec/demo&repo=repo&setup=make&issues_url=https%3A%2F%2Fgitlab.com%2Fg%2Fp%2Fissues&issues_limit=3&issues_token=tok",
+    )
+    .await;
+
+    // The edit form starts from what is saved, with the name fixed and the token hidden.
+    let (_, page) = app.get("/settings").await;
+    assert!(page.contains(r#"name="edit""#), "{page}");
+    assert!(
+        page.contains(r#"name="name" placeholder="phase" value="demo" readonly"#),
+        "{page}"
+    );
+    assert!(page.contains(r#"value="spec/demo""#), "{page}");
+    assert!(page.contains(r#"value="make""#), "{page}");
+    assert!(page.contains("saved — leave blank to keep"), "{page}");
+    assert!(!page.contains("tok\""), "the token is never shown");
+
+    // Saving an edit with the token left blank keeps it; the other fields change.
+    app.post(
+        "/settings/projects",
+        "edit=1&name=demo&spec_dir=spec/demo&repo=repo&setup=make+all&build_jobs=2&issues_url=https%3A%2F%2Fgitlab.com%2Fg%2Fp%2Fissues&issues_limit=5",
+    )
+    .await;
+    let saved = app.saved();
+    let project = &saved.projects[0];
+    assert_eq!(saved.projects.len(), 1);
+    assert_eq!(project.setup.as_deref(), Some("make all"));
+    assert_eq!(project.build_jobs, 2);
+    let issues = project.issues.as_ref().unwrap();
+    assert_eq!((issues.limit, issues.token.as_deref()), (5, Some("tok")));
+    let (_, page) = app.get("/settings").await;
+    assert!(page.contains("Saved project demo."), "{page}");
+}
