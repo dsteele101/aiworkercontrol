@@ -139,17 +139,27 @@ async fn history_json(State(app): State<AppState>) -> Response {
     }
 }
 
-/// The scripts of the history page, compiled in so it works offline.
+/// The scripts of the history page and the provider logos, compiled in so
+/// they work offline.
 async fn static_file(Path(name): Path<String>) -> Response {
-    let body = match name.as_str() {
-        "chart.umd.js" => include_str!("../assets/chart.umd.js"),
-        "history.js" => include_str!("../assets/history.js"),
-        "fallbacks.js" => include_str!("../assets/fallbacks.js"),
+    const JS: &str = "text/javascript; charset=utf-8";
+    const SVG: &str = "image/svg+xml";
+    const PNG: &str = "image/png";
+    let (body, kind): (&'static [u8], &str) = match name.as_str() {
+        "chart.umd.js" => (include_bytes!("../assets/chart.umd.js"), JS),
+        "history.js" => (include_bytes!("../assets/history.js"), JS),
+        "fallbacks.js" => (include_bytes!("../assets/fallbacks.js"), JS),
+        "claude.svg" => (include_bytes!("../assets/providers/claude.svg"), SVG),
+        "openai.svg" => (include_bytes!("../assets/providers/openai.svg"), SVG),
+        "googlegemini.svg" => (include_bytes!("../assets/providers/googlegemini.svg"), SVG),
+        "cloudflare.svg" => (include_bytes!("../assets/providers/cloudflare.svg"), SVG),
+        "freebuff.png" => (include_bytes!("../assets/providers/freebuff.png"), PNG),
+        "openrouter.png" => (include_bytes!("../assets/providers/openrouter.png"), PNG),
         _ => return (StatusCode::NOT_FOUND, "no such file").into_response(),
     };
     (
         [
-            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CONTENT_TYPE, kind),
             // Revalidated each time, so an upgrade shows at once.
             (header::CACHE_CONTROL, "no-cache"),
         ],

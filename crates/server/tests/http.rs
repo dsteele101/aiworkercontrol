@@ -1006,3 +1006,50 @@ async fn suggestions_have_their_own_page_and_not_a_dashboard_section() {
         "{page}"
     );
 }
+
+/// Writes `count` items, `prefix0`.. `prefixN`, into a project's state directory.
+fn write_items(app: &App, state: &str, prefix: &str, count: usize) {
+    let dir = app.dir.path().join(format!("work/{state}/demo"));
+    fs::create_dir_all(&dir).unwrap();
+    for n in 0..count {
+        fs::write(dir.join(format!("{prefix}{n}.txt")), "item").unwrap();
+    }
+}
+
+#[tokio::test]
+async fn a_long_lane_keeps_its_overflow_behind_a_more_tile() {
+    let app = app();
+    write_items(&app, "open", "item", 5);
+    let (_, page) = app.get("/").await;
+    assert!(page.contains("+3 more"), "{page}");
+    assert_eq!(page.matches(r#" extra" style="#).count(), 3, "{page}");
+    assert!(page.contains(r#"for="exp-open""#), "{page}");
+
+    write_items(&app, "closed", "done", 3);
+    let (_, page) = app.get("/").await;
+    assert!(
+        !page.contains(r#"for="exp-closed""#),
+        "three fit in a lane: {page}"
+    );
+}
+
+#[tokio::test]
+async fn held_items_are_never_tucked_away() {
+    let app = app();
+    write_items(&app, "hold", "stuck", 6);
+    let (_, page) = app.get("/").await;
+    assert!(!page.contains(r#"for="exp-hold""#), "{page}");
+    assert!(page.contains(r#"class="kcard card p-demo attn""#), "{page}");
+    assert!(page.contains(r#"id="qa""#), "the attention filter: {page}");
+}
+
+#[tokio::test]
+async fn provider_logos_are_served_from_the_app() {
+    let app = app();
+    for name in ["claude.svg", "openai.svg", "freebuff.png", "openrouter.png"] {
+        let (status, _) = app.get(&format!("/static/{name}")).await;
+        assert_eq!(status, StatusCode::OK, "{name}");
+    }
+    let (status, _) = app.get("/static/nope.svg").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
