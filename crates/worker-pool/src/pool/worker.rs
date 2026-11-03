@@ -198,6 +198,9 @@ impl Shared {
         let quota_before = self.lock().usage.get(&provider).cloned();
         let trace = Mutex::new(Trace::default());
         let mut context = None;
+        if matches!(kind, Kind::New) {
+            self.note_pickup(&item, &project).await;
+        }
         let outcome = match self.begin_turn(&item) {
             Ok((turn, retry)) => {
                 context = Some((turn, retry));
@@ -217,6 +220,9 @@ impl Shared {
             }
             Err(e) => Err((None, e)),
         };
+        if matches!(outcome, Ok(TurnOutcome::Closed)) {
+            self.report_done(&item, ItemState::Closed, &project).await;
+        }
         let mut failure = None;
         let mut refunded = false;
         if let Err((turn, e)) = &outcome {

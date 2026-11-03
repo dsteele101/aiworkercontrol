@@ -163,6 +163,7 @@ impl Supervisor {
             queue.add(ItemState::Open, &item, &body)?;
             ItemMeta {
                 title: Some(issue.title.clone()),
+                issue_url: Some(issue.url.clone()),
                 ..ItemMeta::default()
             }
             .save(queue, ItemState::Open, &item)?;
