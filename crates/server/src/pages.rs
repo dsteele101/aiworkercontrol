@@ -312,6 +312,15 @@ label.switch b { display: block; font-weight: 600; } label.switch span { color: 
 .range .mk { position: absolute; top: 12px; width: 0; }
 .range .mk::after { content: ""; position: absolute; left: -2px; top: 6px; width: 4px; height: 30px; border-radius: 3px; background: var(--text); }
 .range .mk span { position: absolute; top: -12px; left: 0; transform: translateX(-50%); white-space: nowrap; font-size: 11px; font-weight: 600; color: var(--muted); }
+.range.live .mk { width: 28px; height: 44px; top: 6px; margin: 0; padding: 0; border: 0; background: none; transform: translateX(-50%);
+  cursor: ew-resize; touch-action: none; color: inherit; }
+.range.live .mk::after { left: 12px; top: 8px; transition: background .15s; }
+.range.live .mk.stop::after { background: var(--bad); } .range.live .mk.warn::after { background: var(--warn); }
+.range.live .mk:hover::after, .range.live .mk.held::after { background: var(--text); }
+.range.live .mk:focus-visible { outline: none; } .range.live .mk:focus-visible::after { outline: 2px solid var(--accent); outline-offset: 2px; }
+.range.live .mk span { left: 14px; top: -6px; pointer-events: none; }
+.range.live .rail { transition: none; }
+.range + .hint { margin: 0 0 12px; }
 #fallbacks { counter-reset: fb; }
 #fallbacks li { counter-increment: fb; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 6px 12px 6px 8px; margin-bottom: 6px; }
 #fallbacks li::before { content: counter(fb); flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
@@ -1175,8 +1184,10 @@ fn utc(secs: u64) -> String {
 }
 
 /// A bar for one usage window's levels: green up to the first warning,
-/// amber up to the stop level and red beyond it, with a mark at each.
-fn limit_bar(warn: &[u8], stop: u8) -> Markup {
+/// amber up to the stop level and red beyond it, with a mark at each. With
+/// scripts on, the marks drag, editing the fields `warn_field` and
+/// `stop_field`; without, it shows the saved levels.
+fn limit_bar(warn_field: &str, stop_field: &str, warn: &[u8], stop: u8) -> Markup {
     let stop = stop.min(100);
     let first = warn
         .iter()
@@ -1185,7 +1196,7 @@ fn limit_bar(warn: &[u8], stop: u8) -> Markup {
         .min()
         .unwrap_or(stop);
     html! {
-        div.range style={ "--w: " (first) "%; --s: " (stop) "%" } {
+        div.range data-warn=(warn_field) data-stop=(stop_field) style={ "--w: " (first) "%; --s: " (stop) "%" } {
             div.rail {}
             @for w in warn.iter().filter(|w| **w <= 100) {
                 span.mk style={ "left: " (w) "%" } { span { "warn " (w) "%" } }
@@ -1415,7 +1426,7 @@ pub(crate) fn settings(
                     }
                     form method="post" action="/settings/limits" {
                         h3 { "Current window" }
-                        (limit_bar(&settings.limits.warn, settings.limits.stop))
+                        (limit_bar("warn", "stop", &settings.limits.warn, settings.limits.stop))
                         div.fields {
                             div {
                                 label.f for="warn" { "Warn at (%, comma-separated)" }
@@ -1427,7 +1438,7 @@ pub(crate) fn settings(
                             }
                         }
                         h3 { "Week" }
-                        (limit_bar(&settings.limits.week_warn, settings.limits.week_stop))
+                        (limit_bar("week_warn", "week_stop", &settings.limits.week_warn, settings.limits.week_stop))
                         div.fields {
                             div {
                                 label.f for="week_warn" { "Warn at (%, comma-separated)" }
@@ -1461,6 +1472,7 @@ pub(crate) fn settings(
                                 "Plan logins report their usage; a provider on an API key doesn't (except OpenRouter on a free model, which reports its daily free-request allowance, and Cloudflare with an analytics token, which reports its daily free neurons), so it is never stopped."
                             }
                         }
+                        script src="/static/limits.js" {}
                         script src="/static/fallbacks.js" {}
                     }
                     details.ssub {

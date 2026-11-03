@@ -1080,4 +1080,12 @@ async fn settings_are_grouped_into_sections_with_limit_bars() {
     }
     assert_eq!(page.matches(r#"class="range""#).count(), 2, "{page}");
     assert!(page.contains("/static/claude.svg"), "provider logos");
+    assert!(
+        page.contains(r#"data-warn="warn" data-stop="stop""#),
+        "{page}"
+    );
+    assert!(page.contains(r#"src="/static/limits.js""#), "{page}");
+    let (status, script) = app.get("/static/limits.js").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(script.contains("data-warn") || script.contains("dataset.warn"));
 }

@@ -150,6 +150,7 @@ async fn static_file(Path(name): Path<String>) -> Response {
         "chart.umd.js" => (include_bytes!("../assets/chart.umd.js"), JS),
         "history.js" => (include_bytes!("../assets/history.js"), JS),
         "fallbacks.js" => (include_bytes!("../assets/fallbacks.js"), JS),
+        "limits.js" => (include_bytes!("../assets/limits.js"), JS),
         "claude.svg" => (include_bytes!("../assets/providers/claude.svg"), SVG),
         "openai.svg" => (include_bytes!("../assets/providers/openai.svg"), SVG),
         "googlegemini.svg" => (include_bytes!("../assets/providers/googlegemini.svg"), SVG),
