@@ -1230,6 +1230,10 @@ fn project_fields(project: Option<&Project>) -> Markup {
                     placeholder=(if issues.is_some_and(|i| i.token.is_some()) { "saved — leave blank to keep" } else { "" });
             }
         }
+        label.switch {
+            input type="checkbox" name="issues_report_back" checked[issues.is_some_and(|i| i.report_back)];
+            div { b { "Keep the issue informed" } " (GitHub only): comment when a worker picks it up, then comment with a summary and the pull request link and close it once merged." }
+        }
         p.hint {
             "Open issues of a GitHub, GitLab, Bitbucket or Gitea/Forgejo repository become work items "
             code { "issue-<number>.txt" } ", a few at a time: that many are kept going, and a new one comes in only as an earlier one is closed. The token is only needed for private repositories."

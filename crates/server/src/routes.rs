@@ -958,6 +958,8 @@ struct ProjectForm {
     issues_order: IssueOrder,
     #[serde(default)]
     issues_token: String,
+    #[serde(default)]
+    issues_report_back: Option<String>,
     /// Set when editing a saved project, where a blank token keeps the saved one.
     #[serde(default)]
     edit: Option<String>,
@@ -1026,6 +1028,7 @@ async fn add_project(State(app): State<AppState>, Form(f): Form<ProjectForm>) ->
                 token: Some(f.issues_token.trim().to_string())
                     .filter(|t| !t.is_empty())
                     .or(saved_token),
+                report_back: f.issues_report_back.is_some(),
             });
         }
         let (remote, repo) = (f.pr_remote.trim(), f.pr_repo.trim());

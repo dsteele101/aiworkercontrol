@@ -35,6 +35,11 @@ pub struct IssueSource {
     /// An access token, for private repositories and higher rate limits.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// Keep the issue informed: comment when an agent picks it up, and when
+    /// its pull request is merged comment with a summary and the link, then
+    /// close it. Done through `gh`, so for GitHub issues only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub report_back: bool,
 }
 
 /// Which open issue is brought in next.

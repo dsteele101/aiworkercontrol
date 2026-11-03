@@ -60,6 +60,12 @@ pub struct ItemMeta {
     /// request, which is pushed to without replacing what is there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_branch: Option<String>,
+    /// The issue the item was imported from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_url: Option<String>,
+    /// Whether the issue was told that an agent picked the item up.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub issue_noted: bool,
     /// The provider whose run last pushed to the pull request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<Provider>,

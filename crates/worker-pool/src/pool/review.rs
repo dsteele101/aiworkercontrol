@@ -145,6 +145,11 @@ impl Supervisor {
                 meta.save(queue, ItemState::InReview, item)?;
                 queue.transition(item, ItemState::InReview, ItemState::Closed)?;
                 self.shared.record(item, EventKind::Merged, None);
+                if let Ok(project) = self.project(item) {
+                    self.shared
+                        .report_done(item, ItemState::Closed, &project)
+                        .await;
+                }
                 ReviewChange::Merged
             }
             PrState::Closed => {

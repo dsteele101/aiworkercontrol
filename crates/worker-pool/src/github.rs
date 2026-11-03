@@ -520,6 +520,29 @@ pub(crate) fn parse_pr_url(url: &str) -> Option<(&str, &str, &str)> {
     (pull == "pull").then_some((owner, repo, number))
 }
 
+/// Whether `url` is `https://github.com/OWNER/REPO/issues/N`.
+pub(crate) fn is_issue_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://github.com/") else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('/').collect();
+    matches!(parts[..], [owner, repo, "issues", number]
+        if !owner.is_empty() && !repo.is_empty()
+            && !number.is_empty() && number.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// Comments on the GitHub issue at `url`.
+pub(crate) async fn comment_on_issue(gh: &Path, url: &str, body: &str) -> Result<(), PoolError> {
+    run(gh, &["issue", "comment", url, "--body", body]).await?;
+    Ok(())
+}
+
+/// Closes the GitHub issue at `url`, as completed.
+pub(crate) async fn close_issue(gh: &Path, url: &str) -> Result<(), PoolError> {
+    run(gh, &["issue", "close", url, "--reason", "completed"]).await?;
+    Ok(())
+}
+
 fn str_at<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or_default()
 }
@@ -589,6 +612,19 @@ mod tests {
         assert_eq!(draft.title, "fix(engine): give extra turns");
         assert_eq!(draft.body, "## Summary\nDone.");
         assert_eq!(Draft::parse("   \n"), None);
+    }
+
+    #[test]
+    fn issue_urls() {
+        assert!(is_issue_url("https://github.com/phase-rs/phase/issues/12"));
+        for url in [
+            "https://github.com/phase-rs/phase/pull/12",
+            "https://github.com/phase-rs/phase/issues/twelve",
+            "https://github.com/phase-rs/phase/issues/12/extra",
+            "https://gitlab.com/g/p/-/issues/12",
+        ] {
+            assert!(!is_issue_url(url), "{url}");
+        }
     }
 
     #[test]
