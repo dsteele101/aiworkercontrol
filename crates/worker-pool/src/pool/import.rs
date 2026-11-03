@@ -94,9 +94,10 @@ impl Supervisor {
     }
 
     /// Tops up each project's open items with issues from its issue source:
-    /// as many as it takes to have the source's `limit` imported issues
-    /// waiting, chosen in its order and added as `issue-<number>.txt`. An
-    /// issue already in the queue in any state is not brought in again.
+    /// as many as it takes to have the source's `limit` imported issues not
+    /// yet closed, chosen in its order and added as `issue-<number>.txt`. So
+    /// a new issue comes in only as an earlier one is closed. An issue
+    /// already in the queue in any state is not brought in again.
     /// Returns the new items, and why any project's issues could not be read.
     pub async fn import_issues(&self) -> (Vec<WorkItem>, Vec<PoolError>) {
         let mut added = Vec::new();
@@ -122,12 +123,18 @@ impl Supervisor {
         source: &IssueSource,
     ) -> Result<Vec<WorkItem>, PoolError> {
         let queue = self.queue();
-        let waiting = queue
-            .list(ItemState::Open)?
-            .iter()
-            .filter(|i| i.project == project && i.file.starts_with(ISSUE_PREFIX))
-            .count();
-        let room = (source.limit as usize).saturating_sub(waiting);
+        let mut unfinished = 0;
+        for state in ItemState::ALL {
+            if state == ItemState::Closed {
+                continue;
+            }
+            unfinished += queue
+                .list(state)?
+                .iter()
+                .filter(|i| i.project == project && i.file.starts_with(ISSUE_PREFIX))
+                .count();
+        }
+        let room = (source.limit as usize).saturating_sub(unfinished);
         if room == 0 {
             return Ok(Vec::new());
         }
