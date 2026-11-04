@@ -40,10 +40,39 @@ impl Supervisor {
                 changes.push((item, change));
             }
         }
+        for item in self.queue().list(ItemState::Hold)? {
+            if self.close_if_merged(&gh, &item).await? {
+                changes.push((item, ReviewChange::Merged));
+            }
+        }
         if !changes.is_empty() {
             self.shared.changed();
         }
         Ok(changes)
+    }
+
+    /// Closes the held `item` if its pull request was merged while it was on
+    /// hold (a failed rework does not stop a maintainer merging), and reports
+    /// to its issue. Returns whether it did.
+    async fn close_if_merged(&self, gh: &Path, item: &WorkItem) -> Result<bool, PoolError> {
+        let queue = self.queue();
+        let mut meta = ItemMeta::load(queue, ItemState::Hold, item)?;
+        let Some(url) = meta.pr_url.clone() else {
+            return Ok(false);
+        };
+        if !github::is_merged(gh, &url).await? {
+            return Ok(false);
+        }
+        meta.needs_rework = None;
+        meta.save(queue, ItemState::Hold, item)?;
+        queue.transition(item, ItemState::Hold, ItemState::Closed)?;
+        self.shared.record(item, EventKind::Merged, None);
+        if let Ok(project) = self.project(item) {
+            self.shared
+                .report_done(item, ItemState::Closed, &project)
+                .await;
+        }
+        Ok(true)
     }
 
     /// Checks the pull request of one item in review now, as

@@ -1944,6 +1944,33 @@ async fn a_merged_pull_request_closes_the_item_and_frees_the_worktree() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_pull_request_merged_while_the_item_is_held_closes_it() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, _) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+
+    fs::write(
+        bin.join("gh.view.json"),
+        r#"{"state":"CLOSED","headRefOid":"","reviews":[]}"#,
+    )
+    .unwrap();
+    pool.check_reviews().await.unwrap();
+    assert_eq!(pool.queue().list(State::Hold).unwrap(), vec![item.clone()]);
+    // Still unmerged: it stays held.
+    assert!(pool.check_reviews().await.unwrap().is_empty());
+
+    fs::remove_file(bin.join("gh.view.json")).unwrap();
+    fs::write(bin.join("gh.merged"), "").unwrap();
+    assert_eq!(
+        pool.check_reviews().await.unwrap(),
+        vec![(item.clone(), ReviewChange::Merged)]
+    );
+    assert_eq!(pool.queue().list(State::Closed).unwrap(), vec![item]);
+    assert!(pool.queue().list(State::Hold).unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_merged_pull_request_closes_an_item_with_rework_queued() {
     let mut fx = fixture(&[("good.txt", "Fix it")], 1);
     with_pull_requests(&mut fx);
