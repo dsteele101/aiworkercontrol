@@ -65,8 +65,12 @@ os.write(fd, prompt.encode())
 time.sleep(1)
 os.write(fd, b"\r")
 if report:
-    drain(4)
-    text = re.sub(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07", b"\n", seen)
+    # The allowance is fetched after the screen opens: wait for its line.
+    ansi = rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07"
+    end = time.time() + 25
+    while time.time() < end and b"hours daily" not in re.sub(ansi, b"\n", seen):
+        drain(1)
+    text = re.sub(ansi, b"\n", seen)
     for line in text.decode("utf8", "replace").splitlines():
         if "hours" in line:
             print(line.strip())
