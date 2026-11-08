@@ -1232,7 +1232,8 @@ fn project_fields(project: Option<&Project>) -> Markup {
         }
         p.hint {
             "Open issues of a GitHub, GitLab, Bitbucket or Gitea/Forgejo repository become work items "
-            code { "issue-<number>.txt" } ", a few at a time: that many are kept going, and a new one comes in only as an earlier one is closed. The token is only needed for private repositories."
+            code { "issue-<number>.txt" } ", a few at a time: that many are kept waiting in "
+            code { "open" } ", and more follow as workers take them. The token is only needed for private repositories."
         }
         label.f { "Worktree setup command (optional)" }
         input type="text" name="setup" placeholder="e.g. cp \"$AIWC_REPO\"/data/*.json data/" value=[project.and_then(|p| p.setup.as_deref())];
