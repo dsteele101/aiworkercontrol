@@ -2536,3 +2536,49 @@ async fn requested_changes_yield_a_suggestion() {
         found[0]
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_request_for_changes_that_landed_during_a_rework_is_not_lost() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    let view = |reviews: &str| {
+        fs::write(
+            bin.join("gh.view.json"),
+            format!(r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[{reviews}]}}"#),
+        )
+        .unwrap();
+    };
+    let request = |at: &str, oid: &str| {
+        format!(
+            r#"{{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"Rename it.","submittedAt":"{at}","commit":{{"oid":"{oid}"}}}}"#
+        )
+    };
+    view(&request("2026-01-01T10:00:00Z", &head));
+    assert_eq!(
+        pool.check_review(&item).await.unwrap(),
+        Some(ReviewChange::ChangesRequested)
+    );
+    pool.start();
+    let queue = pool.queue().clone();
+    wait_for(&pool, |s| {
+        idle(s)
+            && queue.list(State::InReview).unwrap().len() == 1
+            && pool.meta(State::InReview, &item).unwrap().turns == 2
+    })
+    .await;
+    pool.stop();
+
+    // The same request, already answered, queues nothing.
+    assert_eq!(pool.check_review(&item).await.unwrap(), None);
+
+    // A newer request on an earlier commit came in during the rework.
+    view(&request("2026-01-01T11:00:00Z", "0000"));
+    assert_eq!(
+        pool.check_review(&item).await.unwrap(),
+        Some(ReviewChange::ChangesRequested)
+    );
+    let meta = pool.meta(State::InReview, &item).unwrap();
+    assert!(meta.needs_rework.unwrap().contains("Rename it."));
+}
