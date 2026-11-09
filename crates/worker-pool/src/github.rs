@@ -155,13 +155,17 @@ pub(crate) struct ReviewStatus {
 /// whatever kind of review they came in, as does a comment-only review with
 /// a body, and a non-bot conversation comment naming the head. A merge conflict with the base
 /// branch is feedback too. A review or comment containing one of `ignore`
-/// is not feedback.
+/// is not feedback. A request for changes on an earlier commit still counts
+/// when it came in after `answered_at`, the newest request already handed to
+/// a rework: it landed while that rework ran, which never saw it, and its push
+/// moved the head past it.
 pub(crate) async fn review_status(
     gh: &Path,
     url: &str,
     any_comments: bool,
     ci_logs: bool,
     ignore: &[String],
+    answered_at: Option<&str>,
 ) -> Result<ReviewStatus, PoolError> {
     let view = json(
         &run(
@@ -201,9 +205,35 @@ pub(crate) async fn review_status(
         .filter(|r| r.pointer("/commit/oid").and_then(Value::as_str) == Some(head.as_str()))
         .filter(|r| !ignored(str_at(r, "body"), ignore))
         .collect();
-    let requests: Vec<&&Value> = on_head
+    let all_reviews: Vec<&Value> = view
+        .get("reviews")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .collect();
+    // Requests that landed during a rework, on the commit it started from.
+    let missed: Vec<&Value> = all_reviews
         .iter()
+        .copied()
+        .filter(|r| {
+            let at = str_at(r, "submittedAt");
+            let author = r.pointer("/author/login");
+            str_at(r, "state") == "CHANGES_REQUESTED"
+                && r.pointer("/commit/oid").and_then(Value::as_str) != Some(head.as_str())
+                && !at.is_empty()
+                && answered_at.is_some_and(|answered| at > answered)
+                && !ignored(str_at(r, "body"), ignore)
+                // Not superseded by a later review from the same person.
+                && !all_reviews
+                    .iter()
+                    .any(|o| o.pointer("/author/login") == author && str_at(o, "submittedAt") > at)
+        })
+        .collect();
+    let requests: Vec<&Value> = on_head
+        .iter()
+        .copied()
         .filter(|r| str_at(r, "state") == "CHANGES_REQUESTED")
+        .chain(missed.iter().copied())
         .collect();
     let changes_requested = !requests.is_empty();
     let reviewed_at = requests
@@ -255,7 +285,7 @@ pub(crate) async fn review_status(
     }
 
     let mut text = String::new();
-    for review in &on_head {
+    for review in on_head.iter().copied().chain(missed.iter().copied()) {
         let body = str_at(review, "body").trim();
         if !body.is_empty() {
             text.push_str(&format!(
