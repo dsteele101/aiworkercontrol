@@ -398,7 +398,7 @@ impl ProviderConfig {
             effort: self.effort.clone(),
             description: None,
         };
-        if matches!(self.provider.cli(), Cli::Vibe | Cli::Freebuff | Cli::Kilo) {
+        if matches!(self.provider.cli(), Cli::Vibe | Cli::Freebuff) {
             return vec![default];
         }
         std::iter::once(default)
@@ -720,6 +720,12 @@ mod tests {
         );
         assert_eq!(run.env_value("KILO_API_KEY"), Some("k"));
         assert_eq!(config.options().len(), 1);
+        config.alternatives.push(ModelOption {
+            model: Some("openai/gpt-5".into()),
+            effort: None,
+            description: None,
+        });
+        assert_eq!(config.options().len(), 2);
     }
 
     #[test]
