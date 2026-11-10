@@ -65,6 +65,7 @@ pub fn parse_line(cli: Cli, line: &str) -> Vec<AgentEvent> {
         Cli::Antigravity => antigravity(&value),
         Cli::Vibe => vibe(&value),
         Cli::Freebuff => freebuff(&value),
+        Cli::Kilo => kilo(&value),
     }
 }
 
@@ -369,6 +370,36 @@ fn vibe(v: &Value) -> Vec<AgentEvent> {
     }
 }
 
+/// `kilo run --format json` events: `text` and `tool_use` parts, and `error`.
+/// The schema is not documented; this follows the OpenCode events it forks.
+fn kilo(v: &Value) -> Vec<AgentEvent> {
+    match str_at(v, "type") {
+        Some("text") => v
+            .pointer("/part/text")
+            .and_then(Value::as_str)
+            .and_then(|t| text_event(Some(t)))
+            .into_iter()
+            .collect(),
+        Some("tool_use") => vec![AgentEvent::ToolUse {
+            name: v
+                .pointer("/part/tool")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            detail: tool_detail(v.pointer("/part/state/input")),
+        }],
+        Some("error") => {
+            let message = v
+                .pointer("/error/data/message")
+                .or_else(|| v.pointer("/error/message"))
+                .and_then(Value::as_str)
+                .unwrap_or("Kilo reported an error");
+            vec![AgentEvent::Notice(message.to_string())]
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn str_at<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(Value::as_str)
 }
@@ -458,6 +489,28 @@ mod tests {
                     detail: "echo hi".into()
                 },
                 AgentEvent::Text("ok".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn kilo_events() {
+        assert_eq!(
+            parse_all(
+                Cli::Kilo,
+                &[
+                    r#"{"type":"tool_use","part":{"tool":"bash","state":{"input":{"command":"ls"}}}}"#,
+                    r#"{"type":"text","part":{"text":"Done"}}"#,
+                    r#"{"type":"error","error":{"data":{"message":"bad key"}}}"#,
+                ],
+            ),
+            [
+                AgentEvent::ToolUse {
+                    name: "bash".into(),
+                    detail: "ls".into()
+                },
+                AgentEvent::Text("Done".into()),
+                AgentEvent::Notice("bad key".into()),
             ]
         );
     }

@@ -97,12 +97,13 @@ async fn settings_page(State(app): State<AppState>) -> Html<String> {
     let notice = app.take_notice();
     let settings = app.settings();
     let cli_dir = settings.cli_dir.as_deref();
-    let (claude, codex, antigravity, vibe, freebuff) = tokio::join!(
+    let (claude, codex, antigravity, vibe, freebuff, kilo) = tokio::join!(
         login::status(Cli::Claude, cli_dir),
         login::status(Cli::Codex, cli_dir),
         login::status(Cli::Antigravity, cli_dir),
         login::status(Cli::Vibe, cli_dir),
         login::status(Cli::Freebuff, cli_dir),
+        login::status(Cli::Kilo, cli_dir),
     );
     let status = |cli| match cli {
         Cli::Claude => claude,
@@ -110,6 +111,7 @@ async fn settings_page(State(app): State<AppState>) -> Html<String> {
         Cli::Antigravity => antigravity,
         Cli::Vibe => vibe,
         Cli::Freebuff => freebuff,
+        Cli::Kilo => kilo,
     };
     Html(pages::settings(&app, &settings, status, notice).into_string())
 }
