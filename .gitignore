@@ -31,3 +31,11 @@
 /work/**
 !/work/**/
 !/work/**/.gitkeep
+
+# Accepted suggestions for a project's agents: runtime state written by the
+# dashboard. The full version history lives in work/suggestions/ (also ignored).
+/spec/*/AGENT-NOTES.md
+
+# Scratch repos the suggestion runs create (a nested .git, so git would list
+# the directory as untracked despite the /work/** rule above).
+/work/suggestions/.run/
