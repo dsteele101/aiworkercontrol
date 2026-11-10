@@ -160,6 +160,7 @@ async fn static_file(Path(name): Path<String>) -> Response {
         "deepseek.png" => (include_bytes!("../assets/providers/deepseek.png"), PNG),
         "mistral.svg" => (include_bytes!("../assets/providers/mistral.svg"), SVG),
         "freebuff.png" => (include_bytes!("../assets/providers/freebuff.png"), PNG),
+        "kilo.png" => (include_bytes!("../assets/providers/kilo.png"), PNG),
         "openrouter.png" => (include_bytes!("../assets/providers/openrouter.png"), PNG),
         _ => return (StatusCode::NOT_FOUND, "no such file").into_response(),
     };

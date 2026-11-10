@@ -1422,7 +1422,7 @@ pub(crate) fn settings(
                                                 placeholder=(if p.api_key.is_empty() { "not set" } else { "saved — leave blank to keep" });
                                         }
                                         // `vibe` takes its model from its own config; Freebuff picks its own.
-                                        @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff | Cli::Kilo) {
+                                        @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff) {
                                             div {
                                                 label.f { "Model" }
                                                 input type="text" name="model" value=(p.model) placeholder="CLI default";
@@ -1440,7 +1440,7 @@ pub(crate) fn settings(
                                                 }
                                             }
                                         }
-                                        @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff | Cli::Kilo) {
+                                        @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff) {
                                             div style="grid-column:1/-1" {
                                                 label.f { "Other models" }
                                                 textarea name="alternatives" rows="3"
@@ -1783,6 +1783,7 @@ fn provider_mark(provider: Provider) -> Markup {
         Provider::Cloudflare => ("#f38020", Some(("cloudflare.svg", false))),
         Provider::OpenRouter => ("#000000", Some(("openrouter.png", true))),
         Provider::Freebuff => ("#000000", Some(("freebuff.png", true))),
+        Provider::Kilo => ("#ffdd00", Some(("kilo.png", true))),
         Provider::Deepseek => ("#ffffff", Some(("deepseek.png", true))),
         Provider::Mistral => ("#ffffff", Some(("mistral.svg", true))),
         _ => ("#5d6580", None),
