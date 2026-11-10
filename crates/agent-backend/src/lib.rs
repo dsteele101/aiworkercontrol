@@ -15,6 +15,7 @@
 //! | Gemini | `agy` (Antigravity) | yes | `GEMINI_API_KEY` |
 //! | Mistral | `vibe` | yes | `MISTRAL_API_KEY` |
 //! | Freebuff | `freebuff` (driven through a pty; the Codebuff SDK with a key) | yes | `CODEBUFF_API_KEY` |
+//! | Kilo | `kilo` | yes | `KILO_API_KEY` |
 //! | Cloudflare | `codex` | no | Workers AI endpoint (Responses API) |
 //!
 //! This crate only describes processes ([`Invocation`]) and parses their

@@ -1422,7 +1422,7 @@ pub(crate) fn settings(
                                                 placeholder=(if p.api_key.is_empty() { "not set" } else { "saved — leave blank to keep" });
                                         }
                                         // `vibe` takes its model from its own config; Freebuff picks its own.
-                                        @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff) {
+                                        @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff | Cli::Kilo) {
                                             div {
                                                 label.f { "Model" }
                                                 input type="text" name="model" value=(p.model) placeholder="CLI default";
@@ -1440,7 +1440,7 @@ pub(crate) fn settings(
                                                 }
                                             }
                                         }
-                                        @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff) {
+                                        @if !matches!(p.provider.cli(), Cli::Vibe | Cli::Freebuff | Cli::Kilo) {
                                             div style="grid-column:1/-1" {
                                                 label.f { "Other models" }
                                                 textarea name="alternatives" rows="3"
@@ -2029,6 +2029,7 @@ pub(crate) fn provider_value(provider: Provider) -> &'static str {
         Provider::Mistral => "mistral",
         Provider::Cloudflare => "cloudflare",
         Provider::Freebuff => "freebuff",
+        Provider::Kilo => "kilo",
     }
 }
 

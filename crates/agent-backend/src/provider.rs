@@ -50,11 +50,13 @@ pub enum Provider {
     Cloudflare,
     /// Freebuff, the free tier of Codebuff.
     Freebuff,
+    /// Kilo, through its `kilo` CLI.
+    Kilo,
 }
 
 impl Provider {
     /// Every provider, in display order.
-    pub const ALL: [Provider; 9] = [
+    pub const ALL: [Provider; 10] = [
         Provider::Anthropic,
         Provider::Gemini,
         Provider::OpenAi,
@@ -64,6 +66,7 @@ impl Provider {
         Provider::Mistral,
         Provider::Cloudflare,
         Provider::Freebuff,
+        Provider::Kilo,
     ];
 
     /// A human-readable name.
@@ -78,6 +81,7 @@ impl Provider {
             Provider::Mistral => "Mistral (Vibe)",
             Provider::Cloudflare => "Cloudflare Workers AI",
             Provider::Freebuff => "Freebuff",
+            Provider::Kilo => "Kilo",
         }
     }
 
@@ -89,6 +93,7 @@ impl Provider {
             Provider::Gemini => Cli::Antigravity,
             Provider::Mistral => Cli::Vibe,
             Provider::Freebuff => Cli::Freebuff,
+            Provider::Kilo => Cli::Kilo,
         }
     }
 
@@ -107,6 +112,7 @@ impl Provider {
                 | Provider::Gemini
                 | Provider::Mistral
                 | Provider::Freebuff
+                | Provider::Kilo
         )
     }
 }
@@ -126,6 +132,8 @@ pub enum Cli {
     /// Freebuff, `freebuff`. Interactive only, so it is run through a driver:
     /// a pseudo-terminal on the plan login, the Codebuff SDK with an API key.
     Freebuff,
+    /// Kilo, `kilo`.
+    Kilo,
 }
 
 impl Cli {
@@ -137,6 +145,7 @@ impl Cli {
             Cli::Antigravity => "agy",
             Cli::Vibe => "vibe",
             Cli::Freebuff => "freebuff",
+            Cli::Kilo => "kilo",
         }
     }
 
@@ -154,7 +163,7 @@ impl Cli {
             // From `agy --help` (1.4.2); its docs list only low to high.
             Cli::Antigravity => &["low", "medium", "high", "xhigh", "max"],
             // `vibe` has no effort setting.
-            Cli::Vibe | Cli::Freebuff => &[],
+            Cli::Vibe | Cli::Freebuff | Cli::Kilo => &[],
         }
     }
 
@@ -167,6 +176,7 @@ impl Cli {
             Cli::Antigravity => &["GEMINI_API_KEY", "GOOGLE_API_KEY"],
             Cli::Vibe => &["MISTRAL_API_KEY"],
             Cli::Freebuff => &["CODEBUFF_API_KEY"],
+            Cli::Kilo => &["KILO_API_KEY"],
         }
     }
 }
@@ -388,7 +398,7 @@ impl ProviderConfig {
             effort: self.effort.clone(),
             description: None,
         };
-        if matches!(self.provider.cli(), Cli::Vibe | Cli::Freebuff) {
+        if matches!(self.provider.cli(), Cli::Vibe | Cli::Freebuff | Cli::Kilo) {
             return vec![default];
         }
         std::iter::once(default)
@@ -459,6 +469,7 @@ impl ProviderConfig {
             Cli::Antigravity => self.antigravity(&mut run, job),
             Cli::Vibe => self.vibe(&mut run, job),
             Cli::Freebuff => self.freebuff(&mut run, job),
+            Cli::Kilo => self.kilo(&mut run, job),
         }
         // The caller removes these after setting `env`, which would undo any
         // that the provider set itself, such as Deepseek's auth token.
@@ -634,6 +645,22 @@ impl ProviderConfig {
     }
 }
 
+impl ProviderConfig {
+    /// `kilo run` works in its current directory, the worktree. `--auto`
+    /// approves what its settings allow; without it a headless run rejects
+    /// every permission request and fails.
+    fn kilo(&self, run: &mut Invocation, job: &Job<'_>) {
+        run.arg("run").arg("--auto").arg("--format").arg("json");
+        if let Some(model) = non_empty(&self.model) {
+            run.arg("--model").arg(model);
+        }
+        run.arg(job.prompt);
+        if let Some(key) = self.key() {
+            run.set_env("KILO_API_KEY", key);
+        }
+    }
+}
+
 /// The arguments, for `/usr/bin/env`, that run the pty driver in `cwd`: for a
 /// task, or with `report` to read the free allowance from `/model`.
 pub(crate) fn freebuff_driver_args(cwd: &str, report: bool) -> Vec<String> {
@@ -671,6 +698,28 @@ mod tests {
             extra_dirs: &[],
             writable_dirs: &[],
         }
+    }
+
+    #[test]
+    fn kilo_runs_headless_with_key_and_model() {
+        let mut config = ProviderConfig::new(Provider::Kilo, Auth::ApiKey { key: "k".into() });
+        config.model = Some("anthropic/claude-sonnet-4.5".into());
+        let run = config.invocation(&job()).unwrap();
+        assert_eq!(run.program, "kilo");
+        assert_eq!(
+            run.args,
+            [
+                "run",
+                "--auto",
+                "--format",
+                "json",
+                "--model",
+                "anthropic/claude-sonnet-4.5",
+                "do it"
+            ]
+        );
+        assert_eq!(run.env_value("KILO_API_KEY"), Some("k"));
+        assert_eq!(config.options().len(), 1);
     }
 
     #[test]
