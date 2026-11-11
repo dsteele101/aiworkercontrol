@@ -65,6 +65,8 @@ pub struct ActiveJob {
     /// The model running it: the one configured, until the agent reports the
     /// one it actually uses. Empty when the CLI picks its own default.
     pub model: String,
+    /// The effort level it runs at. Empty when the CLI uses its own default.
+    pub effort: String,
     /// When the worker picked it up.
     pub started: SystemTime,
     /// The agent's most recent events, oldest first.

@@ -959,6 +959,7 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                                 div.chips {
                                     span.chip.acc { (job.provider.label()) }
                                     @if !job.model.is_empty() { span.chip { (job.model) } }
+                                    @if !job.effort.is_empty() { span.chip { (job.effort) " effort" } }
                                 }
                                 (now_line(job))
                                 ul.timeline {

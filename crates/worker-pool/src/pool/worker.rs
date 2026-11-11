@@ -181,6 +181,7 @@ impl Shared {
                 item: item.clone(),
                 provider: config.provider.provider,
                 model: config.provider.model.clone().unwrap_or_default(),
+                effort: config.provider.effort.clone().unwrap_or_default(),
                 started: SystemTime::now(),
                 events: VecDeque::new(),
                 last_event: SystemTime::now(),
