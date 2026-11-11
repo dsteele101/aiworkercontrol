@@ -54,12 +54,15 @@ pub(crate) fn build(project: &Project, item: &WorkItem, body: &str) -> Result<St
 
 /// Builds the prompt for reworking `item` in its existing worktree after
 /// its pull request at `pr_url` received `feedback` on its latest commit.
+/// With `reassess`, the agent first steps back and weighs all the feedback
+/// the pull request has had, not just this round's.
 pub(crate) fn build_rework(
     project: &Project,
     item: &WorkItem,
     body: &str,
     pr_url: &str,
     feedback: &str,
+    reassess: bool,
 ) -> Result<String, PoolError> {
     let branch = Project::branch(item);
     let mut prompt = format!(
@@ -74,6 +77,9 @@ pub(crate) fn build_rework(
         feedback = feedback.trim(),
     );
     prompt.push_str(&specs_section(project)?);
+    if reassess {
+        prompt.push_str(&reassess_section(pr_url, &branch));
+    }
     prompt.push_str(&format!(
         "Also follow this repository's own agent instructions and contribution \
          rules (CLAUDE.md, AGENTS.md, GEMINI.md or similar) wherever they apply.\n\n\
@@ -91,6 +97,32 @@ pub(crate) fn build_rework(
          {WAITING}"
     ));
     Ok(prompt)
+}
+
+/// The extra step of a rework that has run for several turns: before acting
+/// on the latest feedback, look at all of it together, because patching each
+/// round on its own is what keeps a pull request open for many rounds.
+fn reassess_section(pr_url: &str, branch: &str) -> String {
+    format!(
+        "This pull request has already been through several rounds of review, so do \
+         not just patch this round's points. First step back and reassess:\n\
+         1. Read every review, review comment and CI result on {pr_url} (for \
+            example with `gh pr view {pr_url} --json reviews,comments` and \
+            `gh api` for the inline comments), and `git log` on `{branch}`.\n\
+         2. Group the requests by theme. Find the findings that came back more \
+            than once, and the places where a fix was applied to one code path \
+            while a sibling path still has the same flaw.\n\
+         3. Decide on the root cause behind each theme, and what the reviewers \
+            actually require: one shared invariant, helper or type that fixes a \
+            whole class at once is better than another per-site patch.\n\
+         4. Choose the action you believe is best and carry it out: fix the root \
+            cause across every affected path, narrow the change by removing or \
+            refusing the parts you cannot make correct, or, where a request is \
+            wrong or out of scope, leave it and explain why. Add a test for each \
+            theme that covers every path, not only the one reviewed.\n\
+         Begin your summary with a short account of the themes you found and the \
+         action you chose, and why.\n\n"
+    )
 }
 
 /// How to wait for long-running commands without hanging the run.
@@ -218,6 +250,7 @@ mod tests {
             "No extra turns.",
             "https://github.com/up/repo/pull/7",
             "### Review by maint (CHANGES_REQUESTED)\n\nRename it.",
+            false,
         )
         .unwrap();
         assert!(prompt.contains("<work-item>\nNo extra turns.\n</work-item>"));
@@ -225,6 +258,21 @@ mod tests {
         assert!(prompt.contains("<review-feedback>\n### Review by maint"));
         assert!(prompt.contains("SPEC.md"));
         assert!(prompt.contains("do not rewrite or squash the existing ones"));
+        assert!(!prompt.contains("step back and reassess"));
+    }
+
+    #[test]
+    fn reassessing_rework_prompt_asks_for_the_whole_history() {
+        let spec = tempfile::tempdir().unwrap();
+        std::fs::write(spec.path().join("SPEC.md"), "").unwrap();
+        let project = Project::new("phase", spec.path(), "/dev/phase");
+        let item = WorkItem::new("phase", "timesifter.txt");
+        let pr = "https://github.com/up/repo/pull/7";
+        let prompt = build_rework(&project, &item, "x", pr, "Rename it.", true).unwrap();
+        assert!(prompt.contains("step back and reassess"));
+        assert!(prompt.contains(&format!("gh pr view {pr}")));
+        assert!(prompt.contains("<review-feedback>\nRename it.\n</review-feedback>"));
+        assert!(prompt.contains("Begin your summary"));
     }
 
     #[test]

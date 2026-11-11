@@ -55,6 +55,10 @@ pub struct PoolConfig {
     pub cli_dir: Option<PathBuf>,
     /// Agent runs an item may use before it goes to `hold`; at least 1.
     pub max_turns: u32,
+    /// Once an item has used this many turns, each further rework first
+    /// reassesses all the feedback so far rather than only the latest;
+    /// 0 turns it off.
+    pub reassess_after_turns: u32,
     /// When plan usage warns and stops runs.
     pub limits: UsageLimits,
     /// Further providers, in order: fallbacks under [`crate::Scheme::Priority`]

@@ -58,6 +58,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/notes", get(notes_page))
         .route("/notes/revert", post(revert_notes))
         .route("/settings/max-turns", post(set_max_turns))
+        .route("/settings/reassess-after", post(set_reassess_after))
         .route("/settings/suggestion-retention", post(set_retention))
         .route("/settings/review-comments", post(set_review_comments))
         .route("/settings/ci-logs", post(set_ci_logs))
@@ -586,6 +587,28 @@ async fn set_max_turns(State(app): State<AppState>, Form(f): Form<MaxTurnsForm>)
             Ok(())
         }),
     );
+    Redirect::to("/settings")
+}
+
+#[derive(Deserialize)]
+struct ReassessForm {
+    reassess_after: u32,
+}
+
+async fn set_reassess_after(State(app): State<AppState>, Form(f): Form<ReassessForm>) -> Redirect {
+    let turns = f.reassess_after.min(MAX_TURNS);
+    let saved = app.update_settings(|s| {
+        s.reassess_after_turns = turns;
+        Ok(())
+    });
+    if saved.is_ok() {
+        app.notify(if turns == 0 {
+            "Reworks no longer reassess all the feedback.".to_string()
+        } else {
+            format!("Reworks after {turns} turns now reassess all the feedback first.")
+        });
+    }
+    report(&app, saved);
     Redirect::to("/settings")
 }
 

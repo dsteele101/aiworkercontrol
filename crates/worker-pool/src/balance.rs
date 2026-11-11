@@ -295,6 +295,7 @@ mod tests {
             projects: Vec::new(),
             cli_dir: None,
             max_turns: 1,
+            reassess_after_turns: 0,
             limits: UsageLimits::default(),
             fallbacks: providers[1..].iter().map(|p| config(*p)).collect(),
             balancing: Balancing {

@@ -726,6 +726,22 @@ async fn max_turns_is_saved_and_clamped() {
 }
 
 #[tokio::test]
+async fn reassess_after_turns_is_saved_and_clamped() {
+    let app = app();
+    assert_eq!(app.saved().reassess_after_turns, 0);
+    app.post("/settings/reassess-after", "reassess_after=4")
+        .await;
+    assert_eq!(app.saved().reassess_after_turns, 4);
+    assert_eq!(app.state.pool().config().reassess_after_turns, 4);
+    app.post("/settings/reassess-after", "reassess_after=999")
+        .await;
+    assert_eq!(app.saved().reassess_after_turns, 50);
+    app.post("/settings/reassess-after", "reassess_after=0")
+        .await;
+    assert_eq!(app.saved().reassess_after_turns, 0);
+}
+
+#[tokio::test]
 async fn in_review_items_show_their_pull_request_and_status() {
     let app = app();
     let review = app.dir.path().join("work/inreview/demo");

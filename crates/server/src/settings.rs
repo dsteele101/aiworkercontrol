@@ -33,6 +33,10 @@ pub struct Settings {
     /// Agent runs an item may use before it goes on hold.
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
+    /// Turns an item uses before each further rework reassesses all the
+    /// feedback so far; 0 is off.
+    #[serde(default)]
+    pub reassess_after_turns: u32,
     /// When plan usage warns, stops runs, and fails over.
     #[serde(default)]
     pub limits: UsageLimits,
@@ -219,6 +223,7 @@ impl Default for Settings {
             projects: Vec::new(),
             cli_dir: None,
             max_turns: DEFAULT_MAX_TURNS,
+            reassess_after_turns: 0,
             limits: UsageLimits::default(),
             fallbacks: Vec::new(),
             balancing: Balancing::default(),
@@ -346,6 +351,7 @@ impl Settings {
             projects,
             cli_dir: self.cli_dir.clone(),
             max_turns: self.max_turns.max(1),
+            reassess_after_turns: self.reassess_after_turns,
             limits: self.limits.clone(),
             fallbacks,
             balancing: self.balancing.clone(),

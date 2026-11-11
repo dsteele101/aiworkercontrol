@@ -27,6 +27,9 @@ pub(super) enum Kind {
         pushed_head: String,
         /// What reviewers or CI asked for.
         feedback: String,
+        /// Whether the item has used enough turns that the agent should step
+        /// back and reassess all the feedback so far before acting.
+        reassess: bool,
         /// The pull request's branch on the push remote, if it is not the
         /// item's own: then the rework starts from it and adds to it.
         remote_branch: Option<String>,
@@ -82,6 +85,7 @@ impl Shared {
                 pr_url,
                 pushed_head,
                 feedback,
+                reassess,
                 remote_branch,
             } => {
                 let fresh = git::ensure_worktree(&project.repo, &worktree, &branch).await?;
@@ -89,7 +93,8 @@ impl Shared {
                     let source = git::push_url(&project.repo, &pr.push_remote).await?;
                     git::fast_forward(&worktree, &source, remote_branch).await?;
                 }
-                let prompt = prompt::build_rework(project, item, &body, pr_url, feedback)?;
+                let prompt =
+                    prompt::build_rework(project, item, &body, pr_url, feedback, *reassess)?;
                 (prompt, fresh, pushed_head.clone())
             }
         };
