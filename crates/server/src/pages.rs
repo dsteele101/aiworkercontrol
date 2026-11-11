@@ -1321,6 +1321,19 @@ pub(crate) fn settings(
                         }
                         button { "Save" }
                     }
+                    form.srow method="post" action="/settings/reassess-after" {
+                        div.sfield {
+                            label.f for="reassess_after" { "Reassess feedback after turns" }
+                            input #reassess_after type="number" name="reassess_after" min="0" max=(MAX_TURNS) value=(settings.reassess_after_turns);
+                            p.hint {
+                                "Once an item has used this many turns, each further rework first reads all the "
+                                "feedback on its pull request, finds the recurring themes and their root cause, "
+                                "and takes the action it judges best, instead of patching only the latest round. "
+                                "0 turns this off."
+                            }
+                        }
+                        button { "Save" }
+                    }
                     form.srow method="post" action="/settings/suggestion-retention" {
                         div.sfield {
                             label.f for="days" { "Days to keep rejected suggestions" }

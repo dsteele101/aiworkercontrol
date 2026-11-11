@@ -106,10 +106,13 @@ impl Shared {
                 None => general.clone(),
             };
             if self.queue.take(&item, ItemState::InReview)? {
+                let reassess =
+                    config.reassess_after_turns > 0 && meta.turns >= config.reassess_after_turns;
                 let kind = Kind::Rework {
                     pr_url,
                     pushed_head,
                     feedback,
+                    reassess,
                     remote_branch: meta.remote_branch,
                 };
                 return Ok(Some(self.claimed(item, project, &config, kind, pick)));

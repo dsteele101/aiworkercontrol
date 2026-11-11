@@ -213,6 +213,7 @@ fn fixture(items: &[(&str, &str)], workers: usize) -> Fixture {
         projects: vec![Project::new("demo", &spec, &repo)],
         cli_dir: Some(bin),
         max_turns: 1,
+        reassess_after_turns: 0,
         limits: UsageLimits::default(),
         fallbacks: Vec::new(),
         balancing: Balancing::default(),
@@ -1299,6 +1300,39 @@ async fn one_item_can_be_checked_on_demand() {
         pool.check_review(&other).await,
         Err(PoolError::NotInReview(_))
     ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rework_after_enough_turns_reassesses_all_the_feedback() {
+    let mut fx = fixture(&[("good.txt", "Fix it")], 1);
+    fx.config.reassess_after_turns = 1;
+    with_pull_requests(&mut fx);
+    let (pool, item, head) = reviewed_item(&fx).await;
+    let bin = fx.root.join("bin");
+    fs::write(
+        bin.join("gh.view.json"),
+        format!(
+            r#"{{"state":"OPEN","headRefOid":"{head}","reviews":[
+                {{"state":"CHANGES_REQUESTED","author":{{"login":"maint"}},"body":"Please rename it.","commit":{{"oid":"{head}"}}}}]}}"#
+        ),
+    )
+    .unwrap();
+    fs::write(bin.join("gh.comments.json"), "[]").unwrap();
+
+    pool.check_reviews().await.unwrap();
+    pool.start();
+    let queue = pool.queue().clone();
+    wait_for(&pool, |s| {
+        idle(s)
+            && queue.list(State::InReview).unwrap().len() == 1
+            && pool.meta(State::InReview, &item).unwrap().turns == 2
+    })
+    .await;
+    pool.stop();
+
+    let prompt = fs::read_to_string(bin.join("rework-prompt.txt")).unwrap();
+    assert!(prompt.contains("step back and reassess"), "{prompt}");
+    assert!(prompt.contains("Please rename it."), "{prompt}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
