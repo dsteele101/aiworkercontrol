@@ -162,8 +162,11 @@ impl Cli {
             Cli::Codex => &["minimal", "low", "medium", "high", "xhigh"],
             // From `agy --help` (1.4.2); its docs list only low to high.
             Cli::Antigravity => &["low", "medium", "high", "xhigh", "max"],
+            // Kilo's `--variant`; which names a model accepts varies, so this
+            // is the superset and the CLI has the final say.
+            Cli::Kilo => &["minimal", "low", "medium", "high", "xhigh", "max"],
             // `vibe` has no effort setting.
-            Cli::Vibe | Cli::Freebuff | Cli::Kilo => &[],
+            Cli::Vibe | Cli::Freebuff => &[],
         }
     }
 
@@ -654,6 +657,9 @@ impl ProviderConfig {
         if let Some(model) = non_empty(&self.model) {
             run.arg("--model").arg(model);
         }
+        if let Some(effort) = non_empty(&self.effort) {
+            run.arg("--variant").arg(effort);
+        }
         run.arg(job.prompt);
         if let Some(key) = self.key() {
             run.set_env("KILO_API_KEY", key);
@@ -698,6 +704,26 @@ mod tests {
             extra_dirs: &[],
             writable_dirs: &[],
         }
+    }
+
+    #[test]
+    fn kilo_passes_effort_as_variant() {
+        let mut config = ProviderConfig::new(Provider::Kilo, Auth::ApiKey { key: "k".into() });
+        config.effort = Some("high".into());
+        config.validate().unwrap();
+        let run = config.invocation(&job()).unwrap();
+        assert_eq!(
+            run.args,
+            [
+                "run",
+                "--auto",
+                "--format",
+                "json",
+                "--variant",
+                "high",
+                "do it"
+            ]
+        );
     }
 
     #[test]
