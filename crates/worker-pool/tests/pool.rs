@@ -1270,6 +1270,7 @@ async fn requested_changes_are_reworked_in_the_same_worktree() {
     );
     assert_eq!(rework.feedback, vec!["review", "comments"]);
     assert_eq!(rework.turn, 2);
+    assert!(!rework.reassessed && rework.reassessment.is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1333,6 +1334,15 @@ async fn a_rework_after_enough_turns_reassesses_all_the_feedback() {
     let prompt = fs::read_to_string(bin.join("rework-prompt.txt")).unwrap();
     assert!(prompt.contains("step back and reassess"), "{prompt}");
     assert!(prompt.contains("Please rename it."), "{prompt}");
+
+    // The agent's account of the reassessment is kept in the history.
+    let [summary] = pool.history().unwrap().try_into().unwrap();
+    let [first, rework] = &summary.records[..] else {
+        panic!("expected two turns");
+    };
+    assert!(!first.reassessed && first.reassessment.is_none());
+    assert!(rework.reassessed);
+    assert_eq!(rework.reassessment.as_deref(), Some("Addressed the review"));
 }
 
 #[tokio::test(flavor = "multi_thread")]

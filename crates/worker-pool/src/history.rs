@@ -23,6 +23,9 @@ use crate::PoolError;
 /// The file's name, in the queue's root.
 const HISTORY_FILE: &str = "history.jsonl";
 
+/// The most characters of an agent's reassessment kept in the ledger.
+pub const REASSESSMENT_LIMIT: usize = 8000;
+
 /// Why an agent was run on an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -65,6 +68,15 @@ pub struct TurnRecord {
     /// `comments`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub feedback: Vec<String>,
+    /// Whether the rework was asked to reassess all the pull request's
+    /// feedback first, as set by the reassess-after-turns setting.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reassessed: bool,
+    /// The agent's account of that reassessment: its summary, which a
+    /// reassessing rework opens with the themes it found and the action it
+    /// chose. Cut to [`REASSESSMENT_LIMIT`] characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reassessment: Option<String>,
     /// The provider that ran it.
     pub provider: Provider,
     /// Whether the provider was a fallback rather than the active one.

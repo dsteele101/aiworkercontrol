@@ -324,6 +324,8 @@ mod tests {
             turn: 1,
             reason,
             feedback: Vec::new(),
+            reassessed: false,
+            reassessment: None,
             provider: Provider::Anthropic,
             fallback: false,
             model_requested: None,
