@@ -12,6 +12,7 @@ use work_queue::{State as ItemState, WorkItem};
 use super::trace::Trace;
 use super::worker::PR_LINE;
 use super::{PoolConfig, Shared, unix_now};
+use crate::history::REASSESSMENT_LIMIT;
 use crate::{PoolError, Project, PullRequests, agent, git, github, prompt};
 
 /// Which kind of run an item gets.
@@ -52,6 +53,14 @@ pub(super) enum Finish {
     },
     /// Committed but not published: needs a person.
     Hold { report: String, reason: String },
+}
+
+/// `text` cut to at most `limit` characters, marked when anything was left out.
+fn cut(text: &str, limit: usize) -> String {
+    match text.char_indices().nth(limit) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text.to_string(),
+    }
 }
 
 /// Whether the run may end without adding a commit. A rework may: the
@@ -122,6 +131,13 @@ impl Shared {
                     .unwrap_or_else(|| outcome.stderr_tail.clone())
             };
             return Err(PoolError::AgentFailed(reason));
+        }
+        // A reassessing rework's summary opens with its account of the
+        // feedback; keep it in the history, whatever the turn does next.
+        if matches!(kind, Kind::Rework { reassess: true, .. })
+            && let Some(summary) = outcome.summary().map(str::trim).filter(|s| !s.is_empty())
+        {
+            lock(trace).reassessment = Some(cut(summary, REASSESSMENT_LIMIT));
         }
         // A run must add commits: to the base on a first attempt, to the
         // pushed head on a rework. The exception is a rework whose agent
@@ -370,4 +386,17 @@ impl Shared {
 fn lock(trace: &Mutex<Trace>) -> std::sync::MutexGuard<'_, Trace> {
     // A trace is only ever added to, so a panic elsewhere leaves it usable.
     trace.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cut;
+
+    #[test]
+    fn cut_marks_what_it_leaves_out_and_keeps_whole_characters() {
+        assert_eq!(cut("short", 10), "short");
+        assert_eq!(cut("exactly5", 8), "exactly5");
+        assert_eq!(cut("abcdef", 3), "abc…");
+        assert_eq!(cut("日本語です", 2), "日本…");
+    }
 }

@@ -203,6 +203,8 @@ fn plan(item: &WorkItem, facts: &Facts, known: &[&Entry]) -> Vec<Entry> {
                 TurnReason::Retry
             },
             feedback: Vec::new(),
+            reassessed: false,
+            reassessment: None,
             provider,
             fallback: false,
             model_requested: None,

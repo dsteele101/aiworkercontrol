@@ -511,6 +511,7 @@ fn turn_record(
         Kind::New if facts.retry => (TurnReason::Retry, Vec::new()),
         Kind::New => (TurnReason::First, Vec::new()),
     };
+    let reassessed = matches!(kind, Kind::Rework { reassess: true, .. });
     let non_empty = |s: &Option<String>| s.as_deref().filter(|s| !s.is_empty()).map(str::to_string);
     let (failure, error) = match facts.failure {
         Some((kind, reason)) => (Some(kind.to_string()), Some(reason)),
@@ -526,6 +527,8 @@ fn turn_record(
         turn: facts.turn,
         reason,
         feedback,
+        reassessed,
+        reassessment: trace.reassessment,
         provider: config.provider.provider,
         fallback: facts.fallback,
         model_requested: non_empty(&config.provider.model),

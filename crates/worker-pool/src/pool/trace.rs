@@ -17,6 +17,8 @@ pub(super) struct Trace {
     pub agent_ms: u64,
     pub commits: u32,
     pub diff: Option<DiffStat>,
+    /// The agent's summary of a rework that reassessed the feedback.
+    pub reassessment: Option<String>,
 }
 
 impl Trace {
