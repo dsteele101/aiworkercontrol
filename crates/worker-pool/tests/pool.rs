@@ -804,6 +804,26 @@ async fn items_of_unknown_projects_stay_open() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn paused_intake_leaves_open_items_until_resumed() {
+    let fx = fixture(&[("good.txt", "Fix the thing")], 1);
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    pool.set_intake(false);
+    pool.start();
+    let snapshot = wait_for(&pool, |s| s.workers.len() == 1).await;
+    assert!(!snapshot.intake);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(queue.list(State::Open).unwrap().len(), 1);
+
+    pool.set_intake(true);
+    wait_for(&pool, |s| {
+        queue.list(State::Closed).unwrap().len() == 1 && idle(s)
+    })
+    .await;
+    pool.stop();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn new_recovers_orphaned_items() {
     let fx = fixture(&[], 1);
     let orphan = fx.root.join("work/inprogress/demo/o.txt");
@@ -1185,6 +1205,10 @@ async fn requested_changes_are_reworked_in_the_same_worktree() {
         changes,
         vec![(item.clone(), ReviewChange::ChangesRequested)]
     );
+    // Paused intake still reworks items in review, but leaves new ones open.
+    let fresh = fx.root.join("work/open/demo/fresh.txt");
+    fs::write(&fresh, "Something new").unwrap();
+    pool.set_intake(false);
     pool.start();
     let queue = pool.queue().clone();
     wait_for(&pool, |s| {
@@ -1194,6 +1218,7 @@ async fn requested_changes_are_reworked_in_the_same_worktree() {
     })
     .await;
     pool.stop();
+    assert!(fresh.is_file());
 
     let prompt = fs::read_to_string(bin.join("rework-prompt.txt")).unwrap();
     assert!(

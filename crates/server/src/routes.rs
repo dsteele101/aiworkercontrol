@@ -40,6 +40,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/result", get(result))
         .route("/start", post(start))
         .route("/stop", post(stop))
+        .route("/intake", post(intake))
         .route("/workers", post(set_workers))
         .route("/resume", post(resume))
         .route("/close", post(close))
@@ -215,6 +216,19 @@ async fn start(State(app): State<AppState>) -> Redirect {
 async fn stop(State(app): State<AppState>) -> Redirect {
     app.pool().stop();
     app.notify("Stopping: workers finish their current item, then stop.");
+    Redirect::to("/")
+}
+
+#[derive(Deserialize)]
+struct IntakeForm {
+    on: bool,
+}
+
+async fn intake(State(app): State<AppState>, Form(f): Form<IntakeForm>) -> Redirect {
+    app.pool().set_intake(f.on);
+    if !f.on {
+        app.notify("New work paused: workers only rework items in review.");
+    }
     Redirect::to("/")
 }
 

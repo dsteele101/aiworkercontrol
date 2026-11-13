@@ -75,7 +75,7 @@ impl Shared {
     }
 
     /// Claims the next item to run: first an in-review item whose feedback
-    /// waits for a worker, then an open item.
+    /// waits for a worker, then, while intake is on, an open item.
     fn claim(&self) -> Result<Option<Claim>, PoolError> {
         let config = self.config.borrow().clone();
         let Some(general) = self.pick(&config, None) else {
@@ -117,6 +117,9 @@ impl Shared {
                 };
                 return Ok(Some(self.claimed(item, project, &config, kind, pick)));
             }
+        }
+        if !*self.intake.borrow() {
+            return Ok(None);
         }
         let item = self
             .queue

@@ -899,6 +899,9 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                 } @else {
                     span.pill.idle { "Stopped" }
                 }
+                @if !snapshot.intake {
+                    span.pill.warn { "New work paused" }
+                }
                 div { strong { (settings.active.label()) } " " span.muted { "(" (auth) ")" } }
                 div.bar {
                     span.muted { "Workers" }
@@ -915,6 +918,14 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                     }
                 }
                 span.spacer {}
+                form.inline method="post" action="/intake" {
+                    input type="hidden" name="on" value=(!snapshot.intake);
+                    @if snapshot.intake {
+                        button title="Stop taking items from open; keep reworking items in review" { "Pause new work" }
+                    } @else {
+                        button { "Resume new work" }
+                    }
+                }
                 @if snapshot.running {
                     form.inline method="post" action="/stop" { button { "Stop" } }
                 } @else {
@@ -947,6 +958,8 @@ pub(crate) fn dashboard(app: &AppState, notice: Option<String>) -> Markup {
                                     p.muted { "Stopping." }
                                 } @else if snapshot.limited.is_some() {
                                     p.bad { "Waiting: plan usage reached the stop level." }
+                                } @else if !snapshot.intake {
+                                    p.muted { "Waiting for review feedback; new work is paused." }
                                 } @else {
                                     p.muted { "Waiting for open work." }
                                 }
