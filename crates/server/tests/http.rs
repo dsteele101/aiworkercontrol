@@ -162,6 +162,23 @@ async fn dashboard_shows_recorded_plan_usage() {
 }
 
 #[tokio::test]
+async fn new_work_can_be_paused_and_resumed() {
+    let app = app();
+    let (_, body) = app.get("/").await;
+    assert!(body.contains("Pause new work"), "{body}");
+    assert!(!body.contains("New work paused"));
+
+    assert_eq!(app.post("/intake", "on=false").await, StatusCode::SEE_OTHER);
+    assert!(!app.state.pool().snapshot().intake);
+    let (_, body) = app.get("/").await;
+    assert!(body.contains("New work paused"), "{body}");
+    assert!(body.contains("Resume new work"));
+
+    assert_eq!(app.post("/intake", "on=true").await, StatusCode::SEE_OTHER);
+    assert!(app.state.pool().snapshot().intake);
+}
+
+#[tokio::test]
 async fn stop_level_offers_an_override() {
     let app = app();
     fs::write(

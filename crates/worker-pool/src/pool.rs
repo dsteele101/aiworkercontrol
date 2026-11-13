@@ -94,6 +94,9 @@ struct Shared {
     queue: Queue,
     config: watch::Sender<PoolConfig>,
     running: watch::Sender<bool>,
+    /// Whether workers take new items from `open`; when off they only
+    /// rework items already in review.
+    intake: watch::Sender<bool>,
     version: watch::Sender<u64>,
     state: Mutex<State>,
     wake: Notify,
@@ -129,6 +132,7 @@ impl Supervisor {
                 queue,
                 config: watch::Sender::new(config),
                 running: watch::Sender::new(false),
+                intake: watch::Sender::new(true),
                 version: watch::Sender::new(0),
                 state: Mutex::new(state),
                 wake: Notify::new(),
@@ -149,6 +153,13 @@ impl Supervisor {
     /// Stops taking new items. Workers finish the item they are on.
     pub fn stop(&self) {
         self.shared.running.send_replace(false);
+        self.shared.changed();
+    }
+
+    /// Turns taking new items from `open` on or off. While off, workers
+    /// still rework items in review, so existing work can catch up.
+    pub fn set_intake(&self, on: bool) {
+        self.shared.intake.send_replace(on);
         self.shared.changed();
     }
 
@@ -241,10 +252,12 @@ impl Supervisor {
     /// A view of the pool as it is now.
     pub fn snapshot(&self) -> PoolSnapshot {
         let running = *self.shared.running.borrow();
+        let intake = *self.shared.intake.borrow();
         let target_workers = self.shared.config.borrow().workers;
         let state = self.shared.lock();
         PoolSnapshot {
             running,
+            intake,
             target_workers,
             workers: state
                 .workers

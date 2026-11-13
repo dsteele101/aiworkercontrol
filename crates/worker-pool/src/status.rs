@@ -16,6 +16,9 @@ pub(crate) const EVENT_TAIL: usize = 50;
 pub struct PoolSnapshot {
     /// Whether workers are taking new items.
     pub running: bool,
+    /// Whether workers take new items from `open`, rather than only
+    /// reworking items in review.
+    pub intake: bool,
     /// The configured number of workers.
     pub target_workers: usize,
     /// The workers that currently exist, by id. While shrinking there can be
