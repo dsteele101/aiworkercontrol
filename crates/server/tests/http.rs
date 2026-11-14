@@ -924,6 +924,26 @@ async fn suggestions_are_shown_and_accepted_into_the_notes_file() {
 }
 
 #[tokio::test]
+async fn compacting_needs_notes_and_offers_the_button_once_there_is_history() {
+    let app = app_with_suggestion();
+    let (_, page) = app.get("/suggestions").await;
+    assert!(!page.contains("Compact notes"), "{page}");
+
+    app.post("/suggestions/accept", "project=demo&id=1").await;
+    let (_, page) = app.get("/suggestions").await;
+    assert!(page.contains("Compact notes"), "{page}");
+
+    // The test has no agent to run, so only the refusal can be seen.
+    app.post("/notes/revert", "project=demo&version=1").await;
+    assert_eq!(
+        app.post("/notes/compact", "project=demo").await,
+        StatusCode::SEE_OTHER
+    );
+    let (_, page) = app.get("/suggestions").await;
+    assert!(page.contains("the notes file is empty"), "{page}");
+}
+
+#[tokio::test]
 async fn rejected_suggestions_are_listed_and_can_be_restored() {
     let app = app_with_suggestion();
     app.post("/suggestions/reject", "project=demo&id=1").await;

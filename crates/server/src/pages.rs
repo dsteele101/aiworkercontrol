@@ -1054,6 +1054,18 @@ fn suggestions_panel(projects: &[ProjectSuggestions], retention_days: u32) -> Ma
                         }
                     }
                 }
+                @if project.versions > 0 {
+                    @if project.compacting {
+                        p.muted { "An agent is compacting the notes…" }
+                    } @else {
+                        form.inline method="post" action="/notes/compact" {
+                            input type="hidden" name="project" value=(project.project);
+                            button title="Have an agent merge overlapping entries and tighten the notes file. The current file is kept in the notes history, so you can revert to it." {
+                                "Compact notes"
+                            }
+                        }
+                    }
+                }
             }
             div.grid {
                 @for s in &project.open { (suggestion_card(&project.project, s, false)) }

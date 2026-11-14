@@ -14,8 +14,8 @@ mod worker;
 pub use cleanup::{BranchOutcome, Cleanup};
 pub use review::ReviewChange;
 
-use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -114,6 +114,8 @@ struct State {
     usage: UsageMap,
     picker: Picker,
     limited: Option<String>,
+    /// Projects whose notes an agent is compacting now.
+    compacting: BTreeSet<String>,
 }
 
 impl Supervisor {

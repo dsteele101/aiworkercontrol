@@ -76,12 +76,14 @@ impl Supervisor {
                 (open, rejected, notes.versions.len())
             })?;
             let (open, rejected, versions) = listed;
+            let compacting = self.shared.lock().compacting.contains(&project.name);
             if !open.is_empty() || !rejected.is_empty() || versions > 0 {
                 all.push(ProjectSuggestions {
                     project: project.name,
                     open,
                     rejected,
                     versions,
+                    compacting,
                 });
             }
         }
@@ -198,6 +200,23 @@ impl Supervisor {
         let path = self.notes_path(project)?;
         self.shared
             .with_notes(project, |notes| notes.revert(&path, version, unix_now()))
+    }
+
+    /// Has an agent merge the overlapping entries of `project`'s notes file
+    /// and tighten them, and returns at once. The file as it was stays in the
+    /// notes history, so [`Supervisor::revert_notes`] brings it back. Must be
+    /// called inside a Tokio runtime.
+    pub fn compact_notes(&self, project: &str) -> Result<(), PoolError> {
+        let project = self.named_project(project)?;
+        if read_notes(&project).trim().is_empty() {
+            return Err(PoolError::NotesEmpty);
+        }
+        if !self.shared.lock().compacting.insert(project.name.clone()) {
+            return Err(PoolError::CompactionRunning);
+        }
+        self.shared.changed();
+        tokio::spawn(Arc::clone(&self.shared).compact(project));
+        Ok(())
     }
 
     fn named_project(&self, name: &str) -> Result<Project, PoolError> {
@@ -375,6 +394,45 @@ impl Shared {
             .filter(|s| !s.trim().is_empty()))
     }
 
+    /// Compacts `project`'s notes with an agent and saves the result as a new
+    /// version, then clears the project's busy mark.
+    async fn compact(self: Arc<Self>, project: Project) {
+        let config = self.config.borrow().clone();
+        let result = self.compacted(&project, &config).await;
+        self.lock().compacting.remove(&project.name);
+        if let Err(e) = result {
+            self.suggestion_error(&e);
+        }
+        self.changed();
+    }
+
+    async fn compacted(&self, project: &Project, config: &PoolConfig) -> Result<(), PoolError> {
+        let original = read_notes(project);
+        if original.trim().is_empty() {
+            return Err(PoolError::NotesEmpty);
+        }
+        let prompt = suggestions::compact_prompt(&project.name, &original);
+        let name = format!("{}-compact-notes", project.name);
+        let message = self.ask_message(config, &prompt, &name).await?;
+        let content = unfence(&message);
+        if content.is_empty() || content.len() >= original.trim().len() {
+            return Err(PoolError::BadAnswer(format!(
+                "not a shorter version of the notes: {}",
+                content.chars().take(200).collect::<String>()
+            )));
+        }
+        let path = project.spec_dir.join(NOTES_FILE);
+        self.with_notes(&project.name, |notes| {
+            notes.replace(
+                &path,
+                &original,
+                format!("{content}\n"),
+                "compacted by an agent",
+                unix_now(),
+            )
+        })
+    }
+
     /// Has an agent evaluate suggestion `id` of `project` against the
     /// comments on it, and records its answer.
     async fn evaluate_comment(self: Arc<Self>, project: Project, id: u32) {
@@ -493,6 +551,16 @@ fn apply_answer(suggestion: &mut Suggestion, response: &Response, at: u64) {
     }
 }
 
+/// `message` trimmed, without the code fence an agent may have wrapped around
+/// the whole of it.
+fn unfence(message: &str) -> &str {
+    let text = message.trim();
+    text.strip_prefix("```")
+        .and_then(|rest| rest.split_once('\n'))
+        .and_then(|(_, rest)| rest.strip_suffix("```"))
+        .map_or(text, str::trim)
+}
+
 /// The text of `project`'s notes file; empty if it has none.
 fn read_notes(project: &Project) -> String {
     std::fs::read_to_string(project.spec_dir.join(NOTES_FILE)).unwrap_or_default()
@@ -554,6 +622,16 @@ mod tests {
         apply_answer(&mut s, &response("maybe", None, ""), 9);
         assert!(s.evaluation_error.unwrap().contains("maybe"));
         assert!(s.remarks.is_empty());
+    }
+
+    #[test]
+    fn unfence_strips_only_a_wrapping_fence() {
+        assert_eq!(unfence("  # Notes\n- a\n"), "# Notes\n- a");
+        assert_eq!(unfence("```markdown\n# Notes\n- a\n```\n"), "# Notes\n- a");
+        assert_eq!(
+            unfence("# Notes\n```\ncode\n```"),
+            "# Notes\n```\ncode\n```"
+        );
     }
 
     #[test]
