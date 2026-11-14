@@ -10,14 +10,18 @@
 //!
 //! Each project's suggestions and every version its notes file has had are
 //! kept in `suggestions/<project>.json` in the work directory, so the file can
-//! be put back as it was at any earlier point.
+//! be put back as it was at any earlier point. A person can also have an agent
+//! compact the notes file, merging entries that overlap; the file as it was
+//! stays in that history.
 
 mod evaluate;
 mod notes;
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) use evaluate::{Response, comment_prompt, eligible, failure_prompt, review_prompt};
+pub(crate) use evaluate::{
+    Response, comment_prompt, compact_prompt, eligible, failure_prompt, review_prompt,
+};
 pub use notes::NOTES_FILE;
 pub(crate) use notes::Notes;
 
@@ -111,4 +115,6 @@ pub struct ProjectSuggestions {
     pub rejected: Vec<Suggestion>,
     /// How many versions the notes file has had.
     pub versions: usize,
+    /// Whether an agent is compacting the notes file now.
+    pub compacting: bool,
 }

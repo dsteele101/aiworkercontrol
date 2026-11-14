@@ -68,6 +68,9 @@ case "$prompt" in
   *"a reviewer asked for changes"*)
     echo '{"type":"result","is_error":false,"result":"{\"verdict\":\"suggest\",\"suggestion\":\"Name things the way the module does.\"}"}'
     exit 0 ;;
+  *"Rewrite it so the agents can follow it more easily"*)
+    echo '{"type":"result","is_error":false,"result":"\u0023 Agent notes\n\n- Test first."}'
+    exit 0 ;;
   *"You suggested a lesson"*)
     case "$prompt" in
       *REVISE*) echo '{"type":"result","is_error":false,"result":"{\"verdict\":\"revise\",\"suggestion\":\"Run just ci before committing.\",\"reply\":\"Good point.\"}"}' ;;
@@ -2520,6 +2523,38 @@ async fn rejected_suggestions_can_be_restored_until_they_expire() {
         pool.restore_suggestion("demo", id),
         Err(PoolError::NoSuggestion(_))
     ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn compacting_the_notes_keeps_the_old_file_as_a_version() {
+    let fx = fixture(&[("bad.txt", "PLEASE-FAIL")], 1);
+    let pool = failed_pool(&fx).await;
+    let found = wait_for_suggestions(&pool, |s| !s.is_empty()).await;
+    let notes = fx.root.join("spec/demo").join(NOTES_FILE);
+    assert!(matches!(
+        pool.compact_notes("demo"),
+        Err(PoolError::NotesEmpty)
+    ));
+    pool.accept_suggestion("demo", found[0].id).unwrap();
+    let before = fs::read_to_string(&notes).unwrap();
+
+    pool.compact_notes("demo").unwrap();
+    tokio::time::timeout(Duration::from_secs(30), async {
+        while fs::read_to_string(&notes).unwrap() == before {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the notes were not compacted");
+
+    assert_eq!(
+        fs::read_to_string(&notes).unwrap(),
+        "# Agent notes\n\n- Test first.\n"
+    );
+    let versions = pool.notes_versions("demo").unwrap();
+    assert_eq!(versions[0].note, "compacted by an agent");
+    pool.revert_notes("demo", versions[1].id).unwrap();
+    assert_eq!(fs::read_to_string(&notes).unwrap(), before);
 }
 
 #[tokio::test(flavor = "multi_thread")]

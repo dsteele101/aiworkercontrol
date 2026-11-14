@@ -144,6 +144,15 @@ pub enum PoolError {
     /// The project's notes file has no version with this number.
     #[error("the notes file has no version {0}")]
     NoNotesVersion(u32),
+    /// There is no notes text to compact.
+    #[error("the notes file is empty, so there is nothing to compact")]
+    NotesEmpty,
+    /// The notes file is already being compacted.
+    #[error("the notes are already being compacted")]
+    CompactionRunning,
+    /// The notes file was changed while the agent compacted it.
+    #[error("the notes changed while the agent compacted them; try again")]
+    NotesChanged,
     /// The evaluating agent's answer was not the JSON it was asked for.
     #[error("the agent's answer could not be read: {0}")]
     BadAnswer(String),

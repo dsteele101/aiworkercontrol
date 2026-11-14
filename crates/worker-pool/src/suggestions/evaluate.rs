@@ -217,6 +217,27 @@ pub(crate) fn comment_prompt(project: &str, suggestion: &Suggestion, notes: &str
     prompt
 }
 
+/// The prompt for compacting a notes file: merge the entries that overlap
+/// and tighten the wording, without losing any instruction.
+pub(crate) fn compact_prompt(project: &str, notes: &str) -> String {
+    format!(
+        "Below is the notes file of the project \"{project}\": lessons for AI coding agents, \
+         which every agent run on it is told to read. It has grown by one entry at a time, so \
+         entries overlap and repeat one another. Rewrite it so the agents can follow it more \
+         easily.\n\n\
+         - Find entries that cover the same ground and combine them into one.\n\
+         - Group related entries together, so the file reads in a sensible order.\n\
+         - Tighten the wording. Keep specifics: commands, file names, paths and exact rules.\n\
+         - Never drop an instruction that no other entry covers, and never add new ones.\n\
+         - Keep the file's heading and its list format.\n\n\
+         <notes>\n{notes}\n</notes>\n\n\
+         {READ_ONLY}\
+         Answer with the complete new notes file as markdown and nothing else: no code fence, \
+         no commentary.\n",
+        notes = notes.trim(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     // Test code asserts rather than propagating; see Rust code review.
@@ -269,6 +290,13 @@ mod tests {
         assert!(prompt.contains("- Be brief."));
         assert!(prompt.contains("- Run the tests.\n"));
         assert!(prompt.contains("a reviewer asked for changes"));
+    }
+
+    #[test]
+    fn compact_prompt_carries_the_notes() {
+        let prompt = compact_prompt("phase", "\n# Agent notes\n- Run it.\n- Run it too.\n");
+        assert!(prompt.contains("<notes>\n# Agent notes\n- Run it.\n- Run it too.\n</notes>"));
+        assert!(prompt.contains("\"phase\""));
     }
 
     fn suggestion_with(text: &str) -> Suggestion {

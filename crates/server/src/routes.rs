@@ -58,6 +58,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/suggestions/comment", post(comment_suggestion))
         .route("/notes", get(notes_page))
         .route("/notes/revert", post(revert_notes))
+        .route("/notes/compact", post(compact_notes))
         .route("/settings/max-turns", post(set_max_turns))
         .route("/settings/reassess-after", post(set_reassess_after))
         .route("/settings/suggestion-retention", post(set_retention))
@@ -498,6 +499,23 @@ async fn revert_notes(State(app): State<AppState>, Form(f): Form<RevertForm>) ->
     };
     app.notify(message);
     Redirect::to(&format!("/notes?project={}", pages::url_encode(&f.project)))
+}
+
+#[derive(Deserialize)]
+struct CompactForm {
+    project: String,
+}
+
+async fn compact_notes(State(app): State<AppState>, Form(f): Form<CompactForm>) -> Redirect {
+    let message = match app.pool().compact_notes(&f.project) {
+        Ok(()) => format!(
+            "An agent is compacting the {} notes. The version before stays in the notes history.",
+            f.project
+        ),
+        Err(e) => format!("Could not compact the notes: {e}"),
+    };
+    app.notify(message);
+    Redirect::to("/suggestions")
 }
 
 #[derive(Deserialize)]

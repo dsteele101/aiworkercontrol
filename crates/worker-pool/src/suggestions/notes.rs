@@ -117,6 +117,23 @@ impl Notes {
         self.write(path, content, note, now)
     }
 
+    /// Replaces the notes file at `path` with `content`, recording it as
+    /// `note`. The file as it was stays in the history. Fails if the file is
+    /// not `expected` any more.
+    pub fn replace(
+        &mut self,
+        path: &Path,
+        expected: &str,
+        content: String,
+        note: &str,
+        now: u64,
+    ) -> Result<(), PoolError> {
+        if self.settle(path, now)? != expected {
+            return Err(PoolError::NotesChanged);
+        }
+        self.write(path, content, note.to_string(), now)
+    }
+
     /// Puts the notes file at `path` back as version `version` had it. The
     /// reverting is itself a new version, so nothing is lost.
     pub fn revert(&mut self, path: &Path, version: u32, now: u64) -> Result<(), PoolError> {
@@ -244,6 +261,29 @@ mod tests {
         );
         let missing = notes.revert(&path, 99, 40).unwrap_err();
         assert!(matches!(missing, PoolError::NoNotesVersion(99)));
+    }
+
+    #[test]
+    fn replaces_the_file_and_keeps_the_old_text_as_a_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(NOTES_FILE);
+        let mut notes = Notes::default();
+        notes.append(&path, "One.", "first".into(), 10).unwrap();
+        let before = std::fs::read_to_string(&path).unwrap();
+
+        let stale = notes.replace(&path, "other", "# short\n".into(), "compacted", 20);
+        assert!(matches!(stale, Err(PoolError::NotesChanged)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+
+        notes
+            .replace(&path, &before, "# short\n".into(), "compacted", 30)
+            .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# short\n");
+        let last = notes.versions.last().unwrap();
+        assert_eq!(last.note, "compacted");
+        let kept = &notes.versions[notes.versions.len() - 2];
+        assert_eq!(kept.content, before);
     }
 
     #[test]
