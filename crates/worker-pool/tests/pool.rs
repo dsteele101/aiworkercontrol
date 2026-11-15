@@ -2686,3 +2686,88 @@ async fn a_request_for_changes_that_landed_during_a_rework_is_not_lost() {
     let meta = pool.meta(State::InReview, &item).unwrap();
     assert!(meta.needs_rework.unwrap().contains("Rename it."));
 }
+
+/// Serves `html` to every request on a local port, and returns its address.
+async fn serve_page(html: &'static str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut socket, _)) = listener.accept().await else {
+                return;
+            };
+            let mut request = [0; 2048];
+            let _ = socket.read(&mut request).await;
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}",
+                html.len()
+            );
+            let _ = socket.write_all(reply.as_bytes()).await;
+        }
+    });
+    format!("http://{address}/tickets/42")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_web_page_link_becomes_an_open_item() {
+    let fx = fixture(&[], 1);
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    let link = serve_page(
+        "<html><head><title>Login fails</title></head><body><p>Users cannot log in.</p></body></html>",
+    )
+    .await;
+
+    // The only project takes it.
+    let item = pool.import_issue_link(&link, None).await.unwrap();
+    assert_eq!(item.project, "demo");
+    assert!(item.file.starts_with("url-127-0-0-1"), "{item}");
+    assert_eq!(queue.list(State::Open).unwrap(), vec![item.clone()]);
+    let text = queue.read(State::Open, &item).unwrap();
+    assert!(
+        text.contains("Login fails")
+            && text.contains("Users cannot log in.")
+            && text.contains(&link),
+        "{text}"
+    );
+    let meta = pool.meta(State::Open, &item).unwrap();
+    assert_eq!(meta.title.as_deref(), Some("Login fails"));
+    assert_eq!(meta.issue_url.as_deref(), Some(link.as_str()));
+
+    // The same link is not imported twice.
+    let err = pool.import_issue_link(&link, None).await.unwrap_err();
+    assert!(matches!(err, PoolError::AlreadyImported { .. }), "{err}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_link_that_cannot_be_imported_leaves_nothing_queued() {
+    let mut fx = fixture(&[], 1);
+    let queue = Queue::new(fx.root.join("work"));
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+
+    let err = pool
+        .import_issue_link("not a link", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::Issues { .. }), "{err}");
+    let err = pool
+        .import_issue_link("https://example.com/x", Some("nope"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::UnknownProject(_)), "{err}");
+
+    // With several projects, an unrecognized link needs one chosen.
+    let second = Project::new("other", fx.root.join("spec/demo"), fx.root.join("repo"));
+    fx.config.projects.push(second);
+    let pool = Supervisor::new(queue.clone(), fx.config.clone()).unwrap();
+    let err = pool
+        .import_issue_link("https://example.com/x", None)
+        .await
+        .unwrap_err();
+    assert!(matches!(err, PoolError::NoProjectForLink(_)), "{err}");
+
+    for state in State::ALL {
+        assert!(queue.list(state).unwrap().is_empty(), "{state:?}");
+    }
+}

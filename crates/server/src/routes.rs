@@ -48,6 +48,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/close-all", post(close_all))
         .route("/work", get(work_page))
         .route("/import", post(import_pull_request))
+        .route("/import/issue", post(import_issue_link))
         .route("/review/check", post(check_review))
         .route("/review/rework", post(rework_review))
         .route("/review/bump", post(bump_review))
@@ -332,6 +333,25 @@ async fn import_pull_request(State(app): State<AppState>, Form(f): Form<ImportFo
     Redirect::to("/work")
 }
 
+#[derive(Deserialize)]
+struct ImportIssueForm {
+    url: String,
+    #[serde(default)]
+    project: String,
+}
+
+async fn import_issue_link(
+    State(app): State<AppState>,
+    Form(f): Form<ImportIssueForm>,
+) -> Redirect {
+    let message = match app.pool().import_issue_link(&f.url, Some(&f.project)).await {
+        Ok(item) => format!("Imported the issue as {item}; it is open."),
+        Err(e) => format!("Could not import the issue: {e}"),
+    };
+    app.notify(message);
+    Redirect::to("/work")
+}
+
 async fn check_review(State(app): State<AppState>, Form(f): Form<ItemForm>) -> Redirect {
     if let Some((project, file)) = f.item.split_once('/') {
         let item = WorkItem::new(project, file);
@@ -386,7 +406,14 @@ struct SuggestionForm {
 }
 
 async fn work_page(State(app): State<AppState>) -> Html<String> {
-    Html(pages::work(app.take_notice()).into_string())
+    let projects: Vec<String> = app
+        .pool()
+        .config()
+        .projects
+        .into_iter()
+        .map(|p| p.name)
+        .collect();
+    Html(pages::work(app.take_notice(), &projects).into_string())
 }
 
 async fn suggestions_page(

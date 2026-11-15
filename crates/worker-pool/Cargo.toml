@@ -18,7 +18,7 @@ work-queue = { path = "../work-queue" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["io-util", "net", "rt-multi-thread"] }
 
 [lints]
 workspace = true
