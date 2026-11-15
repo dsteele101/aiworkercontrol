@@ -93,6 +93,111 @@ impl Supervisor {
         Ok(item)
     }
 
+    /// Adds the issue or page at `link` to the queue, in `open`, as an item of
+    /// `project`. A link to an issue on GitHub, GitLab, Bitbucket Cloud or
+    /// Gitea/Forgejo is read through the service's API and named
+    /// `issue-<number>.txt`, like the issues a project's issue source brings
+    /// in; any other page is read as a web page and named `url-<…>.txt`.
+    ///
+    /// Without `project`, the one whose pull requests or issue source are for
+    /// the link's repository takes it, or the only project there is.
+    pub async fn import_issue_link(
+        &self,
+        link: &str,
+        project: Option<&str>,
+    ) -> Result<WorkItem, PoolError> {
+        let link = link.trim();
+        let config = self.config();
+        let project = match project.filter(|p| !p.is_empty()) {
+            Some(name) => config
+                .projects
+                .iter()
+                .find(|p| p.name == name)
+                .ok_or_else(|| PoolError::UnknownProject(name.to_string()))?,
+            None => {
+                let repo = issues::linked_repo(link);
+                let by_repo = repo.as_deref().and_then(|repo| {
+                    config.projects.iter().find(|p| {
+                        p.pr.as_ref()
+                            .is_some_and(|pr| pr.repo.eq_ignore_ascii_case(repo))
+                            || p.issues
+                                .as_ref()
+                                .is_some_and(|s| issues::same_repo(link, &s.url))
+                    })
+                });
+                match (by_repo, config.projects.as_slice()) {
+                    (Some(p), _) | (None, [p]) => p,
+                    _ => return Err(PoolError::NoProjectForLink(link.to_string())),
+                }
+            }
+        };
+
+        let queue = self.queue();
+        let known = |file: &str| -> Result<Option<WorkItem>, PoolError> {
+            for state in ItemState::ALL {
+                if let Some(item) = queue
+                    .list(state)?
+                    .into_iter()
+                    .find(|i| i.project == project.name && i.file == file)
+                {
+                    return Ok(Some(item));
+                }
+            }
+            Ok(None)
+        };
+        let already = |item| PoolError::AlreadyImported {
+            url: link.to_string(),
+            item,
+        };
+
+        // The token of the project's issue source serves the same service.
+        let token = project
+            .issues
+            .as_ref()
+            .filter(|s| issues::same_repo(link, &s.url))
+            .and_then(|s| s.token.as_deref());
+        let issue = issues::fetch_link(link, token).await?;
+        let file = match issue.number {
+            Some(number) => issue_file(number),
+            None => page_file(&issue.url),
+        };
+        if let Some(item) = known(&file)? {
+            return Err(already(item));
+        }
+
+        let item = WorkItem::new(&project.name, file);
+        let body = match issue.number {
+            Some(number) => format!(
+                "Resolve issue #{number}: {title}\n\n{url}\n\n{description}\n",
+                title = issue.title,
+                url = issue.url,
+                description = issue.body.trim(),
+            ),
+            None => format!(
+                "Do the work described at {url}: {title}\n\n{description}\n",
+                title = issue.title,
+                url = issue.url,
+                description = issue.body.trim(),
+            ),
+        };
+        queue.add(ItemState::Open, &item, &body)?;
+        let saved = ItemMeta {
+            title: Some(issue.title.clone()),
+            issue_url: Some(issue.url.clone()),
+            ..ItemMeta::default()
+        }
+        .save(queue, ItemState::Open, &item);
+        if let Err(e) = saved {
+            // Leave nothing behind that would block a retry.
+            let _ = std::fs::remove_file(queue.path(ItemState::Open, &item));
+            return Err(e);
+        }
+        self.shared
+            .record(&item, EventKind::Imported, Some(issue.url));
+        self.shared.changed();
+        Ok(item)
+    }
+
     /// Tops up each project's open items with issues from its issue source:
     /// as many as it takes to have the source's `limit` imported issues
     /// waiting, chosen in its order and added as `issue-<number>.txt`. An
@@ -175,6 +280,36 @@ fn issue_file(number: u64) -> String {
     format!("{ISSUE_PREFIX}{number}.txt")
 }
 
+/// What names the items made from any other page: its link, as a short
+/// readable name and a hash that tells links apart.
+fn page_file(url: &str) -> String {
+    let slug: String = url
+        .split_once("://")
+        .map_or(url, |(_, rest)| rest)
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let slug = slug.trim_matches('-');
+    let slug = slug
+        .get(..slug.len().min(40))
+        .unwrap_or(slug)
+        .trim_end_matches('-');
+    // FNV-1a: stable across runs, so the same link is found again.
+    let hash = url.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("url-{slug}-{:08x}.txt", hash & 0xffff_ffff)
+}
+
 /// `(url, owner, repo, number)` of a pull request link, with any trailing
 /// page (`/files`), query or fragment dropped.
 fn canonical_link(link: &str) -> Result<(String, String, String, String), PoolError> {
@@ -203,6 +338,17 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic_in_result_fn)]
 
     use super::*;
+
+    #[test]
+    fn pages_are_named_after_their_links() {
+        let a = page_file("https://example.com/tickets/42?x=1");
+        assert!(
+            a.starts_with("url-example-com-tickets-42-") && a.ends_with(".txt"),
+            "{a}"
+        );
+        assert_eq!(a, page_file("https://example.com/tickets/42?x=1"));
+        assert_ne!(a, page_file("https://example.com/tickets/42?x=2"));
+    }
 
     #[test]
     fn links_are_reduced_to_the_pull_request() {

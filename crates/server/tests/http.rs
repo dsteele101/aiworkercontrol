@@ -124,6 +124,19 @@ async fn importing_a_pull_request_reports_why_it_cannot() {
 }
 
 #[tokio::test]
+async fn importing_an_issue_reports_why_it_cannot() {
+    let app = app();
+    let (_, body) = app.get("/work").await;
+    assert!(body.contains(r#"action="/import/issue""#), "{body}");
+
+    let status = app.post("/import/issue", "url=not+a+link&project=").await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let (_, page) = app.get("/work").await;
+    assert!(page.contains("Could not import the issue"), "{page}");
+    assert!(page.contains("cannot tell which project"), "{page}");
+}
+
+#[tokio::test]
 async fn live_refresh_leaves_notices_for_the_next_page() {
     let app = app();
     app.post("/settings/active", "provider=anthropic").await;

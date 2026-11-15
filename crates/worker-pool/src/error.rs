@@ -93,6 +93,9 @@ pub enum PoolError {
     /// The link is not a GitHub pull request.
     #[error("{0:?} is not a GitHub pull request link (https://github.com/OWNER/REPO/pull/N)")]
     NotPullRequestLink(String),
+    /// No project could be told to take the issue at the link.
+    #[error("cannot tell which project {0} is for; choose one")]
+    NoProjectForLink(String),
     /// No project opens pull requests against the link's repository.
     #[error("no project opens pull requests against {0}")]
     NoProjectForRepo(String),

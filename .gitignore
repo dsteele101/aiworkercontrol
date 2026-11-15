@@ -39,3 +39,6 @@
 # Scratch repos the suggestion runs create (a nested .git, so git would list
 # the directory as untracked despite the /work/** rule above).
 /work/suggestions/.run/
+
+# Local scratch notes for the phase project; not shared.
+/spec/phase/INTERACTIONS.txt

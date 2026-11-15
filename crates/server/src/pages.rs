@@ -448,9 +448,27 @@ fn layout(title: &str, here: &str, refresh: bool, notice: Option<String>, body: 
 }
 
 /// The work page: where work comes into the queue from outside.
-pub(crate) fn work(notice: Option<String>) -> Markup {
+pub(crate) fn work(notice: Option<String>, projects: &[String]) -> Markup {
     let body = html! {
         h2 { "Work" }
+        div {
+            h3 { "Import an issue" }
+            form.panel.bar method="post" action="/import/issue" {
+                input type="text" name="url" required style="flex:1; min-width:260px"
+                    placeholder="https://github.com/owner/repo/issues/123"
+                    aria-label="Issue link";
+                select name="project" aria-label="Project" {
+                    option value="" { "Project: detect" }
+                    @for name in projects { option value=(name) { (name) } }
+                }
+                button.primary { "Import" }
+            }
+            p.muted {
+                "Adds the issue at a link to the queue as open work. Issues on GitHub, GitLab, Bitbucket Cloud and "
+                "Gitea/Forgejo are read through the service's API; any other web page is read as text. "
+                "The project is detected from the link's repository, or is the only one there is, unless you choose it."
+            }
+        }
         div {
             h3 { "Import a pull request" }
             form.panel.bar method="post" action="/import" {
