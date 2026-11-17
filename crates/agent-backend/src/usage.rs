@@ -416,6 +416,13 @@ mod tests {
         assert_eq!(window.resets_at, Some(1_000 + 12 * 3_600 + 46 * 60));
         let used = freebuff_usage("FREE · 7.5/30 hours daily · resets in 1d", 0).unwrap();
         assert_eq!(used.session.unwrap().percent, 75);
+        // freebuff 0.2.36 also shows a streak perk that mentions hours.
+        let streak = "Streak perk: +3 hours every day\nearn hours\n\
+                      FREE · 33/33 hours daily · resets in 8h 3m\n";
+        assert_eq!(
+            freebuff_usage(streak, 0).unwrap().session.unwrap().percent,
+            0
+        );
         assert_eq!(freebuff_usage("no allowance here", 0), None);
     }
 
