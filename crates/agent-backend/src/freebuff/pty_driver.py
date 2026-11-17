@@ -24,7 +24,10 @@ pid, fd = pty.fork()
 if pid == 0:
     os.chdir(cwd)
     os.execv(binary, ["freebuff", "--cwd", cwd, "--trust-agents"])
-fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 160, 0, 0))
+# `/model` draws the allowance below its model list, which is scrolled out
+# of view unless the terminal is tall enough to hold the whole list.
+rows = 200 if report else 50
+fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, 160, 0, 0))
 
 
 seen = b""
