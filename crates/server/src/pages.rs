@@ -1859,11 +1859,6 @@ fn provider_mark(provider: Provider) -> Markup {
 
 fn usage_panel(snapshot: &PoolSnapshot, settings: &Settings) -> Markup {
     let limits = &settings.limits;
-    let usage: Vec<_> = snapshot
-        .usage
-        .iter()
-        .filter(|u| settings.is_enabled(u.provider))
-        .collect();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -1871,49 +1866,50 @@ fn usage_panel(snapshot: &PoolSnapshot, settings: &Settings) -> Markup {
         @if let Some(limited) = &snapshot.limited {
             p.bad { "Workers are waiting: " (limited) ". Override a provider below to let runs start on it again." }
         }
-        @for (provider, error) in &snapshot.suspended {
-            p.warn {
-                (provider.label()) " is set aside as a fallback until the active provider can run again. "
-                "Its last run failed: " (clip(error))
-            }
-        }
-        @if usage.is_empty() {
-            p.muted { "No usage reported yet. Claude reports its plan usage during each run, and Antigravity, Codex, Freebuff (its daily free hours), an OpenRouter key on a free model and Cloudflare with an analytics token are asked for theirs every five minutes (OpenRouter's is its daily free-request allowance, Cloudflare's its daily free neurons)." }
-        } @else {
-            div.usage {
-                @for u in &usage {
-                    @let limits = &limits.for_provider(u.provider);
-                    @let hit = limits.stop_hit(&u.usage, now);
-                    @let overridden = snapshot.overridden.contains(&u.provider);
-                    @let warning = limits.plan_warning(&u.usage, now);
-                    div.ucard class=[(hit.is_some() && !overridden).then_some("limited")] {
-                        div.uhead {
-                            (provider_mark(u.provider))
-                            h3 { (u.provider.label()) }
-                            @if hit.is_some() && !overridden {
-                                span.pill.bad { "Stopped" }
-                            } @else if hit.is_some() || warning.is_some() {
-                                span.pill.warn { "Watch" }
-                            } @else {
-                                span.pill.ok { "Healthy" }
-                            }
+        div.usage {
+            @for provider in Provider::ALL.into_iter().filter(|p| settings.is_enabled(*p)) {
+                @let usage = snapshot.usage.iter().find(|u| u.provider == provider).map(|u| &u.usage);
+                @let limits = &limits.for_provider(provider);
+                @let hit = usage.and_then(|u| limits.stop_hit(u, now));
+                @let overridden = snapshot.overridden.contains(&provider);
+                @let warning = usage.and_then(|u| limits.plan_warning(u, now));
+                @let set_aside = snapshot.suspended.iter().find(|(p, _)| *p == provider).map(|(_, error)| error);
+                div.ucard class=[(hit.is_some() && !overridden).then_some("limited")] {
+                    div.uhead {
+                        (provider_mark(provider))
+                        h3 { (provider.label()) }
+                        @if hit.is_some() && !overridden {
+                            span.pill.bad { "Stopped" }
+                        } @else if set_aside.is_some() {
+                            span.pill.warn { "Set aside" }
+                        } @else if usage.is_none() {
+                            span.pill.idle { "Unreported" }
+                        } @else if hit.is_some() || warning.is_some() {
+                            span.pill.warn { "Watch" }
+                        } @else {
+                            span.pill.ok { "Healthy" }
                         }
-                        (meter(u.usage.session, Span::Window, now, limits))
-                        (meter(u.usage.weekly, Span::Week, now, limits))
-                        @if let Some(hit) = hit {
-                            div.ustate {
-                                @if overridden {
-                                    span.warn { "Past the " (hit.level) "% " (hit.span.label()) " stop level; overridden until the window resets" }
-                                } @else {
-                                    span.bad { "Stopped at the " (hit.level) "% " (hit.span.label()) " level " }
-                                    form.inline method="post" action="/usage/override" {
-                                        input type="hidden" name="provider" value=(provider_value(u.provider));
-                                        button { "Override" }
-                                    }
+                    }
+                    (meter(usage.and_then(|u| u.session), Span::Window, now, limits))
+                    (meter(usage.and_then(|u| u.weekly), Span::Week, now, limits))
+                    @if let Some(hit) = hit {
+                        div.ustate {
+                            @if overridden {
+                                span.warn { "Past the " (hit.level) "% " (hit.span.label()) " stop level; overridden until the window resets" }
+                            } @else {
+                                span.bad { "Stopped at the " (hit.level) "% " (hit.span.label()) " level " }
+                                form.inline method="post" action="/usage/override" {
+                                    input type="hidden" name="provider" value=(provider_value(provider));
+                                    button { "Override" }
                                 }
                             }
-                        } @else if let Some(level) = warning {
-                            div.ustate { span.warn { "Past the " (level) "% warning" } }
+                        }
+                    } @else if let Some(level) = warning {
+                        div.ustate { span.warn { "Past the " (level) "% warning" } }
+                    }
+                    @if let Some(error) = set_aside {
+                        div.ustate {
+                            span.warn { "Set aside as a fallback until the active provider can run again. Its last run failed: " (clip(error)) }
                         }
                     }
                 }
@@ -2183,5 +2179,43 @@ mod tests {
     #[test]
     fn url_encode_escapes_separators() {
         assert_eq!(url_encode("phase/a b.txt"), "phase%2Fa%20b.txt");
+    }
+
+    fn idle_snapshot() -> PoolSnapshot {
+        PoolSnapshot {
+            running: false,
+            intake: true,
+            target_workers: 1,
+            workers: Vec::new(),
+            last_error: None,
+            usage: Vec::new(),
+            limited: None,
+            overridden: Vec::new(),
+            suspended: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn usage_panel_lists_enabled_providers_without_usage() {
+        let mut settings = Settings::default();
+        settings.provider_mut(Provider::Deepseek).enabled = false;
+        let page = usage_panel(&idle_snapshot(), &settings).into_string();
+        assert!(page.contains("Mistral (Vibe)"), "{page}");
+        assert!(page.contains("Unreported"), "{page}");
+        assert!(!page.contains(Provider::Deepseek.label()), "{page}");
+    }
+
+    #[test]
+    fn usage_panel_marks_a_set_aside_provider() {
+        let mut snapshot = idle_snapshot();
+        snapshot
+            .suspended
+            .push((Provider::Mistral, "vibe exited with 1".into()));
+        let page = usage_panel(&snapshot, &Settings::default()).into_string();
+        assert!(page.contains("Set aside</span>"), "{page}");
+        assert!(
+            page.contains("Its last run failed: vibe exited with 1"),
+            "{page}"
+        );
     }
 }
