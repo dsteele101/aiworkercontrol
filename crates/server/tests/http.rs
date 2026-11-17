@@ -151,7 +151,7 @@ async fn live_refresh_leaves_notices_for_the_next_page() {
 async fn dashboard_shows_recorded_plan_usage() {
     let app = app();
     let (_, body) = app.get("/").await;
-    assert!(body.contains("No usage reported yet"));
+    assert!(body.contains("Unreported"), "{body}");
 
     // A window that resets far in the future, and one that already has.
     fs::write(
